@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# secrets — never commit
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# pipeline output
+#
+# Output directory names come from `-o`, so ignoring them by name is a losing
+# game — this repo already accumulated shorts/ shorts2/ reels/ reels-4k/
+# out-v2/ cmp-crop/ and more. Ignore the artifact SHAPES instead: none of these
+# extensions is ever source in this project.
+#
+# If a test ever needs a committed media fixture, whitelist that one path
+# (`!tests/fixtures/sample.mp4`) rather than loosening the rules below.
+# ---------------------------------------------------------------------------
+
+# per-run scratch: extracted audio, transcript cache, generated .ass
+.work/
+
+# regenerable — rerun with --plan-only
+plan.json
+
+# transcript cache. delete it to re-transcribe
+words-*.json
+
+# source and rendered video, and the audio demuxed from it
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4v
+*.avi
+*.wav
+*.m4a
+*.mp3
+
+# subtitles are generated per clip, every render
+*.ass
+*.srt
+
+# API job directories: job.json, uploaded sources, clips. QATF_DATA_DIR default
+qatf-data/
+
+# docker-compose mounts ./media as the read-only media root
+media/
+
+# frame dumps from caption verification — see the working agreements in CLAUDE.md
+frames/
+*.png
+!docs/**/*.png
+
+# ---------------------------------------------------------------------------
+# vendored binaries — ~277 MB of static ffmpeg builds. Install or re-download.
+# ---------------------------------------------------------------------------
+tools/
+
+# ---------------------------------------------------------------------------
+# python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# editors, OS, agents
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# machine-specific: absolute ffmpeg paths and per-user permission rules.
+# .claude/settings.json (shared config) stays committed.
+.claude/settings.local.json

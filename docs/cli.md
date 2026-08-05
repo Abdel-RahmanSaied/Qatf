@@ -1,0 +1,237 @@
+# CLI reference
+
+```text
+qatf VIDEO [-o OUT] [selection] [transcription] [captions] [encode] [--plan-only | --plan FILE]
+```
+
+Also runnable as `python -m qatf` or, via the legacy shim, `python qatf.py`.
+
+The CLI is deliberately importable without pydantic, fastapi or any provider SDK.
+`qatf --help` costs nothing.
+
+---
+
+## Selection — stage 3
+
+| Flag | Default | |
+|---|---|---|
+| `--clips N` | `5` | how many clips to ask for |
+| `--min-len S` | `30` | seconds; shorter clips are dropped |
+| `--max-len S` | `75` | seconds; see the warning below |
+
+**`--max-len 52`, not 60, for YouTube Shorts.** Stage 4 snaps cut points onto word
+boundaries *after* the model picks them, and both boundaries move outward
+(−0.15 s lead, +0.35 s tail). Ask for 60 and some clips land at 63, which Shorts
+rejects. Reels and TikTok allow longer.
+
+The duration filter is loose on purpose — a clip survives between `min_len × 0.6`
+and `max_len × 1.4` — because snapping legitimately moves a boundary by a whole
+word and a tight filter throws away good clips.
+
+---
+
+## Transcription — stage 2
+
+| Flag | Default | |
+|---|---|---|
+| `--whisper SIZE` | `large-v3` | faster-whisper model size |
+| `--device {auto,cuda,cpu}` | `auto` | see below |
+| `--language CODE` | autodetect | `ar`, `en`, … |
+| `--denoise` | off | speech-band filter + `afftdn` before transcribing |
+| `--vocab "TERMS"` | — | space-separated bias terms |
+| `--vocab-file PATH` | — | the same, from a file |
+| `--prompt "TEXT"` | — | seeds only the first ~30 s |
+| `--prompt-file PATH` | — | the same, from a file |
+| `--fixups PATH` | — | `wrong = right` substitutions, one per line |
+
+### `--device`
+
+`auto` asks **CTranslate2** — not `nvidia-smi` — whether it can actually target a
+CUDA device, and falls back to CPU if not. An explicit `cuda` is honoured and
+**will not fall back**: it raises instead, because silently getting CPU turns a
+benchmark into a lie.
+
+CPU with `large-v3` is slow enough that stage 2 logs a warning. `--whisper small`
+is far quicker if the quality bar allows.
+
+### `--vocab` is the lever; `--prompt` mostly is not
+
+`--vocab` maps to faster-whisper's `hotwords` and applies to the **whole file**.
+`--prompt` maps to `initial_prompt`, which seeds only the first ~30 seconds and
+then decays — it looks excellent on a short clip and does nothing to a long one.
+
+Write vocabulary terms **the way you want them spelled back**.
+[`prompts/ar-tech.txt`](../prompts/ar-tech.txt) is the working Arabic list.
+
+Both share Whisper's 448-token context with decoding. Overrun it and
+faster-whisper dies with `ValueError: The maximum decoding length must be > 0`,
+which names neither the vocabulary nor the limit. `check_seed_budget` rejects it
+up front instead (`HOTWORD_CHAR_BUDGET` 300, `PROMPT_CHAR_BUDGET` 800).
+
+### `--fixups`
+
+Last resort for words the vocabulary will not take — `بايسون → بايثون`, where the
+speaker really does say it that way and Whisper is faithfully spelling what it
+heard.
+
+```text
+# prompts/ar-fixups.txt
+بايسون = بايثون
+```
+
+Substitutions touch `Word.text` **only, never timestamps**, so a spelling fix can
+change what a caption reads and can never move a cut. Applied on read, not baked
+into the cache — so you can edit the map and re-render without re-transcribing.
+
+See [quality.md](quality.md) for what each of these was actually worth.
+
+---
+
+## Captions — stage 5a
+
+| Flag | Default | |
+|---|---|---|
+| `--font NAME` | `Arial` | must be installed on the rendering host |
+| `--per-line N` | `4` | max words per caption line |
+| `--no-captions` | off | render without burned-in text |
+
+`--font Arial` renders **tofu** on Arabic. libass falls back silently, so a
+missing face ships as 50 broken clips rather than an error. Use an Arabic-capable
+face — `--font "Traditional Arabic"` is the tested one.
+
+Lines are budgeted by **both** word count and character count
+(`CAPTION_MAX_CHARS` 22): four 12-character words at 82 px is wider than the
+1080 px frame.
+
+Arabic captions appear and clear per line rather than tracking the spoken word.
+That is a deliberate consequence of the RTL fix — see
+[troubleshooting.md](troubleshooting.md#the-rtl-caption-bug).
+
+---
+
+## Encode — stage 5b
+
+| Flag | Default | |
+|---|---|---|
+| `--reframe {crop,blur}` | `crop` | |
+| `--resolution R` | `1080p` | `source` · `1080p` · `1440p` · `4k` · `WxH` |
+| `--codec {h264,h265}` | `h264` | |
+| `--10bit` | off | requires a 10-bit source |
+| `--crf N` | `20` | lower is better |
+
+### `--reframe`
+
+`crop` keeps roughly **3× the subject pixels** of `blur` on a 16:9 source and
+measures 2.1× the bitrate at the same CRF. Reach for `blur` only when the framing
+genuinely needs the full width. Full arithmetic in
+[architecture.md](architecture.md#stage-5--reframe).
+
+### `--resolution source`
+
+Resolved per video: it probes the input and picks the size that resamples least.
+A 3840×2160 source in `crop` mode gives **1214×2160** — the crop region at native
+pixels, no scaling at all.
+
+In `blur` mode the same source gives 3840×6826, which is enormous and no platform
+accepts. **`source` is really only sensible with `crop`.**
+
+Platforms deliver 1080×1920 whatever you upload, so higher resolutions buy
+archival fidelity and re-edit headroom, not a better viewer experience.
+
+### `--codec h265`
+
+H.265 output is tagged `hvc1`. **Do not remove that tag** — without it the file is
+perfectly valid and QuickTime, Safari and iOS all silently refuse to open it.
+
+YouTube accepts HEVC; some Instagram and TikTok upload paths still prefer H.264,
+so `h264` stays the default.
+
+### `--10bit`
+
+Worth it from ProRes (4:2:2 10-bit): the extra precision suppresses banding in
+skies and skin even though delivery chroma is still 4:2:0. It narrows device
+compatibility, so it is opt-in.
+
+Frame rate is never forced. The source rate is preserved — see
+[troubleshooting.md](troubleshooting.md#periodic-micro-stutter-on-2997-footage).
+
+---
+
+## Plan control
+
+| Flag | |
+|---|---|
+| `--plan-only` | transcribe and select, write `plan.json`, stop before rendering |
+| `--plan FILE` | render a hand-edited plan; re-snaps by default |
+
+```bash
+qatf talk.mov -o out/ --plan-only          # write out/plan.json
+$EDITOR out/plan.json
+qatf talk.mov -o out/ --plan out/plan.json # render exactly that
+```
+
+`--plan` **re-snaps**. A human typing `"start": 20.0` is making the same kind of
+semantic guess the model makes, and skipping the snap is how clips end up opening
+mid-syllable.
+
+`--plan-only` is also the cheapest way to A/B two providers: same cached
+transcript, two runs, diff the two `plan.json` files.
+
+---
+
+## Environment
+
+The CLI reads a `.env` from the working directory or any parent. **The real
+environment always wins** over a `.env` entry.
+
+| Variable | | |
+|---|---|---|
+| `QATF_LLM_PROVIDER` | `anthropic` | `openai` · `kimi` · `glm` · `ollama` · `vllm` · `openrouter` |
+| `QATF_LLM_MODEL` | preset default | overrides the preset's model |
+| `QATF_LLM_BASE_URL` | preset default | point a preset at another host |
+| `QATF_LLM_EFFORT` | `medium` | reasoning-effort hint, where accepted |
+| `QATF_LLM_MAX_TOKENS` | `16000` | |
+| `QATF_LLM_TIMEOUT` | `600` | seconds |
+| `QATF_FFMPEG` / `QATF_FFPROBE` | on `PATH` | explicit binary paths |
+| `ANTHROPIC_API_KEY` etc. | — | per-provider; see [providers.md](providers.md) |
+
+---
+
+## Worked example
+
+The invocation this project was built against — a 12-minute Egyptian-Arabic talk
+recorded in a moving car, 4K ProRes:
+
+```bash
+qatf "متسلمش دماغك.mov" -o reels/ \
+  --language ar \
+  --clips 8 --min-len 28 --max-len 52 \
+  --denoise \
+  --vocab-file prompts/ar-tech.txt \
+  --fixups prompts/ar-fixups.txt \
+  --font "Traditional Arabic"
+```
+
+Then, to re-encode at native resolution in H.265 without re-transcribing:
+
+```bash
+qatf "متسلمش دماغك.mov" -o reels/ --plan reels/plan.json \
+  --language ar --denoise --vocab-file prompts/ar-tech.txt \
+  --fixups prompts/ar-fixups.txt --font "Traditional Arabic" \
+  --resolution source --codec h265 --10bit
+```
+
+That costs one ffmpeg pass per clip and no model call. Two things make the reuse
+work, and both are easy to get wrong:
+
+- **Keep the same `-o`.** The transcript cache lives at `<out>/.work/`, so a
+  different output directory re-transcribes from scratch. `plan.json` is written
+  into `<out>/` on every run, not just under `--plan-only`.
+- **Repeat the transcription flags.** `--language`, `--denoise`, `--vocab-file`
+  and `--whisper` are all part of the cache key. Drop one and you get a cache
+  miss, not the previous transcript. `--fixups` is *not* in the key — it is
+  applied on read — but you still need to pass it for the captions to say the
+  right thing.
+
+Re-rendering into the same directory overwrites the previous clips. Move them
+first if you want both.

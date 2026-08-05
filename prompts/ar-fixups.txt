@@ -1,0 +1,23 @@
+# Word substitutions applied to caption text after transcription.
+# Format: wrong = right   (or  wrong -> right).  '#' comments, blanks ignored.
+#
+# Only for errors the vocabulary demonstrably will not fix. Prefer --vocab:
+# it addresses the cause and generalises. Every entry here is a word Whisper
+# kept getting wrong even with the correct spelling in the vocabulary list.
+#
+# Timestamps are never modified — this changes what a caption reads, never
+# where a clip is cut.
+
+# Python: the speaker says it closer to "bayson", so the model is not
+# mishearing — it is spelling what it heard. Vocabulary could not override it.
+بايسون = بايثون
+بايسن = بايثون
+
+# ث -> س, how the dialect pronounces it. The vocabulary catches most, not all.
+مسلا = مثلا
+
+# AI read as two Arabic letters rather than the term
+الاي = الذكاء
+
+# platform
+المنصبة = المنصة

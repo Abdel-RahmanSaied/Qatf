@@ -1,0 +1,345 @@
+# Architecture
+
+Five stages. Two of them touch a model. Keeping that boundary clean is the whole
+design — everything else in this document follows from it.
+
+```mermaid
+flowchart LR
+    V[source video] --> A["1 · audio<br/>ffmpeg"]
+    A --> B["2 · asr<br/>faster-whisper"]
+    B --> C["3 · select<br/>LLM"]
+    C --> D["4 · cuts<br/>deterministic"]
+    B -.word times.-> D
+    D --> E["5 · captions + encode<br/>ffmpeg"]
+    B -.caption text.-> E
+    E --> O[vertical clips]
+
+    style C fill:#3b2a1a,stroke:#c07a30,color:#f0d9b5
+    style D fill:#1a2b34,stroke:#3d7f9c,color:#cfe8f3
+```
+
+| # | Module | Does | Model? | Deterministic? |
+|---|---|---|---|---|
+| 1 | [`pipeline/audio.py`](../qatf/pipeline/audio.py) | demux to 16 kHz mono wav, optionally denoised | no | yes |
+| 2 | [`pipeline/asr.py`](../qatf/pipeline/asr.py) | transcribe with word-level timings | Whisper | no |
+| 3 | [`pipeline/select.py`](../qatf/pipeline/select.py) | pick which passages become clips | **your LLM** | no |
+| 4 | [`pipeline/cuts.py`](../qatf/pipeline/cuts.py) | snap cut points onto word boundaries | no | yes |
+| 5 | [`pipeline/captions.py`](../qatf/pipeline/captions.py) + [`encode.py`](../qatf/pipeline/encode.py) | ASS generation, reframe, burn, encode | no | yes |
+
+---
+
+## The core invariant
+
+> **The model never emits precise timing.**
+
+Stage 3 sees the transcript in 12-second blocks (`BLOCK_SECONDS`, built by
+`select.build_transcript_blocks`) and returns `MM:SS`. Stage 4 then moves those
+onto real word start/end times measured by Whisper.
+
+```mermaid
+sequenceDiagram
+    participant W as Whisper
+    participant M as Model
+    participant S as snap()
+    W->>M: transcript in ~12s blocks
+    Note over M: reads meaning, not waveforms
+    M->>S: "03:04 → 03:53"
+    W->>S: word starts and ends
+    Note over S: nearest word edge,<br/>−0.15s lead, +0.35s tail
+    S->>S: 184.32 → 233.86
+```
+
+**Semantic boundaries come from the model. Acoustic boundaries come from the
+audio. They are never mixed.**
+
+If you are ever tempted to ask the model for millisecond timestamps, or to skip
+`snap` because the numbers "look fine" — don't. The model will confabulate
+sub-second values it has no way to know, and clips will open mid-syllable.
+
+This applies to **hand-edited plans too**, which is why `PUT /jobs/{id}/plan` and
+`--plan` re-snap by default. A human typing `"start": 20.0` is making the same
+kind of semantic guess the model makes.
+
+### The corollary you will use most
+
+| Symptom | Stage | Where to look |
+|---|---|---|
+| the clip is boring, or cuts an argument in half | 3 | the selection prompt |
+| the clip opens mid-syllable, or clips a final consonant | 4 | word timings, then `snap` |
+
+Diagnose them separately. They have never once been the same bug.
+
+### Why snapping makes clips longer
+
+`snap` moves the start to the nearest **word start** minus `SNAP_LEAD` (0.15s)
+and the end to the nearest **word end** plus `SNAP_TAIL` (0.35s). Both move
+outward. A clip the model sized at 58s routinely lands at 60–63s.
+
+`within_duration` then drops anything that landed well outside the request, with
+deliberately loose margins — `lo * 0.6` to `hi * 1.4` — because snapping
+legitimately moves a boundary by a whole word and a tight filter would throw away
+good clips.
+
+**Practical consequence:** ask for `--max-len 52` if you are targeting YouTube
+Shorts' 60-second limit.
+
+---
+
+## Layering
+
+```mermaid
+flowchart TD
+    api --> jobs --> pipeline --> llm --> core
+    cli --> pipeline
+    style core fill:#1d2b1d,stroke:#5a8f5a,color:#d6f0d6
+```
+
+```text
+api  →  jobs  →  pipeline  →  llm  →  core
+cli  ───────→   pipeline  →  llm  →  core
+```
+
+`core` imports nothing of ours. An import that points the other way is the signal
+that something is **defined in the wrong package** — move the definition, don't
+add the import.
+
+The clearest example: `JobState` lives in [`jobs/model.py`](../qatf/jobs/model.py),
+not in [`api/schemas.py`](../qatf/api/schemas.py), precisely because of that
+arrow. The job lifecycle is a domain concept and `jobs` may not import from
+`api`. It still serialises correctly in responses because it is a `str` Enum.
+
+### One module per stage is not decoration
+
+The core invariant is a rule about *what may cross a stage boundary*. File
+boundaries make a violation visible in a diff. Stages 1, 4 and 5 import no model
+client, and that is the property being protected — not tidiness.
+
+### Import cost is deliberate too
+
+`qatf.cli` pulls in neither pydantic nor fastapi; there is a check for this in
+the smoke suite. `faster_whisper` and the provider SDKs are imported *inside* the
+functions that use them, so:
+
+- the CLI starts fast and works with no API extras installed
+- `pip install -e ".[api,anthropic]"` does not drag in the OpenAI SDK
+- generating the OpenAPI schema never loads a 3 GB model runtime
+
+---
+
+## Layout
+
+Every module lives in a subpackage. Only `__init__.py` and `__main__.py` sit
+loose at the package top level.
+
+```text
+qatf/
+  core/            depends on nothing. imports no pipeline, no jobs, no HTTP
+    config.py      Settings, read from the environment once
+    constants.py   product decisions (9:16, caption budget, snap margins)
+    dotenv.py      hand-rolled .env parser; the real environment always wins
+    errors.py      QatfError hierarchy, each carrying its HTTP status
+    types.py       Word, Transcript, Clip — plain dataclasses
+    utils.py       subprocess, timestamps, slugs, logging
+  pipeline/        the five stages, one module each. the ONLY pipeline logic
+    audio.py       1.  demux                    ffmpeg
+    asr.py         2.  transcribe + word times  faster-whisper
+    fixups.py      2b. spelling substitutions   text only, never timestamps
+    select.py      3.  pick clips               LLM
+    cuts.py        4.  snap to word bounds      deterministic
+    captions.py    5a. ASS generation           deterministic
+    encode.py      5b. reframe + burn + encode  ffmpeg
+  llm/             stage 3 providers — the only swappable part of the pipeline
+    base.py        the contract: complete_json + declared Capabilities
+    claude.py      Anthropic Messages API, official SDK
+    openai_compat.py  everything speaking /v1/chat/completions
+    presets.py     named endpoints: openai kimi glm ollama vllm openrouter
+  jobs/            knows nothing about HTTP
+    model.py       Job record, JobState, on-disk layout
+    store.py       persistence, accessors, the thread pool
+    worker.py      what a job actually runs
+  api/             endpoints only
+    __init__.py    create_app, the OpenAPI description
+    deps.py        shared dependencies and the media-root boundary
+    openapi.py     reusable failure declarations for the schema
+    schemas.py     pydantic wire contract
+    routers/       meta.py jobs.py plan.py outputs.py
+  cli/
+    parser.py      the argument surface
+    runner.py      preflight + the run flow
+qatf.py            legacy shim for `python qatf.py`
+tests/             smoke_pipeline.py, smoke_llm.py, smoke_api.py, _harness.py
+```
+
+The package directory **shadows the sibling `qatf.py`** on import — Python's path
+finder checks directories before same-named modules — which is what stops the
+legacy shim importing itself. Don't add a third `qatf.py` inside the package.
+
+---
+
+## Stage 2 — device selection
+
+`--device auto` (the default) asks CTranslate2 how many CUDA devices it can use
+and picks `cuda` if any, `cpu` otherwise. **Naming a device explicitly is honoured
+and will not fall back** — asking for `cuda` and silently getting `cpu` turns a
+benchmark into a lie.
+
+Availability and usability are separate questions, so there are two layers:
+
+```mermaid
+flowchart TD
+    R["resolve_device()"] -->|"asks CTranslate2,<br/>not nvidia-smi"| D{usable device?}
+    D -->|yes| L["load_model()"]
+    D -->|no| CPU[cpu]
+    L -->|OOM, no kernels| F{requested?}
+    F -->|auto| CPU2["cpu — reason logged"]
+    F -->|explicit cuda| E[raise]
+    L -->|ok| G[cuda]
+```
+
+- **`resolve_device()`** asks CTranslate2, not `nvidia-smi`. A card the installed
+  CTranslate2 cannot target (compute capability, driver mismatch) is not a usable
+  device, and only the engine knows that.
+- **`load_model()`** wraps the actual model construction, because a device can
+  pass the availability check and still fail to load — OOM, or a build with no
+  kernels for that architecture.
+
+The device actually used is recorded on the `Transcript`, echoed in the job record
+and `GET /jobs/{id}`, and reported up front by `/healthz`. It is deliberately
+**not** part of the transcript cache key: a CPU and a GPU transcript of the same
+audio are interchangeable enough that re-transcribing after a fallback would be
+waste.
+
+---
+
+## Stage 2 — the transcript cache
+
+```text
+<work>/words-<model>-<lang>.json
+```
+
+Delete it to re-transcribe; otherwise iterating on clip selection is free.
+
+**In the key:** the Whisper size, the forced language, the hotword vocabulary and
+the initial prompt. Keying on the output directory alone silently reused an
+English transcript after `--language ar`.
+
+**Not in the key:** the device (see above), and `--fixups` — substitutions are
+applied *on read*, not baked in, so editing the map never orphans the cache and
+never changes a timestamp.
+
+---
+
+## Stage 5 — reframe
+
+```mermaid
+flowchart LR
+    subgraph crop["crop — default"]
+        C1["3840×2160"] --> C2["centre slice<br/>1215×2160"] --> C3["1080×1920<br/>near-native"]
+    end
+    subgraph blur["blur"]
+        B1["3840×2160"] --> B2["scale to 1080 wide<br/>1080×608"] --> B3["1080×1920 frame<br/>subject is ⅓ of height"]
+    end
+```
+
+On a 16:9 source, `blur` scales the whole frame to 1080 wide — a 3840×2160 source
+becomes **1080×608** sitting in a 1920-tall frame, so the subject occupies a third
+of the height at a fifth of its original resolution. `crop` takes a 1215×2160
+centre slice and scales it to 1080×1920: nearly native, full frame.
+
+Measured on the same clip at the same CRF, **crop carries 2.1× the bitrate** —
+there is genuinely that much more detail to encode.
+
+`crop` is the default and is right for a centred talking head. Reach for `blur`
+only when the framing genuinely needs the full width, and know what it costs.
+
+Neither mode tracks the subject. See [Open risks](#open-risks) below.
+
+---
+
+## The job model
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> extracting
+    extracting --> transcribing
+    transcribing --> selecting
+    selecting --> planned
+    planned --> rendering: auto_render, or POST /render
+    rendering --> done
+    planned --> planned: PUT /plan
+    done --> rendering: POST /render
+    queued --> cancelled
+    extracting --> failed
+    transcribing --> failed
+    selecting --> failed
+    rendering --> cancelled
+    done --> [*]
+```
+
+`auto_render: false` stops at `planned`. Everything from `planned` onwards costs
+no model call and no re-transcription, which is what makes the hand-edit round
+trip cheap.
+
+### Three things it deliberately does not do
+
+Given the dependency budget — a thread pool, one JSON file per job, no broker and
+no database — know these before promising anything:
+
+1. **Jobs do not survive a restart.** State persists, the worker does not. On
+   startup anything left running is marked `failed: interrupted by a server
+   restart`. That is honest, not a bug — but it is the first thing to fix if this
+   ever runs behind a real deployment.
+2. **Cancellation is cooperative.** The flag is checked between stages
+   (`store.checkpoint`) and between clips (`should_stop`). It cannot interrupt an
+   ffmpeg or Whisper call already in flight.
+3. **`QATF_WORKERS` defaults to 1.** Two concurrent `large-v3` loads fight over
+   the same GPU. Raise it only for CPU-bound render-only work.
+
+### The media-root boundary
+
+`media_root` is a security boundary, not a convenience: without it a `POST /jobs`
+body naming `../../etc/passwd` would transcribe any file the process can read.
+Absolute paths must still resolve inside it. Download names are resolved the same
+way, inside the job's own output directory.
+
+---
+
+## Error handling
+
+Every deliberate failure is a `QatfError` subclass carrying its own
+`status_code`. A single exception handler in `create_app` maps it. Routers never
+hand-map a domain failure to `HTTPException`, which is how HTTP concerns stay out
+of the pipeline entirely.
+
+A bare `RuntimeError` escaping the pipeline means something was not thought
+through — the API surfaces it as a 500 rather than pretending it was a client
+mistake.
+
+---
+
+## Open risks
+
+In priority order. See [quality.md](quality.md) for what has been measured.
+
+**1 · Arabic — shaping is answered, timing is not.** RTL rendering was broken and
+is now fixed and verified (see
+[troubleshooting.md](troubleshooting.md#the-rtl-caption-bug)). But Whisper's
+*word timestamp accuracy* on Arabic feeds `snap` directly, so it degrades cut
+quality and not just captions — and it is still unmeasured. Fonts are a live
+hazard too: libass falls back silently, which is how you ship 50 clips in the
+wrong typeface.
+
+**2 · Reframing is static.** `crop` is a fixed centre crop; `blur` is
+scale-to-fit. Neither tracks the subject. Real auto-reframe means sampling face
+positions (MediaPipe, 1–2 fps), smoothing the x-centre and driving
+`crop=x='...'` with a piecewise expression or `sendcmd`. Deliberately deferred: a
+perfectly tracked bad clip is still a bad clip. Selection quality first.
+
+**3 · Missing basics.** No loudness normalisation (`loudnorm` is a one-line filter
+add and the highest value-per-effort item here), no silence trimming, no
+scene-change detection.
+
+Related and already visible: `slugify` is ASCII-only, so an all-Arabic title
+produces `02-clip.mp4`. Fine while filenames are internal; not fine once a user
+sees them.

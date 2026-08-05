@@ -1,0 +1,303 @@
+"""Stage 2 — transcription with word timestamps.
+
+This is where every real timing in the system comes from. Stage 4 snaps onto
+these and nothing else.
+
+Device selection is two-layered on purpose. `resolve_device` asks CTranslate2
+whether a usable CUDA device exists, which is what decides the log message and
+`/healthz`. `load_model` then wraps the actual model construction, because
+availability and usability are different things: a driver mismatch, an unsupported
+compute capability, or an out-of-memory GPU all report a device and then fail on
+load. Only the second layer can catch those.
+
+UNVERIFIED: `model.transcribe`'s exact `info` attributes and `WhisperModel`
+kwargs are from documentation, not from a run.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+from ..core.errors import SeedTooLong
+from ..core.types import Transcript, Word, words_from_dicts, words_to_dicts
+from ..core.utils import log, slugify
+
+DEVICES = ("auto", "cuda", "cpu")
+
+#: int8 on CPU, float16 on GPU. CTranslate2 falls back internally if a GPU
+#: cannot do float16, so this does not need per-architecture special casing.
+_COMPUTE = {"cuda": "float16", "cpu": "int8"}
+
+#: models heavy enough that CPU inference is painful rather than merely slower
+_HEAVY = ("large", "medium")
+
+#: Whisper's decoder context is 448 tokens and the prompt/hotwords share a
+#: fraction of it. Overrun it and faster-whisper dies with the deeply unhelpful
+#: "ValueError: The maximum decoding length must be > 0" — nothing names the
+#: vocabulary as the cause. Conservative character budget; Arabic and other
+#: non-Latin scripts run 2-3 chars per token, so this errs small on purpose.
+HOTWORD_CHAR_BUDGET = 300
+PROMPT_CHAR_BUDGET = 800
+
+
+def cuda_device_count() -> int:
+    """Usable CUDA devices according to CTranslate2 — the engine faster-whisper
+    actually runs on. `nvidia-smi` seeing a card is not the same question."""
+    try:
+        import ctranslate2
+    except ImportError:
+        return 0
+    try:
+        return int(ctranslate2.get_cuda_device_count())
+    except Exception:                       # noqa: BLE001 — any failure means unusable
+        return 0
+
+
+def compute_type_for(device: str) -> str:
+    return _COMPUTE.get(device, "int8")
+
+
+def resolve_device(requested: str = "auto") -> str:
+    """`auto` prefers CUDA and falls back to CPU. An explicit device is honoured
+    as written — asking for `cuda` and silently getting `cpu` would turn a
+    20-minute benchmark into a lie."""
+    if requested not in DEVICES:
+        raise ValueError(f"unknown device {requested!r}, expected one of {DEVICES}")
+    if requested != "auto":
+        return requested
+    return "cuda" if cuda_device_count() > 0 else "cpu"
+
+
+def load_model(model_size: str, device: str, requested: str = "auto"):
+    """Construct a WhisperModel, falling back to CPU when a GPU load fails.
+
+    The fallback applies only when the device was auto-selected. If the caller
+    named `cuda` explicitly, the failure is raised — they asked a specific
+    question and deserve the real answer."""
+    from faster_whisper import WhisperModel
+
+    try:
+        return WhisperModel(model_size, device=device,
+                            compute_type=compute_type_for(device)), device
+    except Exception as exc:                # noqa: BLE001 — CUDA failures are not one type
+        if device != "cuda" or requested == "cuda":
+            raise
+        log(f"      GPU reported available but would not load ({type(exc).__name__}: "
+            f"{exc}); falling back to CPU")
+        return WhisperModel(model_size, device="cpu",
+                            compute_type=compute_type_for("cpu")), "cpu"
+
+
+#: handles from os.add_dll_directory must stay alive — the directory is removed
+#: from the search path when the handle is garbage-collected
+_DLL_HANDLES: list = []
+
+
+def register_cuda_dlls() -> int:
+    """Windows: make pip-installed CUDA runtime libraries findable.
+
+    `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` puts the DLLs under
+    site-packages/nvidia/*/bin, which is NOT on the default DLL search path.
+    PyTorch registers those directories on import; CTranslate2 does not — so
+    without this the libraries are installed and still fail to load with
+    'cublas64_12.dll is not found'.
+
+    BOTH mechanisms are needed, and this is the part that is easy to get wrong:
+    `os.add_dll_directory` only affects loads that go through Python's own
+    LoadLibraryEx call, which covers extension modules. CTranslate2 resolves
+    cuBLAS from inside its C++ layer with a plain LoadLibrary, and that searches
+    PATH. Registering the directory without also prepending PATH looks correct
+    and changes nothing. Returns how many directories were added."""
+    if os.name != "nt" or _DLL_HANDLES:
+        return len(_DLL_HANDLES)
+    import site
+
+    found: list[str] = []
+    roots = [*site.getsitepackages(), site.getusersitepackages()]
+    for root in roots:
+        nvidia = Path(root) / "nvidia"
+        if not nvidia.is_dir():
+            continue
+        for lib_dir in sorted(nvidia.glob("*/bin")):
+            if any(lib_dir.glob("*.dll")):
+                found.append(str(lib_dir))
+                try:
+                    _DLL_HANDLES.append(os.add_dll_directory(str(lib_dir)))
+                except OSError:             # directory vanished mid-scan
+                    pass
+    if found:
+        os.environ["PATH"] = os.pathsep.join([*found, os.environ.get("PATH", "")])
+    return len(found)
+
+
+def _transcribe_on(wav: Path, model_size: str, device: str,
+                   language: str | None,
+                   initial_prompt: str | None = None,
+                   hotwords: str | None = None) -> Transcript:
+    """Build the model AND fully consume the segment generator.
+
+    Consuming inside this function is the whole point. `WhisperModel(...)`
+    constructs happily on a GPU whose CUDA libraries are missing — faster-whisper
+    initialises lazily, so the real failure (`cublas64_12.dll is not found`)
+    surfaces on the first encode, which happens while iterating `segments`. A
+    guard around construction alone never sees it."""
+    if device == "cuda":
+        register_cuda_dlls()
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(model_size, device=device,
+                         compute_type=compute_type_for(device))
+    segments, info = model.transcribe(
+        str(wav),
+        language=language,          # None => autodetect; "ar" / "en" to force
+        word_timestamps=True,
+        vad_filter=True,            # drops long silences, big speed win
+        vad_parameters={"min_silence_duration_ms": 500},
+        # `hotwords` biases vocabulary on EVERY window; `initial_prompt` seeds
+        # only the first. On a 12-minute Egyptian Arabic file, measured over the
+        # whole transcript:
+        #     baseline         21 wrong,  8 right, 13 wrong after 300s
+        #     initial_prompt   16 wrong, 12 right, 16 wrong after 300s
+        #     hotwords          7 wrong, 22 right,  6 wrong after 300s
+        # initial_prompt looks fine on a short clip and then decays — measuring
+        # it on a slice that starts where the prompt was applied flatters it
+        # badly. Combining both scored no better and dropped 118 words.
+        initial_prompt=initial_prompt or None,
+        hotwords=hotwords or None,
+    )
+
+    words: list[Word] = []
+    for seg in segments:  # generator — this is where the work actually happens
+        for w in (seg.words or []):
+            token = w.word.strip()
+            if token:
+                words.append(Word(token, float(w.start), float(w.end)))
+
+    return Transcript(
+        words=words,
+        language=getattr(info, "language", None),
+        language_probability=getattr(info, "language_probability", None),
+        device=device,
+        compute_type=compute_type_for(device),
+    )
+
+
+def check_seed_budget(initial_prompt: str | None, hotwords: str | None) -> None:
+    """Reject an over-long vocabulary before Whisper does, with a usable message.
+
+    Whisper spends part of its 448-token context on the prompt and hotwords. Go
+    over and decoding has no room left, which surfaces as `ValueError: The
+    maximum decoding length must be > 0` from deep inside faster-whisper —
+    a message that names neither the vocabulary nor the limit."""
+    if hotwords and len(hotwords) > HOTWORD_CHAR_BUDGET:
+        raise SeedTooLong(
+            f"--vocab is {len(hotwords)} characters ({len(hotwords.split())} "
+            f"terms); the budget is ~{HOTWORD_CHAR_BUDGET}. Whisper shares a "
+            f"448-token context between the vocabulary and decoding, so an "
+            f"over-long list leaves no room to transcribe. Keep the terms the "
+            f"model actually gets wrong and drop the rest."
+        )
+    if initial_prompt and len(initial_prompt) > PROMPT_CHAR_BUDGET:
+        raise SeedTooLong(
+            f"--prompt is {len(initial_prompt)} characters; the budget is "
+            f"~{PROMPT_CHAR_BUDGET}."
+        )
+
+
+def transcribe(wav: Path, model_size: str, device: str,
+               language: str | None,
+               initial_prompt: str | None = None,
+               hotwords: str | None = None) -> Transcript:
+    """`device` may be auto/cuda/cpu. The device actually used is recorded on the
+    returned Transcript, so callers report what happened rather than what was
+    asked for.
+
+    A CUDA failure falls back to CPU only when the device was auto-selected; an
+    explicit `--device cuda` raises, because the caller asked a specific
+    question. The fallback wraps the whole transcription, not just the model
+    load — see `_transcribe_on`."""
+    check_seed_budget(initial_prompt, hotwords)
+    resolved = resolve_device(device)
+    if resolved == "cpu" and model_size.startswith(_HEAVY):
+        log(f"      running {model_size} on CPU — this is slow; "
+            f"--whisper small (or base) is far quicker if quality allows")
+
+    try:
+        return _transcribe_on(wav, model_size, resolved, language,
+                              initial_prompt, hotwords)
+    except Exception as exc:                # noqa: BLE001 — CUDA failures are not one type
+        if resolved != "cuda" or device == "cuda":
+            raise
+        log(f"      GPU transcription failed ({type(exc).__name__}: {exc})")
+        log("      falling back to CPU. For GPU speed install the CUDA runtime: "
+            "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
+        return _transcribe_on(wav, model_size, "cpu", language,
+                              initial_prompt, hotwords)
+
+
+def cache_path(work: Path, model_size: str, language: str | None,
+               initial_prompt: str | None = None,
+               hotwords: str | None = None) -> Path:
+    """The cache key includes the model, the forced language, AND the prompt.
+
+    Keying on the output directory alone silently reused an English transcript
+    after `--language ar` — the one axis most likely to be wrong. The prompt
+    belongs in the key for the same reason: it changes the transcript, so a
+    cache hit across two different prompts would quietly serve the old wording
+    and make the prompt look like it did nothing."""
+    stem = f"words-{slugify(model_size)}-{language or 'auto'}"
+    seed = f"{initial_prompt or ''}\x00{hotwords or ''}"
+    if seed.strip("\x00"):
+        stem += "-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    return work / f"{stem}.json"
+
+
+def read_cache(path: Path) -> Transcript:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):          # pre-0.2 format: a bare word list
+        raw = {"words": raw}
+    return Transcript(
+        words=words_from_dicts(raw.get("words", [])),
+        language=raw.get("language"),
+        language_probability=raw.get("language_probability"),
+        device=raw.get("device"),
+        compute_type=raw.get("compute_type"),
+    )
+
+
+def write_cache(path: Path, transcript: Transcript) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "language": transcript.language,
+                "language_probability": transcript.language_probability,
+                # recorded, but deliberately NOT part of the cache key: a CPU and
+                # a GPU transcript of the same audio are interchangeable enough
+                # that re-transcribing on fallback would be pure waste
+                "device": transcript.device,
+                "compute_type": transcript.compute_type,
+                "words": words_to_dicts(transcript.words),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
+                      language: str | None,
+                      initial_prompt: str | None = None,
+                      hotwords: str | None = None) -> tuple[Transcript, bool]:
+    """Returns (transcript, was_cached). Delete the cache file to re-transcribe."""
+    cache = cache_path(work, model_size, language, initial_prompt, hotwords)
+    if cache.exists():
+        return read_cache(cache), True
+
+    transcript = transcribe(wav, model_size, device, language,
+                            initial_prompt, hotwords)
+    write_cache(cache, transcript)
+    return transcript, False

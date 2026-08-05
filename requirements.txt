@@ -1,0 +1,7 @@
+# Dependencies are declared in pyproject.toml. This file exists so that
+#   pip install -r requirements.txt
+# still does the right thing. ffmpeg must be on PATH either way.
+#
+# CLI only:   pip install -e .
+# CLI + API:  pip install -e ".[api]"
+-e .[api]
