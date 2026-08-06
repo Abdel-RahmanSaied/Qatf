@@ -2,6 +2,12 @@
 
 Both filtergraphs are verified to produce 1080x1920 with correct duration.
 Neither tracks the subject; see "Reframing is static" in CLAUDE.md.
+
+Performance, measured (4 clips at 1080x1920, captions burned in, 16 cores):
+the encoder is the only thing worth tuning here. The filter chain is noise —
+the `ass` filter is 2.1% of a render, `flags=lanczos` costs nothing over
+bicubic, `+faststart` is free — and running clips concurrently returns only
+1.21x, because the encoder already saturates the machine. See `PRESETS`.
 """
 
 from __future__ import annotations
@@ -47,6 +53,34 @@ CODECS = {
     },
 }
 
+#: H.265: ~40% smaller than H.264 at equal quality, and the better archival
+#: choice. It costs encode time — measured 3.06x libx264 at the same preset —
+#: which is why `--preset` matters more now than it did.
+#:
+#: YouTube accepts HEVC. Some Instagram and TikTok upload paths still prefer
+#: H.264, so `--codec h264` remains one flag away.
+DEFAULT_CODEC = "h265"
+
+#: Encoder speed presets, slowest first. Both x264 and x265 take these names.
+#:
+#: The one real performance lever in stage 5. Measured at 1080x1920:
+#:
+#:      preset      h264     h265    h265/h264
+#:      medium     2.67s    8.18s      3.06x
+#:      fast       2.42s    5.71s      2.36x
+#:      faster     2.01s    5.13s      2.55x
+#:      veryfast   1.57s    5.09s      3.25x
+#:
+#: So `veryfast` is 1.61x faster than `medium` on h265 — the lever is worth
+#: more now that h265 is the default.
+PRESETS = ("veryslow", "slower", "slow", "medium", "fast", "faster",
+           "veryfast", "superfast", "ultrafast")
+
+#: `medium` stays the default deliberately: a clip is rendered once and watched
+#: many times, so the default should not trade quality for minutes. Reach for a
+#: faster preset while iterating on framing, fonts or captions.
+DEFAULT_PRESET = "medium"
+
 
 def parse_resolution(value: str) -> tuple[int, int] | None:
     """`1080p` / `4k` / `1216x2160` -> (w, h). `source` -> None (resolve later)."""
@@ -89,7 +123,11 @@ def native_size(src_w: int, src_h: int, mode: str) -> tuple[int, int]:
 def filtergraph(mode: str, ass_path: Path | None,
                 width: int = TARGET_W, height: int = TARGET_H) -> str:
     """9:16 reframe. 'crop' for centred talking heads, 'blur' when the subject
-    moves or the framing is wide."""
+    moves or the framing is wide.
+
+    `blur` measured 1.8x the render time of `crop` — `gblur=sigma=32` over a
+    full frame is the expense — for a result that also carries ~3x fewer subject
+    pixels. It is slower AND softer; pick it only when the framing needs it."""
     if mode == "crop":
         base = (
             f"[0:v]crop=w='min(iw,ih*9/16)':h=ih:x='(iw-out_w)/2':y=0,"
@@ -109,8 +147,14 @@ def filtergraph(mode: str, ass_path: Path | None,
     if ass_path is None:
         return base + ";[v0]null[v]"
 
-    # ffmpeg filter args need ':' and '\' escaped inside the graph
-    escaped = str(ass_path).replace("\\", "/").replace(":", r"\:")
+    # ffmpeg filter args need ':' and '\' escaped inside the graph. The value is
+    # single-quoted, and inside single quotes ffmpeg recognises no escape except
+    # the close-escape-reopen idiom — so a path containing an apostrophe
+    # ("-o Ahmed's clips/") would otherwise terminate the quoting early and the
+    # rest of the path would be parsed as filtergraph syntax.
+    escaped = (str(ass_path).replace("\\", "/")
+               .replace("'", r"'\''")
+               .replace(":", r"\:"))
     return base + f";[v0]ass='{escaped}'[v]"
 
 
@@ -118,8 +162,13 @@ def render(video: Path, clip: Clip, ass_path: Path | None,
            out_path: Path, mode: str, crf: int = 20,
            fps: float | None = None,
            width: int = TARGET_W, height: int = TARGET_H,
-           codec: str = "h264", ten_bit: bool = False) -> Path:
+           codec: str = DEFAULT_CODEC, ten_bit: bool = False,
+           preset: str = DEFAULT_PRESET) -> Path:
     """Encode one clip.
+
+    `preset` is the encoder speed/quality trade and the only knob that
+    measurably moves render time — see PRESETS. It matters more since h265
+    became the default, because libx265 is ~3x libx264 at the same preset.
 
     `fps=None` preserves the source frame rate, which is the right default.
     Forcing a round 30 on NTSC-rate footage (30000/1001 = 29.97) makes ffmpeg
@@ -131,6 +180,8 @@ def render(video: Path, clip: Clip, ass_path: Path | None,
     like sky and skin, even though the output chroma is still 4:2:0."""
     if codec not in CODECS:
         raise ValueError(f"unknown codec {codec!r}, expected one of {tuple(CODECS)}")
+    if preset not in PRESETS:
+        raise ValueError(f"unknown preset {preset!r}, expected one of {PRESETS}")
     spec = CODECS[codec]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -142,7 +193,7 @@ def render(video: Path, clip: Clip, ass_path: Path | None,
         "-t", f"{clip.duration:.3f}",
         "-filter_complex", filtergraph(mode, ass_path, width, height),
         "-map", "[v]", "-map", "0:a?",
-        "-c:v", spec["encoder"], "-preset", "medium", "-crf", str(crf),
+        "-c:v", spec["encoder"], "-preset", preset, "-crf", str(crf),
         "-pix_fmt", spec["pix_fmt_10bit"] if ten_bit else spec["pix_fmt"],
         "-profile:v", spec["profile_10bit"] if ten_bit else spec["profile"],
         *spec["extra"],
@@ -167,10 +218,15 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
                captions: bool = True, per_line: int = CAPTION_MAX_WORDS,
                crf: int = 20, fps: float | None = None,
                width: int = TARGET_W, height: int = TARGET_H,
-               codec: str = "h264", ten_bit: bool = False,
+               codec: str = DEFAULT_CODEC, ten_bit: bool = False,
+               preset: str = DEFAULT_PRESET,
                on_clip: Callable[[int, int, Clip, Path], None] | None = None,
                should_stop: Callable[[], bool] | None = None) -> list[Path]:
     """Render a whole plan.
+
+    Sequential on purpose. Rendering clips concurrently measured 1.21x on 16
+    cores — the encoder already saturates them — which does not pay for a pool
+    that would fight QATF_WORKERS, GPU memory, and the cancel checkpoint below.
 
     `should_stop` is checked between clips only — it cannot interrupt an ffmpeg
     call already in flight."""
@@ -184,7 +240,7 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
                if captions else None)
         out = render(video, clip, ass, out_dir / f"{stem}.mp4", mode,
                      crf=crf, fps=fps, width=width, height=height,
-                     codec=codec, ten_bit=ten_bit)
+                     codec=codec, ten_bit=ten_bit, preset=preset)
         outputs.append(out)
         if on_clip:
             on_clip(i, total, clip, out)

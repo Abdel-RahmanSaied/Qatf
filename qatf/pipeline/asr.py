@@ -16,6 +16,7 @@ kwargs are from documentation, not from a run.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -26,6 +27,24 @@ from ..core.types import Transcript, Word, words_from_dicts, words_to_dicts
 from ..core.utils import log, slugify
 
 DEVICES = ("auto", "cuda", "cpu")
+
+#: Model names faster-whisper resolves to a published checkpoint.
+#:
+#: This is an allowlist, and it matters at a trust boundary. `WhisperModel`
+#: accepts a "size OR path": anything not in this set is treated as a HuggingFace
+#: repo id or a local directory, so an unvalidated name lets a caller make the
+#: server fetch an arbitrary repo and hand its weights to CTranslate2 — remote
+#: fetch plus untrusted native deserialisation, chosen over HTTP.
+#:
+#: The CLI is deliberately NOT restricted to this list. A local user pointing at
+#: their own converted model is legitimate and crosses no boundary; a `POST /jobs`
+#: body does. See `qatf.api.schemas.JobOptions`.
+MODEL_SIZES = frozenset({
+    "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+    "medium", "medium.en", "large", "large-v1", "large-v2", "large-v3",
+    "large-v3-turbo", "turbo", "distil-small.en", "distil-medium.en",
+    "distil-large-v2", "distil-large-v3",
+})
 
 #: int8 on CPU, float16 on GPU. CTranslate2 falls back internally if a GPU
 #: cannot do float16, so this does not need per-architecture special casing.
@@ -43,9 +62,14 @@ HOTWORD_CHAR_BUDGET = 300
 PROMPT_CHAR_BUDGET = 800
 
 
+@functools.lru_cache(maxsize=1)
 def cuda_device_count() -> int:
     """Usable CUDA devices according to CTranslate2 — the engine faster-whisper
-    actually runs on. `nvidia-smi` seeing a card is not the same question."""
+    actually runs on. `nvidia-smi` seeing a card is not the same question.
+
+    Cached: the answer cannot change within a process, and `/healthz` asks it
+    twice per request (once directly, once inside `resolve_device`) on an
+    endpoint that gets polled hard."""
     try:
         import ctranslate2
     except ImportError:
@@ -248,7 +272,14 @@ def cache_path(work: Path, model_size: str, language: str | None,
     belongs in the key for the same reason: it changes the transcript, so a
     cache hit across two different prompts would quietly serve the old wording
     and make the prompt look like it did nothing."""
-    stem = f"words-{slugify(model_size)}-{language or 'auto'}"
+    # BOTH components are slugified, and the language one is a security fix, not
+    # tidiness: `language` is a free-form caller-supplied string, and
+    # `work / f"words-large-v3-{language}.json"` with language="../../../x"
+    # resolves outside the work directory. write_cache then mkdirs the parent and
+    # writes there — an arbitrary file write chosen by a POST body. slugify
+    # leaves a real language code untouched ("ar" -> "ar"), so no existing cache
+    # is invalidated.
+    stem = f"words-{slugify(model_size)}-{slugify(language) if language else 'auto'}"
     seed = f"{initial_prompt or ''}\x00{hotwords or ''}"
     if seed.strip("\x00"):
         stem += "-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]

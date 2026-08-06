@@ -23,14 +23,17 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .. import __version__
 from ..core.config import Settings
 from ..core.dotenv import find_and_load
 from ..core.errors import QatfError
+from ..core.utils import prime_ffmpeg_probe
 from ..jobs import JobStore
 from . import routers
+from .schemas import ErrorResponse
 
 __all__ = ["app", "create_app"]
 
@@ -167,6 +170,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.store = JobStore(settings.data_dir, max_workers=settings.workers,
                                    settings=settings)
+        # Probing ffmpeg spawns a process. Do it once here so no request ever
+        # pays for it — /healthz is polled far harder than anything else and
+        # measured p99 > 1s when it probed inline. See core.utils.
+        prime_ffmpeg_probe()
         yield
         app.state.store.shutdown()
 
@@ -203,8 +210,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         meaningful exception instead of hand-mapping every case to HTTPException."""
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(request: Request,
+                                exc: RequestValidationError) -> JSONResponse:
+        """Report where the body was wrong and why — never what was sent.
+
+        FastAPI's default 422 embeds the offending input verbatim, which is wrong
+        here twice over:
+
+        * **It can fail to serialise.** A body containing `1e999` is rejected
+          correctly, then the error detail holds an `inf`, and encoding *that*
+          raises — so a crafted body turns a clean 422 into an unhandled 500.
+        * **It echoes caller input back.** Combined with a client that renders
+          `detail` as HTML, that is a reflected-content bug this API has no
+          reason to hand anyone.
+
+        It also makes the documented contract true: `ErrorResponse` declares
+        `detail` as a string, and the default 422 returned a list of objects —
+        so a generated client broke on the most common failure of all.
+        """
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'][1:]) or 'body'}: {err['msg']}"
+            for err in exc.errors()
+        )
+        return JSONResponse(status_code=422,
+                            content={"detail": problems or "invalid request body"})
+
     for router in routers.ALL:
-        app.include_router(router)
+        # every route can 422, and the shape is the one above — not FastAPI's
+        # default HTTPValidationError, which this app does not emit
+        app.include_router(router, responses={
+            422: {"model": ErrorResponse, "description": "the request failed validation"},
+        })
 
     return app
 

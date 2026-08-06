@@ -7,6 +7,8 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
+import time
 
 from .errors import CommandFailed, FFmpegNotFound
 
@@ -72,12 +74,84 @@ def probe_video(path) -> dict:
             f"could not read dimensions from {path}: {out.stdout!r}") from exc
 
 
-def ffmpeg_available() -> bool:
+#: `/healthz` answers this on every request, and `check_ffmpeg` spawns a
+#: process. Measured under concurrent polling that put /healthz at p99 > 1s —
+#: twenty times the endpoint that does real work — because process creation
+#: dominates and serialises behind the threadpool.
+#:
+#: ffmpeg does not appear and disappear mid-run, so the answer is cached. The
+#: TTL is short rather than permanent so a health check still self-heals if
+#: ffmpeg is installed while the server is up.
+#: `/healthz` answers this on every request, and `check_ffmpeg` spawns a
+#: process. Measured under concurrent polling that put /healthz at p99 > 1s —
+#: twenty times `GET /jobs/{id}`, which does real work.
+#:
+#: Two obvious fixes both failed, which is why this is written the way it is:
+#:
+#:   - A plain TTL cache still lets every thread arriving on a COLD cache spawn
+#:     its own probe. 24 connections pointed at /healthz produced 24 concurrent
+#:     spawns; p99 114ms.
+#:   - Putting a lock around the probe made it WORSE (p99 199ms, max 357ms):
+#:     one spawn instead of 24, but now 23 threads block on it. Serialising a
+#:     slow thing is not the same as removing it.
+#:
+#: So the probe never runs on the request path. `create_app` primes it at
+#: startup, and an expired entry is served stale while a daemon thread
+#: refreshes — the answer is a health flag, and a 30-second-old one is worth
+#: far more than a fresh one that costs a request 300ms.
+FFMPEG_PROBE_TTL = 30.0
+_ffmpeg_probe: tuple[float, bool] | None = None
+_ffmpeg_refreshing = False
+_ffmpeg_lock = threading.Lock()
+
+
+def _probe_ffmpeg() -> bool:
     try:
         check_ffmpeg()
         return True
     except FFmpegNotFound:
         return False
+
+
+def _refresh_ffmpeg() -> None:
+    global _ffmpeg_probe, _ffmpeg_refreshing
+    try:
+        ok = _probe_ffmpeg()
+        _ffmpeg_probe = (time.monotonic(), ok)
+    finally:
+        with _ffmpeg_lock:
+            _ffmpeg_refreshing = False
+
+
+def prime_ffmpeg_probe() -> bool:
+    """Run the probe once, synchronously. Call at startup, off the request path."""
+    global _ffmpeg_probe
+    ok = _probe_ffmpeg()
+    _ffmpeg_probe = (time.monotonic(), ok)
+    return ok
+
+
+def ffmpeg_available(max_age: float = FFMPEG_PROBE_TTL) -> bool:
+    """Whether ffmpeg is genuinely runnable. Never blocks once primed.
+
+    `max_age=0` forces a synchronous probe, which is what a test wants."""
+    global _ffmpeg_refreshing
+    if max_age <= 0:
+        return prime_ffmpeg_probe()
+
+    cached = _ffmpeg_probe
+    if cached is None:                       # not primed — nothing to serve
+        return prime_ffmpeg_probe()
+    if time.monotonic() - cached[0] < max_age:
+        return cached[1]
+
+    # stale: hand back the old answer and refresh behind the caller's back
+    with _ffmpeg_lock:
+        if not _ffmpeg_refreshing:
+            _ffmpeg_refreshing = True
+            threading.Thread(target=_refresh_ffmpeg, name="qatf-ffmpeg-probe",
+                             daemon=True).start()
+    return cached[1]
 
 
 def ts_ass(seconds: float) -> str:

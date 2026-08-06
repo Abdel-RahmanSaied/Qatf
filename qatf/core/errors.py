@@ -86,6 +86,16 @@ class NoTranscript(QatfError):
     status_code = 409
 
 
+class TranscriptStructureChanged(QatfError):
+    """A submitted transcript changed something other than word text.
+
+    Word timings come from the audio and are what every cut point is snapped to.
+    Corrections may change what a caption reads; they may never move a cut. This
+    is the core invariant refusing at the boundary rather than downstream."""
+
+    status_code = 422
+
+
 # -- source resolution -----------------------------------------------------
 
 class SourceNotFound(QatfError):

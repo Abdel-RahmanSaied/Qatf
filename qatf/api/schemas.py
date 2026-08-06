@@ -23,10 +23,25 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..core.constants import CAPTION_MAX_WORDS
 from ..jobs.model import RUNNING_STATE_VALUES, RUNNING_STATES, JobState
 
+# encode holds no heavy imports, so naming these at module level costs nothing
+# and keeps the wire defaults and the pipeline defaults provably identical.
+from ..pipeline.encode import DEFAULT_CODEC, DEFAULT_PRESET, PRESETS
+
+#: Upper bound on any timestamp a caller may send, in seconds — 24 hours. Not a
+#: supported-length claim: it exists so `1e999` and other absurd values are
+#: refused at the boundary instead of reaching ffmpeg as a duration.
+MAX_SECONDS = 86_400.0
+
+#: Upper bound on clips in a hand-edited plan. `JobOptions.clips` caps what the
+#: model may be asked for at 50; without this, `PUT /plan` bypasses that cap
+#: entirely and one request can queue thousands of ffmpeg encodes.
+MAX_PLAN_CLIPS = 100
+
 __all__ = [
-    "JobState", "RUNNING_STATES", "RUNNING_STATE_VALUES",
+    "JobState", "RUNNING_STATES", "RUNNING_STATE_VALUES", "MAX_SECONDS",
     "JobOptions", "JobCreate", "ClipModel", "PlanUpdate", "WordModel",
-    "TranscriptResponse", "ClipOutput", "JobResponse", "JobList",
+    "TranscriptResponse", "TranscriptUpdate",
+    "ClipOutput", "JobResponse", "JobList",
     "ProviderInfo", "Health", "ErrorResponse",
 ]
 
@@ -62,7 +77,8 @@ class JobOptions(BaseModel):
             "hotwords": "بايثون جافاسكريبت باك اند فرونت اند ريأكت",
             "font": "Traditional Arabic",
             "resolution": "1080p",
-            "codec": "h264",
+            "codec": "h265",
+            "preset": "medium",
         }],
     })
 
@@ -82,9 +98,20 @@ class JobOptions(BaseModel):
                     "blur only when the framing genuinely needs the full width.",
     )
     codec: Literal["h264", "h265"] = Field(
-        "h264",
-        description="h265 is ~40% smaller at equal quality but slower to encode "
-                    "and less universally accepted on upload.",
+        DEFAULT_CODEC,
+        description="h265 (the default) is ~40% smaller at equal quality and the "
+                    "better archival choice, but measured ~3x slower to encode "
+                    "than h264 at the same preset — raise `preset` if that "
+                    "matters. Some Instagram and TikTok upload paths still "
+                    "prefer h264.",
+    )
+    preset: str = Field(
+        DEFAULT_PRESET,
+        description="encoder speed/quality trade, and THE lever on render time: "
+                    "veryfast measured 1.6x faster than medium on h265. `medium` "
+                    "is the default because a clip is rendered once and watched "
+                    "many times; use a faster preset while iterating.",
+        examples=["medium", "faster", "veryfast"],
     )
     resolution: str = Field(
         "1080p",
@@ -97,8 +124,11 @@ class JobOptions(BaseModel):
     crf: int = Field(20, ge=0, le=51, description="quality, lower is better")
     whisper: str = Field(
         "large-v3",
-        description="faster-whisper model size. 'small' is far quicker if the "
-                    "quality bar allows.",
+        description="faster-whisper model size, from the published set. 'small' "
+                    "is far quicker if the quality bar allows. Restricted to an "
+                    "allowlist over HTTP: `WhisperModel` treats an unrecognised "
+                    "name as a HuggingFace repo or a local path, so a free string "
+                    "here would let a caller choose what code the server loads.",
         examples=["large-v3", "medium", "small"],
     )
     device: Literal["auto", "cuda", "cpu"] = Field(
@@ -107,7 +137,14 @@ class JobOptions(BaseModel):
                     "device is honoured and will not fall back",
     )
     language: str | None = Field(
-        None, description="e.g. ar, en. omit to autodetect", examples=["ar"])
+        None,
+        description="e.g. ar, en. omit to autodetect",
+        examples=["ar"],
+        # a language tag, not free text: this value is part of the transcript
+        # cache FILENAME, and "../../x" there escapes the work directory
+        pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+        max_length=32,
+    )
     denoise: bool = Field(
         False,
         description="speech-band filter + FFT denoise before transcribing. "
@@ -158,6 +195,15 @@ class JobOptions(BaseModel):
         # into a job, when the worker finally reaches stage 5
         from ..pipeline.encode import parse_resolution
         parse_resolution(self.resolution)
+        # allowlist, not a spelling check — see MODEL_SIZES
+        from ..pipeline.asr import MODEL_SIZES
+        if self.whisper not in MODEL_SIZES:
+            raise ValueError(
+                f"unknown whisper model {self.whisper!r}. Use one of: "
+                f"{', '.join(sorted(MODEL_SIZES))}")
+        if self.preset not in PRESETS:
+            raise ValueError(
+                f"unknown preset {self.preset!r}. Use one of: {', '.join(PRESETS)}")
         return self
 
 
@@ -192,7 +238,11 @@ class ClipModel(BaseModel):
     by hand, leave `snap` on in `PUT /plan` — a typed second is a semantic guess
     and skipping the snap is how clips open mid-syllable."""
 
-    model_config = ConfigDict(json_schema_extra={
+    # allow_inf_nan=False is load-bearing: `1e999` parses as `inf`, which
+    # satisfies `gt=0` and `end > start`, persists into the plan, and reaches
+    # ffmpeg as `-t inf`. MAX_SECONDS bounds the rest — a plan is not the place
+    # to request a 300-hour encode.
+    model_config = ConfigDict(allow_inf_nan=False, json_schema_extra={
         "examples": [{
             "start": 184.32,
             "end": 233.86,
@@ -203,11 +253,16 @@ class ClipModel(BaseModel):
         }],
     })
 
-    start: float = Field(..., ge=0, description="seconds into the source video")
-    end: float = Field(..., gt=0, description="seconds into the source video")
-    title: str = Field("clip", description="used for the output filename (ASCII-slugified)")
-    hook: str = Field("", description="the opening line the model thinks earns attention")
-    why: str = Field("", description="the model's reason for picking this passage")
+    start: float = Field(..., ge=0, le=MAX_SECONDS,
+                         description="seconds into the source video")
+    end: float = Field(..., gt=0, le=MAX_SECONDS,
+                       description="seconds into the source video")
+    title: str = Field("clip", max_length=300,
+                       description="used for the output filename (ASCII-slugified)")
+    hook: str = Field("", max_length=2000,
+                      description="the opening line the model thinks earns attention")
+    why: str = Field("", max_length=2000,
+                     description="the model's reason for picking this passage")
     score: float = Field(0.0, ge=0.0, le=1.0, description="the model's own confidence")
 
     @model_validator(mode="after")
@@ -228,7 +283,9 @@ class PlanUpdate(BaseModel):
         }],
     })
 
-    clips: list[ClipModel] = Field(..., min_length=1)
+    clips: list[ClipModel] = Field(
+        ..., min_length=1, max_length=MAX_PLAN_CLIPS,
+        description="the clips you want, in the order you want them numbered")
     snap: bool = Field(
         True,
         description="re-snap edited boundaries onto Whisper word times. Leave on "
@@ -239,24 +296,31 @@ class PlanUpdate(BaseModel):
 class WordModel(BaseModel):
     """One word with the timings stage 4 cuts on."""
 
-    model_config = ConfigDict(json_schema_extra={
+    model_config = ConfigDict(allow_inf_nan=False, json_schema_extra={
         "examples": [{"text": "بايثون", "start": 184.32, "end": 184.71}],
     })
 
-    text: str
-    start: float = Field(..., description="seconds into the source video")
-    end: float = Field(..., description="seconds into the source video")
+    text: str = Field(..., max_length=500)
+    start: float = Field(..., ge=0, le=MAX_SECONDS,
+                         description="seconds into the source video")
+    end: float = Field(..., ge=0, le=MAX_SECONDS,
+                       description="seconds into the source video")
 
 
 class TranscriptResponse(BaseModel):
-    """The cached transcript. Word timings here are the ONLY acoustic truth in
-    the system — everything stage 4 does is snap to these."""
+    """The transcript as it will be captioned — fixups and per-word corrections
+    already applied, so what you read here is what gets burned in.
+
+    Word timings are the ONLY acoustic truth in the system; everything stage 4
+    does is snap to these. They are reported, never accepted back."""
 
     model_config = ConfigDict(json_schema_extra={
         "examples": [{
             "language": "ar",
             "language_probability": 1.0,
             "word_count": 2841,
+            "edits_applied": 3,
+            "edits_stale": 0,
             "words": [{"text": "بايثون", "start": 184.32, "end": 184.71}],
         }],
     })
@@ -265,7 +329,52 @@ class TranscriptResponse(BaseModel):
     language_probability: float | None = Field(
         None, description="Whisper's confidence in the detected language, 0-1")
     word_count: int
+    edits_applied: int = Field(
+        0, description="per-word corrections currently in effect")
+    edits_stale: int = Field(
+        0,
+        description="corrections that no longer match the word at their index "
+                    "and were therefore SKIPPED, not applied. Non-zero means the "
+                    "transcript moved underneath them — usually a re-transcribe "
+                    "at a different whisper size, or denoise toggled. Re-submit "
+                    "the transcript to rebuild them.",
+    )
     words: list[WordModel]
+
+
+class TranscriptUpdate(BaseModel):
+    """Correct misheard words.
+
+    Send the whole word list back with `text` changed where it is wrong. The
+    submission is diffed against the transcript and stored as an overlay, so this
+    is a wholesale replace: re-submitting the untouched transcript clears every
+    correction.
+
+    **Only `text` may differ.** The word count and every `start`/`end` must match
+    exactly, and a submission that changes either is refused with `422` rather
+    than accepted quietly. Timings come from the audio and are what every cut
+    point is snapped to — a correction can change what a caption reads and can
+    never move a cut. That is also what makes this safe to do after rendering:
+    the cut points are provably identical, so only stage 5 has to run again.
+
+    To split one word into two, put both words in that word's `text`. There is no
+    honest timing to give a word Whisper never heard."""
+
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "words": [
+                {"text": "هو", "start": 204.11, "end": 204.29},
+                {"text": "مين", "start": 204.29, "end": 204.58},
+                {"text": "قال", "start": 204.58, "end": 204.91},
+            ],
+        }],
+    })
+
+    words: list[WordModel] = Field(
+        ..., min_length=1, max_length=200_000,
+        description="the complete word list, in order, with corrected text. The "
+                    "cap is ~20 hours of speech and exists so an oversized body "
+                    "is refused before it is materialised, not after.")
 
 
 class ClipOutput(BaseModel):

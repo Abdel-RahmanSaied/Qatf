@@ -61,6 +61,14 @@ BAD_MEDIA = {415: _error("unsupported video extension",
 BAD_OPTIONS = {422: _error("options is not valid JSON",
                            "options is not valid JSON: Expecting value: line 1 column 1")}
 
+#: A submitted transcript tried to change something other than word text. The
+#: core invariant refusing at the boundary — see `pipeline/edits.py`.
+TIMING_LOCKED = {422: _error(
+    "the submission changed word count or timings",
+    "word 1247 ('من') changed timing 204.290-204.580 -> 204.100-204.600. Word "
+    "timings come from the audio and are not editable — they are what every cut "
+    "point is snapped to.")}
+
 
 def merge(*groups: dict) -> dict:
     """Combine response groups, joining descriptions that share a status code.

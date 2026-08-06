@@ -21,7 +21,16 @@ ENV QATF_DATA_DIR=/data \
     QATF_MEDIA_ROOT=/media \
     QATF_HOST=0.0.0.0 \
     QATF_PORT=8000
-RUN mkdir -p /data /media
+
+# Not root. Stage 1 and stage 5 hand caller-supplied media to ffmpeg, which is a
+# large C parsing surface with a long CVE history — and the API has no auth of
+# its own, so anything in front of it is the only gate. A demuxer bug should not
+# also be a root shell.
+RUN useradd --create-home --uid 10001 qatf \
+ && mkdir -p /data /media \
+ && chown -R qatf:qatf /data /media /app
+USER qatf
+
 VOLUME ["/data", "/media"]
 EXPOSE 8000
 

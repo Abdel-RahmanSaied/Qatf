@@ -28,7 +28,8 @@ qatf/
   pipeline/        the five stages, one module each. the ONLY pipeline logic
     audio.py       1.  demux                    ffmpeg
     asr.py         2.  transcribe + word times  faster-whisper
-    fixups.py      2b. spelling substitutions   text only, never timestamps
+    fixups.py      2b. substitutions by value   text only, never timestamps
+    edits.py       2c. corrections by position  text only, never timestamps
     select.py      3.  pick clips               the configured provider
     cuts.py        4.  snap to word bounds      deterministic
     captions.py    5a. ASS generation           deterministic
@@ -52,7 +53,7 @@ qatf/
     parser.py      the argument surface
     runner.py      preflight + the run flow
 qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_pipeline.py, smoke_llm.py, smoke_api.py, _harness.py
+tests/             smoke_{pipeline,llm,api}.py, load_api.py, _harness.py
 docs/              human-facing reference — see "Documentation" below
 ```
 
@@ -110,10 +111,11 @@ uvicorn qatf.api:app --reload                 # or: qatf-serve / python -m qatf.
 docker compose --profile ollama up            # GLM-4-9B, easy path
 docker compose --profile vllm up              # GLM-4-9B, guided decoding
 
-# tests — seconds, no ffmpeg / GPU / API key / network needed
-python tests/smoke_pipeline.py
+# tests — no ffmpeg / GPU / API key / network needed
+python tests/smoke_pipeline.py                # seconds
 python tests/smoke_llm.py
 python tests/smoke_api.py
+python tests/load_api.py                      # ~20s, 24 threads, asserts
 ruff check .
 ```
 
@@ -138,6 +140,7 @@ docs/api.md                endpoints, lifecycle, JobOptions, the hand-edit round
 docs/providers.md          provider matrix, the three output tiers, self-hosting
 docs/quality.md            the tuning playbook — every number that was measured
 docs/operations.md         install, GPU, Docker, caching, deployment limits
+docs/security.md           trust model, where each boundary lives, known gaps
 docs/troubleshooting.md    the traps, indexed by symptom
 ```
 
@@ -154,6 +157,34 @@ Three rules, because documentation that drifts is worse than none:
 - **Reusable failure declarations go in `qatf/api/openapi.py`.** A status code
   documented on one route and forgotten on the next is how a generated client
   ends up with no error type for a case it will definitely hit.
+
+---
+
+## Trust boundaries
+
+`docs/security.md` is the full picture. The rule that matters while editing:
+
+**Caller text reaches two file formats — the ASS subtitle file and the transcript
+cache path — and both are enforced in `pipeline/`, not only at the HTTP layer**,
+so the CLI gets the same treatment.
+
+| Boundary | Lives in | Do not weaken |
+| --- | --- | --- |
+| ASS structure | `captions.escape` / `captions.safe_font` | line terminators and `,` in the Style line |
+| cache filename | `asr.cache_path` | both components slugified — `language` is caller-supplied |
+| model name | `asr.MODEL_SIZES` + `JobOptions` | `WhisperModel` takes a size **or a path** |
+| filter quoting | `encode.filtergraph` | `'` needs ffmpeg's `'\''` idiom |
+| cut timings | `edits.diff` | check finiteness *before* comparing — NaN defeats `>` |
+| media root / downloads | `api/deps.py` | resolve first, check second — that is what catches symlinks |
+
+Two habits behind those:
+
+- **Validate at the layer that owns the risk.** `language` is checked in
+  `cache_path` because the risk is a path, not a request. The schema check is a
+  second line, not the line.
+- **Never echo caller input in an error.** The 422 handler in `api/__init__.py`
+  reports location and reason only — FastAPI's default embeds the input, which
+  both reflects content and fails outright on a non-serialisable `inf`.
 
 ---
 
@@ -213,6 +244,21 @@ nothing                       23 wrong,  8 right, 15 wrong after 300s
   spelling what it heard). Substitutions touch `Word.text` only — **never
   timestamps** — so a spelling fix can change what a caption reads and can never
   move a cut. Applied on read, not baked into the cache.
+- **Per-word corrections** (`edits.py`) are the floor under all of it, for the
+  errors a substitution structurally cannot reach: a word misheard once where the
+  same string is correct elsewhere. `من` → `مين` is unfixable by rule — `من` is
+  one of the most common words in Arabic. Keyed by position, stored as an overlay
+  at `<work>/word-edits.json`, applied on read. `PUT /jobs/{id}/transcript`
+  refuses any submission that changes the word count or a timing, so the
+  invariant is enforced by the contract, not by discipline. Each correction
+  records the text it replaced; if the transcript moves underneath it (different
+  Whisper size, `--denoise` toggled) it goes **stale** and is reported rather than
+  landing on an unrelated word.
+
+**The overlay is never merged into the cache**, and that is not only about cost:
+the cache has to keep saying what Whisper *actually* produced. The moment a
+corrected transcript is indistinguishable from a raw one, every number in the
+table above becomes unreproducible.
 
 Tested and rejected, so nobody repeats them: `condition_on_previous_text=False`
 (no effect alone, worse combined), `beam_size` 8/10 (worse *and* 50% slower),
@@ -240,14 +286,73 @@ takes a 1215x2160 centre slice and scales it to 1080x1920: nearly native, full
 frame. Measured on the same clip at the same CRF, crop carries **2.1x the
 bitrate** because there is genuinely that much more detail to encode.
 
+`blur` is also **1.8x slower to render** (4.65s vs 2.59s on the same clip) —
+`gblur=sigma=32` over a full 1080x1920 frame. So it is slower *and* softer.
+
 `crop` is the default and is right for a centred talking head. Reach for `blur`
 only when the framing genuinely needs the full width — and know what it costs.
+
+### Performance — measured, and mostly negative results
+
+Synthetic 1080p source, 4 clips x 18s to 1080x1920, 16 cores. Ratios transfer;
+absolute times do not.
+
+```text
+sequential, -preset medium (current)   10.42s
+4 concurrent, -preset medium            8.63s   1.21x
+sequential, -preset veryfast            6.62s   1.57x
+```
+
+**`-preset` is the only real lever in stage 5.** Now a flag on both front ends,
+defaulting to `medium` — a clip is rendered once and watched many times, so the
+default must not trade quality for minutes.
+
+```text
+preset       h264      h265    h265/h264
+medium      2.67s     8.18s      3.06x
+veryfast    1.57s     5.09s      3.25x
+```
+
+Four things that look worth optimizing and are not:
+
+- **Parallel clip rendering: 1.21x.** The render is x264-encode-bound and x264
+  already saturates the machine. Not worth a pool that would fight
+  `QATF_WORKERS`, GPU memory and the cancel checkpoint between clips.
+- **The filter chain.** The `ass` filter is 2.1% of a render; `flags=lanczos`
+  measured *faster* than bicubic; `+faststart` is free. Leave all three.
+- **Stage 4 and 5a.** On a 27,000-word transcript with a 20-clip plan: `snap`
+  x20 is 95ms, `build_ass` x20 is 48ms. `snap`'s two linear scans per clip are
+  the obvious `bisect` target and converting them would buy nothing while adding
+  a sorted-input assumption to the function that guards the core invariant.
+- **`model_construct` in `to_response`.** It is *slower* than full validation
+  (10.3us vs 6.9us) — it still builds the model.
+
+Where the API time actually goes, and both are now fixed:
+
+- **`GET /jobs` stat()ed every clip on every request** — 75% of its cost, scaling
+  with job count on the endpoint clients poll. The worker records each size when
+  it writes the file; marginal cost fell ~180us -> 12-20us per job.
+- **`/healthz` spawned an ffmpeg process per request.** p99 was over a second
+  under load, twenty times `GET /jobs/{id}`. Two obvious fixes both failed: a
+  plain TTL cache still lets a cold-cache herd spawn 24 probes (p99 114ms), and a
+  lock around the probe made it *worse* (p99 199ms, max 357ms) because 23 threads
+  then block on one slow thing. **Serialising a slow thing is not removing it.**
+  The probe is primed at startup and served stale-while-refreshing; the handler is
+  now ~1ms.
+
+Both regressions are pinned by `tests/load_api.py`, which fails on them.
+
+**Stage 2 dominates a job by an order of magnitude and is untuned** beyond
+`vad_filter=True`. faster-whisper >=1.0 ships `BatchedInferencePipeline`
+(documented 4-12x on GPU, unmeasured here, not used). Measure that before
+optimizing anything else.
 
 ### Output resolution and codec
 
 ```bash
 --resolution 1080p|1440p|4k|WxH|source     # default 1080p
---codec h264|h265                          # default h264
+--codec h264|h265                          # default h265
+--preset veryslow..ultrafast               # default medium — THE render lever
 --10bit                                    # needs a 10-bit source
 ```
 
@@ -260,10 +365,14 @@ really only sensible with `crop`.
 Platforms deliver 1080x1920 whatever you upload, so higher resolutions buy
 archival fidelity and re-edit headroom, not a better viewer experience.
 
+**H.265 is the default** — ~40% smaller at equal quality, the better archive,
+and measured **3.06x libx264 at the same preset**. That is why `--preset` exists;
+`h265 veryfast` gets 1.61x back. YouTube accepts HEVC; some Instagram and TikTok
+upload paths still prefer H.264, so `--codec h264` is one flag away.
+
 **H.265 must be tagged `hvc1`.** Without `-tag:v hvc1` the file is perfectly
 valid and QuickTime, Safari and iOS all silently refuse to open it. `CODECS`
-sets it; do not remove it. YouTube accepts HEVC; some Instagram and TikTok
-upload paths still prefer H.264, so h264 stays the default.
+sets it; do not remove it.
 
 `--10bit` is worth it from ProRes (4:2:2 10-bit): the extra precision suppresses
 banding in skies and skin even though delivery chroma is still 4:2:0. It narrows
@@ -311,7 +420,7 @@ and prompt caching of the transcript prefix, all of which this stage uses.
 ### Structured output is three tiers, not a boolean
 
 | Tier | Providers | What you get |
-|---|---|---|
+| --- | --- | --- |
 | `json_schema` | Anthropic, OpenAI, vLLM | Constrained decoding. Malformed output is impossible. |
 | `json_object` | Kimi, GLM, Ollama, OpenRouter | Valid JSON guaranteed, shape is not. |
 | `prompt_only` | anything else | Nothing but the prompt. |
@@ -373,7 +482,8 @@ GET    /jobs                  list, optional ?state=
 GET    /jobs/{id}             state, message, error, plan, outputs
 POST   /jobs/{id}/cancel      cooperative
 DELETE /jobs/{id}             refuses while running
-GET    /jobs/{id}/transcript  words + detected language
+GET    /jobs/{id}/transcript  words, as they will be captioned
+PUT    /jobs/{id}/transcript  correct misheard words; text only, never timings
 GET    /jobs/{id}/plan
 PUT    /jobs/{id}/plan        the hand-edit round trip; re-snaps unless snap:false
 POST   /jobs/{id}/render      encode the current plan; replaces previous outputs
@@ -426,22 +536,39 @@ Be honest about this in any session. It is the difference between a demo and a t
   looking at them, in English **and** Arabic
 - RTL word order, after the fix — Arabic reads correctly right-to-left with
   connected letterforms, on both Arial and Traditional Arabic
-- `tests/smoke_pipeline.py` (109 checks): timestamp formatting and carry, slugify,
+- `tests/load_api.py` (23 checks): every endpoint under 24 concurrent threads —
+  seed, read storm, list scaling, write storm against one job, upload while
+  polling, mixed traffic, concurrent deletion. Asserts no 5xx anywhere, no
+  corrupted job record, that concurrent renders are refused with 409, and holds
+  budgets for per-job list cost, `/healthz` serial cost and poll latency during
+  an upload.
+- `tests/smoke_pipeline.py` (155 checks): timestamp formatting and carry, slugify,
   caption grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
   (no forced `-r`, crf forwarded), device resolution and the CUDA-to-CPU
   fallback, transcript cache keys including vocabulary, fixups (with an explicit
-  assertion that timings are untouched), snap edge cases, model-response parsing
+  assertion that timings are untouched), per-word corrections (that `diff`
+  refuses a retiming or a changed word count, that a shifted overlay goes stale
+  rather than corrupting a word, and again that timings are untouched), snap edge
+  cases, model-response parsing, and the trust boundaries — that caption text
+  and font names cannot inject ASS directives, and that `language` cannot escape
+  the work directory through the cache filename
 - `tests/smoke_llm.py` (38 checks): provider request shapes with the SDK client
   faked — that Anthropic gets `output_config.format` and no sampling params,
   that GPT-5 gets `max_completion_tokens`, that Kimi/GLM/Ollama downgrade to
   `json_object` rather than erroring, that vLLM keeps `json_schema`, refusal and
   truncation handling, the context guard, and `parse_response` across all three
   output tiers. Proves request *shape*, not that any endpoint accepts it.
-- `tests/smoke_api.py` (74 checks): job state machine, transcript cache round
-  trip, plan replace with and without re-snap, re-render replacing outputs,
+- `tests/smoke_api.py` (110 checks): job state machine, transcript cache round
+  trip, the transcript correction round trip (correction reaches the burned-in
+  captions, cut points provably unchanged, retiming/add/remove all refused, the
+  overlay stays out of the cache file), plan replace with and without re-snap,
+  re-render replacing outputs,
   upload size/extension/JSON limits, media-root escape rejected, download
-  traversal rejected, restart recovery, and the OpenAPI document — that every
+  traversal rejected, restart recovery, input validation at the boundary
+  (traversal in `language`, an unlisted `whisper` model, an oversized plan,
+  non-finite timings, and that a 422 never echoes the rejected input back),
+  and the OpenAPI document — that every
   operation is summarised, described, tagged and hand-named, that every failure
   a caller can hit is declared and typed as `ErrorResponse`, and that a status
   code shared by two failures keeps both descriptions. It fakes
@@ -630,6 +757,17 @@ Neither is warranted yet.
   provider SDK behind its own extra, so installing one provider does not pull
   the others. The CLI must keep working without any of them. The job queue is a
   thread pool on purpose; Celery and Redis are not warranted yet.
+- **Load-test concurrent behaviour; a sequential suite cannot see it.**
+  `tests/load_api.py` asserts and exits non-zero — it is a test, not a benchmark.
+  It found both API regressions above, neither of which is visible in a single
+  request. It also caught one of its own: a threshold that was really measuring
+  the harness's synchronized burst rather than the endpoint, which is why
+  `/healthz` is asserted serially and everything else on p50/p99.
+- **Profile before optimizing anything, and record the negative results too.**
+  The measured numbers above say the deterministic middle of the pipeline is
+  milliseconds, parallel rendering buys 1.21x, and the filter chain is free. Each
+  of those is an optimization someone will otherwise attempt. A job's time is in
+  stage 2 and stage 5's encoder; nothing else is worth a diff.
 - Prefer deterministic Python over another model call. Stages 1, 4, 5 must stay
   model-free.
 

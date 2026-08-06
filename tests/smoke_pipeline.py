@@ -19,10 +19,10 @@ from _harness import check, raises, report, section
 from qatf import pipeline
 from qatf.core import utils
 from qatf.core.constants import CAPTION_MAX_CHARS, TARGET_H, TARGET_W
-from qatf.core.errors import ModelResponseError, SeedTooLong
+from qatf.core.errors import ModelResponseError, SeedTooLong, TranscriptStructureChanged
 from qatf.core.types import Clip, Word, clips_from_dicts, clips_to_dicts
 from qatf.core.utils import mmss_to_seconds, slugify, ts_ass, ts_human
-from qatf.pipeline import asr, captions, cuts, fixups, select
+from qatf.pipeline import asr, captions, cuts, edits, fixups, select
 
 
 def words(n: int = 100, step: float = 0.5) -> list[Word]:
@@ -119,6 +119,144 @@ check("count reported", n == 2, str(n))
 check("TIMINGS UNCHANGED — a spelling fix must never move a cut",
       [(w.start, w.end) for w in fixed] == before)
 check("empty mapping is a no-op", fixups.apply(fw, {})[1] == 0)
+
+section("per-word corrections")
+# The case fixups structurally cannot reach: `من` is correct almost everywhere
+# it appears, so a global substitution to `مين` would wreck the file. Corrections
+# are keyed by position instead. Same invariant as fixups, enforced harder —
+# diff() refuses a submission that changes anything but text.
+base = [Word("هو", 204.11, 204.29), Word("من", 204.29, 204.58),
+        Word("قال", 204.58, 204.91), Word("من", 210.0, 210.3)]
+
+
+def _copy(ws: list[Word]) -> list[Word]:
+    return [Word(w.text, w.start, w.end) for w in ws]
+
+
+corrected = _copy(base)
+corrected[1].text = "مين"
+found = edits.diff(base, corrected)
+check("diff finds the one changed word",
+      len(found) == 1 and found[0].index == 1, str(found))
+check("diff records what it replaced, as a drift guard",
+      found[0].was == "من" and found[0].text == "مين")
+check("an identical submission produces no corrections", edits.diff(base, _copy(base)) == [])
+
+raises("adding a word is refused", TranscriptStructureChanged,
+       edits.diff, base, [*_copy(base), Word("x", 300.0, 300.5)])
+raises("removing a word is refused", TranscriptStructureChanged,
+       edits.diff, base, _copy(base)[:-1])
+retimed = _copy(base)
+retimed[1].start = 204.10
+raises("MOVING A TIMING IS REFUSED — the core invariant, at the boundary",
+       TranscriptStructureChanged, edits.diff, base, retimed)
+# every comparison against NaN is False, so a difference test alone lets it
+# through as "unchanged" — finiteness has to be checked first
+nan_timed = _copy(base)
+nan_timed[1].start = float("nan")
+raises("a NaN timing is refused, not silently treated as unchanged",
+       TranscriptStructureChanged, edits.diff, base, nan_timed)
+inf_timed = _copy(base)
+inf_timed[1].end = float("inf")
+raises("an infinite timing is refused", TranscriptStructureChanged,
+       edits.diff, base, inf_timed)
+
+target = _copy(base)
+timings_before = [(w.start, w.end) for w in target]
+applied_words, applied, stale = edits.apply(target, found)
+check("correction applied at its index", applied_words[1].text == "مين")
+check("the same word elsewhere is untouched — this is why fixups cannot do it",
+      applied_words[3].text == "من")
+check("count reported", applied == 1 and stale == [])
+check("TIMINGS UNCHANGED — a correction must never move a cut",
+      [(w.start, w.end) for w in applied_words] == timings_before)
+
+# the transcript moved underneath the overlay: re-transcribed at a different
+# whisper size, indices shifted. Applying anyway would corrupt word 1 silently.
+shifted = [Word("حاجة", 204.11, 204.29), Word("تانية", 204.29, 204.58)]
+_, applied, stale = edits.apply(shifted, found)
+check("a correction whose word moved goes stale, not applied",
+      applied == 0 and len(stale) == 1 and shifted[1].text == "تانية")
+_, _, stale = edits.apply(_copy(base), [edits.Edit(index=99, was="x", text="y")])
+check("an out-of-range index goes stale rather than raising", len(stale) == 1)
+check("re-applying is idempotent", edits.apply(applied_words, found)[1] == 0)
+check("no corrections is a no-op", edits.apply(_copy(base), [])[1] == 0)
+
+roundtrip = edits.from_dicts(edits.to_dicts(found))
+check("overlay round trip is lossless", roundtrip == found)
+check("bare list accepted too — the file is meant to be hand-edited",
+      edits.from_dicts([{"index": 1, "text": "مين"}])[0].text == "مين")
+check("junk entries skipped, not fatal", edits.from_dicts([{"nope": 1}]) == [])
+
+section("cache path is not caller-controlled")
+# `language` is a free-form field on a POST body and lands in the cache
+# FILENAME. Unsanitised, "../../../x" escapes the work directory and write_cache
+# mkdirs the parent and writes there — an arbitrary file write.
+_work = Path("srv/data/job/.work").resolve()
+for _lang in ["../../../../tmp/pwned", "a/../../b", "..\\..\\x", "/etc/cron.d/x"]:
+    check(f"language {_lang!r} cannot escape the work dir",
+          asr.cache_path(_work, "large-v3", _lang).resolve().is_relative_to(_work),
+          str(asr.cache_path(_work, "large-v3", _lang)))
+check("model size cannot escape either",
+      asr.cache_path(_work, "../../evil", "ar").resolve().is_relative_to(_work))
+check("a real language code still keys the same file — no cache invalidated",
+      asr.cache_path(_work, "large-v3", "ar").name == "words-large-v3-ar.json",
+      asr.cache_path(_work, "large-v3", "ar").name)
+check("no language keys the plain name",
+      asr.cache_path(_work, "large-v3", None).name == "words-large-v3-auto.json")
+# WhisperModel takes a "size OR path": an unrecognised name is fetched from
+# HuggingFace and its weights parsed by CTranslate2.
+check("the default model is in the allowlist", "large-v3" in asr.MODEL_SIZES)
+check("a repo id is not", "evil-user/backdoored-ct2" not in asr.MODEL_SIZES)
+
+section("ass injection — caption text is not trusted input")
+# `fixups` values arrive in a POST /jobs body and any word can be rewritten via
+# PUT /jobs/{id}/transcript, so Word.text is caller-controlled. ASS is
+# line-oriented: a newline ends the Dialogue: line and the remainder is parsed
+# as a directive — including a [Fonts] block, which libass decodes and hands to
+# the font engine.
+payload = "hi\n[Fonts]\nfontname: evil.ttf\nAAAA"
+esc = captions.escape(payload)
+check("newlines neutralised in caption text", "\n" not in esc and "\r" not in esc, repr(esc))
+check("the injected directive survives only as inert text",
+      "[Fonts]" in esc and esc.count("\n") == 0)
+check("carriage return neutralised too", "\r" not in captions.escape("a\rb"))
+check("NUL removed, not passed through", "\x00" not in captions.escape("a\x00b"))
+check("unicode line separators neutralised",
+      "\u2028" not in captions.escape("a\u2028b")
+      and "\u2029" not in captions.escape("a\u2029b"))
+check("braces still escaped", captions.escape("{\\an8}") == "(\\an8)")
+
+inject = Clip(0.0, 4.0, "t")
+body = captions.build_ass(
+    inject, [Word(payload, 0.5, 1.0), Word("ok", 1.2, 1.6)],
+    Path(os.environ.get("TEMP", "/tmp")) / "qatf-inject.ass").read_text(encoding="utf-8")
+events = body.split("[Events]")[1]
+check("no injected section reached the rendered file",
+      "\n[Fonts]" not in body and "\nfontname:" not in body)
+cues = [line for line in events.splitlines()
+        if line.strip() and not line.startswith("Format:")]
+check("every event line is a Dialogue line — nothing broke out of a cue",
+      cues and all(line.startswith("Dialogue:") for line in cues),
+      str([x for x in cues if not x.startswith("Dialogue:")]))
+
+# the Style: line is comma-delimited, so a comma shifts every field after it
+check("comma in a font name cannot shift the Style fields",
+      "," not in captions.safe_font("Evil,999,&H000000FF"),
+      captions.safe_font("Evil,999,&H000000FF"))
+check("newline in a font name cannot inject a directive",
+      "\n" not in captions.safe_font("Arial\nStyle: Evil,Arial,999"))
+check("font name length bounded", len(captions.safe_font("A" * 500)) == 64)
+check("empty font falls back rather than producing a blank field",
+      captions.safe_font("  ,,  ") == "Arial")
+check("a normal font name is untouched",
+      captions.safe_font("Traditional Arabic") == "Traditional Arabic")
+styled = captions.build_ass(
+    inject, [Word("hi", 0.5, 1.0)],
+    Path(os.environ.get("TEMP", "/tmp")) / "qatf-font.ass",
+    font="Arial\nStyle: Evil,Arial,999,&H000000FF").read_text(encoding="utf-8")
+check("only one Style line in the rendered header",
+      styled.count("\nStyle:") == 1, str(styled.count("\nStyle:")))
 
 section("transcript cache key")
 # A different prompt produces a different transcript, so it must be part of the
@@ -301,8 +439,29 @@ check("10-bit selects the right pix_fmt and profile",
       and c[c.index("-profile:v") + 1] == "main10")
 _cmds.clear()
 enc.render(Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop")
-check("h264 stays the default and is untagged",
+c = _cmds[0]
+# h265 is the default: ~40% smaller at equal quality, and the better archive.
+# It must carry -tag:v hvc1 or Apple silently refuses the file.
+check("h265 is the default and is hvc1-tagged",
+      c[c.index("-c:v") + 1] == "libx265"
+      and "-tag:v" in c and c[c.index("-tag:v") + 1] == "hvc1", str(c[:8]))
+check("default preset is medium and reaches the command",
+      c[c.index("-preset") + 1] == enc.DEFAULT_PRESET == "medium")
+_cmds.clear()
+enc.render(Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop",
+           codec="h264")
+check("explicit h264 still works and stays untagged",
       _cmds[0][_cmds[0].index("-c:v") + 1] == "libx264" and "-tag:v" not in _cmds[0])
+_cmds.clear()
+# the one lever that measurably moves render time — veryfast measured 1.6x
+# faster than medium on h265, so it must actually reach ffmpeg
+enc.render(Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop",
+           preset="veryfast")
+check("an explicit preset reaches ffmpeg",
+      _cmds[0][_cmds[0].index("-preset") + 1] == "veryfast")
+raises("unknown preset rejected", ValueError, enc.render,
+       Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop",
+       preset="turbo")
 raises("unknown codec rejected", ValueError, enc.render,
        Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop", 20, None,
        1080, 1920, "av1")

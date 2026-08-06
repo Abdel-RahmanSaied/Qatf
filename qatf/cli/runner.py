@@ -101,6 +101,17 @@ def run(args: argparse.Namespace) -> int:
         words, n = pipeline.fixups.apply(words, mapping)
         log(f"      applied {n} word fixups from {len(mapping)} rules")
 
+    # per-word corrections, if someone has written any. Picked up from the work
+    # directory with no flag: the file is the interface, the same way the
+    # transcript cache is. Fixups first, so a correction wins on the word it
+    # names — see pipeline/edits.py.
+    corrections = pipeline.edits.load(pipeline.edits.path(work))
+    if corrections:
+        words, applied, stale = pipeline.edits.apply(words, corrections)
+        log(f"      applied {applied} word corrections" +
+            (f", {len(stale)} stale (transcript moved — re-check them)"
+             if stale else ""))
+
     plan_path = args.out / "plan.json"
 
     if args.plan:
@@ -134,12 +145,14 @@ def run(args: argparse.Namespace) -> int:
         log(f"      source {src['width']}x{src['height']} -> native "
             f"{size[0]}x{size[1]} (no scaling)")
     log(f"[5/5] rendering {len(clips)} clips at {size[0]}x{size[1]} "
-        f"{args.codec}{' 10-bit' if args.ten_bit else ''}")
+        f"{args.codec} -preset {args.preset}"
+        f"{' 10-bit' if args.ten_bit else ''}")
     pipeline.render_all(
         args.video, clips, words, args.out, work,
         mode=args.reframe, font=args.font, captions=not args.no_captions,
         per_line=args.per_line, crf=args.crf,
         width=size[0], height=size[1], codec=args.codec, ten_bit=args.ten_bit,
+        preset=args.preset,
         on_clip=lambda i, total, clip, path: log(f"      -> {path}"),
     )
 
