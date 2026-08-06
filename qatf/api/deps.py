@@ -62,13 +62,26 @@ def safe_output_path(job: Job, root: Path, name: str) -> Path:
 
 
 def to_response(store: JobStore, job: Job) -> JobResponse:
+    """Map a job record onto the wire.
+
+    Sizes come from the record, not the filesystem. This used to stat() every
+    output on every read, which measured 75% of `GET /jobs` and scaled with the
+    job count on the endpoint clients poll. The worker records each size when it
+    writes the clip; a rendered file never changes size afterwards.
+
+    Records written before `output_sizes` existed fall back to a stat, so an old
+    job reports the truth rather than zero."""
+    sizes = job.output_sizes or {}
     out_dir = job.out_dir(store.root)
     outputs = []
     for name in job.outputs:
-        path = out_dir / name
+        size = sizes.get(name)
+        if size is None:                      # legacy record, no stored size
+            path = out_dir / name
+            size = path.stat().st_size if path.exists() else 0
         outputs.append(ClipOutput(
             name=name,
-            size_bytes=path.stat().st_size if path.exists() else 0,
+            size_bytes=size,
             url=f"/jobs/{job.id}/clips/{name}",
         ))
     return JobResponse(

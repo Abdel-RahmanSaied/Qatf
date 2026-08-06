@@ -145,12 +145,19 @@ def build_prompt(words: list[Word], n: int, lo: int, hi: int) -> str:
 
 def pick_clips(words: list[Word], n: int, lo: int, hi: int,
                model: str | None = None,
-               provider: LLMProvider | None = None) -> list[Clip]:
+               provider: LLMProvider | None = None,
+               settings=None) -> list[Clip]:
     """Ask the configured provider which passages to clip.
 
     `model` is kept for callers that pass one positionally; it overrides the
-    configured model on whichever provider is active."""
-    settings = get_settings()
+    configured model on whichever provider is active.
+
+    `settings` must be threaded through from the caller. Falling back to the
+    process-wide `get_settings()` here made `create_app(settings=...)` a
+    half-truth: the HTTP layer honoured the injected object while stage 3 — the
+    only part that opens a network connection and spends a credential — quietly
+    read the environment's provider, base_url and timeout instead."""
+    settings = settings or get_settings()
     if provider is None:
         provider = build_provider(
             settings.llm_provider,

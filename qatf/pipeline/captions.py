@@ -68,10 +68,42 @@ def group_words(words: list[Word], max_words: int = CAPTION_MAX_WORDS,
     return out
 
 
+#: Everything that would end a line, plus NUL. ASS is a line-oriented format —
+#: one `Dialogue:` per line — so any of these inside caption text terminates the
+#: cue and whatever follows is parsed as a fresh directive.
+_STRUCTURAL = str.maketrans({
+    "\n": " ", "\r": " ", "\x0b": " ", "\x0c": " ",
+    "\u2028": " ", "\u2029": " ",     # LINE / PARAGRAPH SEPARATOR
+    "\x00": "",                       # truncates the line for a C parser
+})
+
+
 def escape(token: str) -> str:
-    """`{` and `}` are ASS override-tag delimiters. Unescaped, a caption
-    containing braces silently disappears into a parse error."""
-    return token.replace("{", "(").replace("}", ")")
+    """Neutralise everything in caption text that ASS would read as structure.
+
+    `{` and `}` are override-tag delimiters. Unescaped, a caption containing
+    braces silently disappears into a parse error.
+
+    The line breaks are the security-relevant half. Word text is **not trusted
+    input**: `fixups` values arrive in a `POST /jobs` body and any word can be
+    rewritten through `PUT /jobs/{id}/transcript`, and both land in `Word.text`
+    verbatim. A newline there ends the `Dialogue:` line and turns the remainder
+    into directives the renderer executes — including a `[Fonts]` section, which
+    libass will decode and hand to the font engine. This is a trust boundary,
+    not tidiness."""
+    return token.translate(_STRUCTURAL).replace("{", "(").replace("}", ")")
+
+
+def safe_font(name: str) -> str:
+    """A font name for the `Style:` line.
+
+    That line is comma-delimited, so a comma in the name shifts every field after
+    it — size, colours, margins — and a newline injects a whole new directive
+    into `[V4+ Styles]`. `font` is caller-supplied on both front ends, so it gets
+    the same treatment as caption text."""
+    cleaned = " ".join(name.translate(_STRUCTURAL).replace(",", " ").split())
+    cleaned = cleaned.replace("{", "(").replace("}", ")")
+    return cleaned[:64] or "Arial"
 
 
 #: Codepoint ranges whose script is written right-to-left. Arabic and Hebrew are
@@ -112,7 +144,7 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
     correctly — see the module docstring. Pass True to force it on RTL anyway;
     the line will be scrambled, and the only reason to do that is to re-measure
     the bug."""
-    lines = [ASS_HEADER.replace("{FONT}", font)]
+    lines = [ASS_HEADER.replace("{FONT}", safe_font(font))]
 
     for chunk in group_words(words_in(clip, words), max_words=per_line):
         tokens = [escape(w.text) for w in chunk]

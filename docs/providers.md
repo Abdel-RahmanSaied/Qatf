@@ -22,7 +22,7 @@ over the code.
 ## The roster
 
 | Key | Default model | Credential | Structured output | Context |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `anthropic` | `claude-opus-5` | `ANTHROPIC_API_KEY` | `json_schema` | 1 M |
 | `openai` | `gpt-5.1` | `OPENAI_API_KEY` | `json_schema` | 400 K |
 | `openai-legacy` | `gpt-4.1` | `OPENAI_API_KEY` | `json_schema` | 128 K |
@@ -61,7 +61,7 @@ pip install -e ".[all]"
 ## Structured output is three tiers, not a boolean
 
 | Tier | Providers | What you get |
-|---|---|---|
+| --- | --- | --- |
 | `json_schema` | Anthropic, OpenAI, vLLM | Constrained decoding. Malformed output is **impossible**. |
 | `json_object` | Kimi, GLM, Ollama, OpenRouter | Valid JSON guaranteed, **shape is not**. |
 | `prompt_only` | anything else | Nothing but the prompt. |

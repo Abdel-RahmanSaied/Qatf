@@ -2,7 +2,9 @@
 
     audio.py     1. demux audio             ffmpeg
     asr.py       2. transcribe + word times faster-whisper
-    select.py    3. pick highlight clips    Claude
+    fixups.py    2b. substitutions by value text only, never timestamps
+    edits.py     2c. corrections by position text only, never timestamps
+    select.py    3. pick highlight clips    the configured provider
     cuts.py      4. snap to word bounds     local, deterministic
     captions.py  5a. ASS generation         local
     encode.py    5b. reframe + burn         ffmpeg
@@ -20,7 +22,7 @@ pipeline logic of their own.
 from __future__ import annotations
 
 from ..core.types import Clip, Transcript, Word
-from . import asr, audio, captions, cuts, encode, fixups, select
+from . import asr, audio, captions, cuts, edits, encode, fixups, select
 from .asr import (
     DEVICES,
     cache_path,
@@ -40,7 +42,7 @@ from .select import build_transcript_blocks, parse_response, pick_clips
 
 __all__ = [
     "asr", "audio", "captions", "cuts", "encode", "select",
-    "extract_audio", "audio_path", "DENOISE_FILTER", "fixups",
+    "extract_audio", "audio_path", "DENOISE_FILTER", "fixups", "edits",
     "transcribe", "transcribe_cached", "cache_path", "read_cache", "write_cache",
     "DEVICES", "resolve_device", "cuda_device_count", "compute_type_for",
     "pick_clips", "build_transcript_blocks", "parse_response",
@@ -52,12 +54,15 @@ __all__ = [
 
 
 def plan_clips(words: list[Word], n: int, lo: int, hi: int,
-               model: str | None = None) -> list[Clip]:
+               model: str | None = None, settings=None) -> list[Clip]:
     """Stages 3 and 4 together: propose, then snap, then drop what the snap
     pushed out of range.
 
     Deliberately goes through the modules rather than the re-exported names, so
-    a test that patches `pipeline.select.pick_clips` is actually honoured."""
-    clips = select.pick_clips(words, n, lo, hi, model=model)
+    a test that patches `pipeline.select.pick_clips` is actually honoured.
+
+    `settings` is threaded rather than read from the process — see
+    `select.pick_clips`."""
+    clips = select.pick_clips(words, n, lo, hi, model=model, settings=settings)
     clips = [cuts.snap(c, words) for c in clips]
     return cuts.within_duration(clips, lo, hi)

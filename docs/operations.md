@@ -56,7 +56,7 @@ mismatch — is not a usable device, and only the engine knows that.
 Two layers, because availability and usability are different questions:
 
 | Layer | Answers | On failure under `auto` | Under explicit `cuda` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `resolve_device()` | can CTranslate2 see a device? | pick `cpu` | raise |
 | `load_model()` | can it actually load? (OOM, missing kernels) | fall back to `cpu`, reason logged | raise |
 
@@ -102,8 +102,11 @@ Delete the file to re-transcribe; otherwise iterating on clip selection is free.
 **In the key:** Whisper size, forced language, hotword vocabulary, initial
 prompt.
 
-**Not in the key:** the device, and `--fixups` — substitutions are applied on
-read, so editing the map never orphans the cache and never changes a timestamp.
+**Not in the key:** the device, and both text-correction layers — `--fixups` and
+`<work>/word-edits.json`. Those are applied on read, so editing either never
+orphans the cache and never changes a timestamp. It also keeps the cache saying
+what Whisper *actually* produced, which is what makes the numbers in
+[quality.md](quality.md) reproducible.
 
 > Drop a transcription flag on a re-run and you get a **cache miss**, not the old
 > transcript. Keep `--language`, `--whisper`, `--vocab-file` and `--denoise` the
@@ -113,11 +116,16 @@ read, so editing the map never orphans the cache and never changes a timestamp.
 The cheapest iteration loop, in order of cost:
 
 | Change | Re-runs |
-|---|---|
+| --- | --- |
 | `--crf`, `--font`, `--reframe`, `--codec`, `--resolution` | stage 5 only |
 | plan edits (`--plan`, `PUT /plan`) | stages 4–5 |
 | `--clips`, `--min-len`, `--max-len`, provider | stages 3–5 |
 | `--language`, `--whisper`, `--vocab`, `--denoise` | everything |
+
+Stage 2 dominates a cold run by an order of magnitude, which is what makes the
+cache worth its complexity. Everything deterministic between stages 3 and 5 —
+snapping, caption generation, plan serialisation — is milliseconds and not worth
+tuning. See [quality.md](quality.md#render-performance).
 
 ---
 
@@ -164,7 +172,7 @@ python -m qatf.api                 # same
 ```
 
 | Variable | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `QATF_DATA_DIR` | `qatf-data` | job directories |
 | `QATF_MEDIA_ROOT` | `.` | the `POST /jobs` sandbox — a **security boundary** |
 | `QATF_WORKERS` | `1` | concurrent jobs |
@@ -202,6 +210,11 @@ JSON file per job, no broker and no database:
 Also unaddressed: nothing cleans up old job directories. A 4K source plus its
 wav plus its clips is not small, and `DELETE /jobs/{id}` is the only reaper.
 
+**Read [security.md](security.md) first.** It carries the trust model, where each
+boundary is enforced, and the gaps that are your problem rather than the code's —
+including that `docker compose up` publishes an unauthenticated API on every
+interface.
+
 ---
 
 ## Tests
@@ -209,14 +222,25 @@ wav plus its clips is not small, and `DELETE /jobs/{id}` is the only reaper.
 Seconds to run. No ffmpeg, GPU, API key or network needed.
 
 ```bash
-python tests/smoke_pipeline.py    # 109 checks
+python tests/smoke_pipeline.py    # 155 checks
 python tests/smoke_llm.py         #  38 checks
-python tests/smoke_api.py         #  74 checks
+python tests/smoke_api.py         # 110 checks
+python tests/load_api.py          #  23 checks, ~20s
 ruff check .
 ```
 
-**Both suites must stay green, and new behaviour gets a check.** There is no CI,
+**Every suite must stay green, and new behaviour gets a check.** There is no CI,
 so this is the only gate there is.
+
+`load_api.py` is a load *test*, not a benchmark: it asserts and exits non-zero.
+It found two things a sequential suite could not — `/healthz` spawning a process
+per request, and the cost of stat()ing every clip on every list — and its
+thresholds exist to stop both coming back. Raise `--jobs` and `--concurrency` to
+push harder:
+
+```bash
+python tests/load_api.py --jobs 500 --concurrency 48 --rounds 8
+```
 
 What they actually cover:
 

@@ -14,7 +14,7 @@ The CLI is deliberately importable without pydantic, fastapi or any provider SDK
 ## Selection — stage 3
 
 | Flag | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `--clips N` | `5` | how many clips to ask for |
 | `--min-len S` | `30` | seconds; shorter clips are dropped |
 | `--max-len S` | `75` | seconds; see the warning below |
@@ -33,7 +33,7 @@ word and a tight filter throws away good clips.
 ## Transcription — stage 2
 
 | Flag | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `--whisper SIZE` | `large-v3` | faster-whisper model size |
 | `--device {auto,cuda,cpu}` | `auto` | see below |
 | `--language CODE` | autodetect | `ar`, `en`, … |
@@ -83,6 +83,32 @@ Substitutions touch `Word.text` **only, never timestamps**, so a spelling fix ca
 change what a caption reads and can never move a cut. Applied on read, not baked
 into the cache — so you can edit the map and re-render without re-transcribing.
 
+### Per-word corrections
+
+Fixups are keyed by *value*, so they cannot fix a word that is wrong here and
+correct everywhere else — a rule `من = مين` would rewrite every `من` in the file.
+
+For those, write an overlay at `<out>/.work/word-edits.json`. There is no flag:
+the file is the interface, the same way the transcript cache is.
+
+```json
+{
+  "edits": [
+    { "index": 1247, "was": "من", "text": "مين" }
+  ]
+}
+```
+
+`index` is the word's position in `<out>/.work/words-<model>-<lang>.json`, which
+also gives you its `start` — scrub there to hear what was actually said before
+correcting it. `was` is a drift guard: if that word no longer reads `من`, the
+correction is reported as **stale** and skipped rather than landing on an
+unrelated word.
+
+Corrections change text only, and never the word count or timings. Over HTTP the
+same thing is a `PUT /jobs/{id}/transcript` that refuses any submission changing
+either — see [api.md](api.md#correcting-misheard-words).
+
 See [quality.md](quality.md) for what each of these was actually worth.
 
 ---
@@ -90,7 +116,7 @@ See [quality.md](quality.md) for what each of these was actually worth.
 ## Captions — stage 5a
 
 | Flag | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `--font NAME` | `Arial` | must be installed on the rendering host |
 | `--per-line N` | `4` | max words per caption line |
 | `--no-captions` | off | render without burned-in text |
@@ -112,19 +138,23 @@ That is a deliberate consequence of the RTL fix — see
 ## Encode — stage 5b
 
 | Flag | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `--reframe {crop,blur}` | `crop` | |
 | `--resolution R` | `1080p` | `source` · `1080p` · `1440p` · `4k` · `WxH` |
-| `--codec {h264,h265}` | `h264` | |
+| `--codec {h264,h265}` | `h265` | |
+| `--preset P` | `medium` | `veryslow` … `ultrafast` |
 | `--10bit` | off | requires a 10-bit source |
 | `--crf N` | `20` | lower is better |
 
 ### `--reframe`
 
 `crop` keeps roughly **3× the subject pixels** of `blur` on a 16:9 source and
-measures 2.1× the bitrate at the same CRF. Reach for `blur` only when the framing
-genuinely needs the full width. Full arithmetic in
-[architecture.md](architecture.md#stage-5--reframe).
+measures 2.1× the bitrate at the same CRF. It is also the **faster** of the two —
+`blur` runs a full-frame gaussian and pays for it in wall clock. So blur is
+slower *and* softer; reach for it only when the framing genuinely needs the full
+width. Full arithmetic in
+[architecture.md](architecture.md#stage-5--reframe), timings in
+[quality.md](quality.md#render-performance).
 
 ### `--resolution source`
 
@@ -138,13 +168,28 @@ accepts. **`source` is really only sensible with `crop`.**
 Platforms deliver 1080×1920 whatever you upload, so higher resolutions buy
 archival fidelity and re-edit headroom, not a better viewer experience.
 
-### `--codec h265`
+### `--codec`
+
+**h265 is the default**: ~40% smaller at equal quality and the better archive.
 
 H.265 output is tagged `hvc1`. **Do not remove that tag** — without it the file is
 perfectly valid and QuickTime, Safari and iOS all silently refuse to open it.
 
-YouTube accepts HEVC; some Instagram and TikTok upload paths still prefer H.264,
-so `h264` stays the default.
+It costs encode time — measured **3.06x h264** at the same preset, which is what
+`--preset` is for. YouTube accepts HEVC; some Instagram and TikTok upload paths
+still prefer H.264, so `--codec h264` is one flag away.
+
+### `--preset`
+
+The encoder speed/quality trade, and the **only knob that measurably moves render
+time** — the filter chain and caption burn-in are noise, and rendering clips
+concurrently buys almost nothing.
+
+`veryfast` measured 1.6x faster than `medium` on h265. `medium` is the default
+because a clip is rendered once and watched many times; use a faster preset while
+iterating on framing, fonts or captions, then do the final pass at `medium`.
+
+Full matrix in [quality.md](quality.md#h264-vs-h265-across-presets).
 
 ### `--10bit`
 
@@ -160,7 +205,7 @@ Frame rate is never forced. The source rate is preserved — see
 ## Plan control
 
 | Flag | |
-|---|---|
+| --- | --- |
 | `--plan-only` | transcribe and select, write `plan.json`, stop before rendering |
 | `--plan FILE` | render a hand-edited plan; re-snaps by default |
 
@@ -185,7 +230,7 @@ The CLI reads a `.env` from the working directory or any parent. **The real
 environment always wins** over a `.env` entry.
 
 | Variable | | |
-|---|---|---|
+| --- | --- | --- |
 | `QATF_LLM_PROVIDER` | `anthropic` | `openai` · `kimi` · `glm` · `ollama` · `vllm` · `openrouter` |
 | `QATF_LLM_MODEL` | preset default | overrides the preset's model |
 | `QATF_LLM_BASE_URL` | preset default | point a preset at another host |

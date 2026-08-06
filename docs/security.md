@@ -1,0 +1,217 @@
+# Security
+
+What this system trusts, where it stops trusting, and what it does not defend
+against.
+
+The short version: **the API has no authentication of its own.** Everything below
+assumes something in front of it decides who may call it. Read
+[Deploying it](#deploying-it) before exposing a port.
+
+---
+
+## Trust model
+
+| Input | Source | Trusted? |
+| --- | --- | --- |
+| `POST /jobs` body | caller | no |
+| uploaded video | caller | no — handed to ffmpeg, a large C parsing surface |
+| `fixups` values, `PUT /transcript` text | caller | no — reaches the ASS file |
+| the transcript | Whisper, over the caller's audio | no — the caller chose the audio |
+| stage 3 output (`title`, `hook`, `why`) | a model, prompted with the transcript | no — see [prompt injection](#prompt-injection) |
+| `QATF_*` environment | operator | yes |
+| the transcript cache on disk | the process itself | yes — protect the data dir |
+
+The load-bearing consequence: **caller text reaches two file formats** — the ASS
+subtitle file and the transcript cache path. Both are boundaries, and both are
+enforced in the pipeline rather than only at the HTTP layer, so the CLI gets the
+same treatment.
+
+---
+
+## Boundaries and where they are enforced
+
+| Boundary | Enforced in | What it stops |
+| --- | --- | --- |
+| media root | [`api/deps.py`](../qatf/api/deps.py) `resolve_source` | `POST /jobs {"path": "../../etc/passwd"}` |
+| download path | [`api/deps.py`](../qatf/api/deps.py) `safe_output_path` | `GET /clips/../job.json` |
+| transcript cache path | [`pipeline/asr.py`](../qatf/pipeline/asr.py) `cache_path` | `language` escaping the work dir |
+| Whisper model name | [`api/schemas.py`](../qatf/api/schemas.py) + `asr.MODEL_SIZES` | the server fetching an arbitrary model repo |
+| ASS structure | [`pipeline/captions.py`](../qatf/pipeline/captions.py) `escape` / `safe_font` | caption text becoming subtitle directives |
+| filtergraph quoting | [`pipeline/encode.py`](../qatf/pipeline/encode.py) `filtergraph` | a path breaking out of `ass='...'` |
+| cut timings | [`pipeline/edits.py`](../qatf/pipeline/edits.py) `diff` | a text correction moving a cut |
+| numeric ranges | [`api/schemas.py`](../qatf/api/schemas.py) | `1e999` reaching ffmpeg as a duration |
+| work volume | `JobOptions.clips` ≤ 50, `MAX_PLAN_CLIPS` = 100 | one request queuing thousands of encodes |
+
+Both path boundaries **resolve first and check second**, so they catch symlink
+escapes and not just `..`.
+
+---
+
+## The 2026-08 review
+
+Findings from a full pass over the codebase. Everything below is fixed and
+pinned by a check in the smoke suites.
+
+### High
+
+**Arbitrary file write through `language`.** The field is free text and lands in
+the transcript cache *filename*:
+
+```python
+work / f"words-{model}-{language}.json"
+```
+
+`language="../../../../tmp/pwned"` resolved outside the work directory, and
+`write_cache` calls `mkdir(parents=True)` before writing — so a `POST /jobs` body
+could create directory trees and write a `.json` file anywhere the process could
+write, with partly caller-controlled contents. Reaching another job's `job.json`
+was two levels up.
+
+Fixed in `cache_path` (slugified, which leaves `ar` untouched so no cache was
+invalidated) **and** at the schema, which now requires a language tag.
+
+**Arbitrary model load through `whisper`.** `WhisperModel` takes a *size or
+path*: anything outside the published set is treated as a HuggingFace repo id or
+a local directory. An unauthenticated caller could name
+`evil-user/backdoored-ct2-model` and have the server fetch it and hand the
+weights to CTranslate2 — a remote fetch plus untrusted native deserialisation,
+chosen over HTTP. Now an allowlist (`asr.MODEL_SIZES`).
+
+The CLI is deliberately **not** restricted: a local user pointing at their own
+converted model crosses no boundary.
+
+**ASS injection through caption text.** `escape()` handled `{`/`}` but not
+newlines. ASS is line-oriented, so a newline in `Word.text` ends the `Dialogue:`
+line and the remainder is parsed as a fresh directive — including a `[Fonts]`
+section, which libass decodes and hands to the font engine. Reachable through
+`fixups` values in a `POST /jobs` body and through `PUT /transcript`. `escape()`
+now neutralises every line terminator and NUL.
+
+**ASS injection through `font`.** The `Style:` line is comma-delimited, and
+`font` went in verbatim: a comma shifted every field after it, a newline injected
+a whole directive. New `safe_font()`.
+
+### Medium
+
+**Unhandled exception in the validation path.** A body containing `1e999` was
+correctly rejected, but FastAPI's default 422 embeds the offending input — and
+encoding an `inf` raises, turning a clean 422 into an unhandled 500. The new
+handler reports location and reason and never the input, which also stops
+reflecting caller content back.
+
+It fixed a documentation lie too: `ErrorResponse` declares `detail` as a string
+while the default 422 returned a list of objects, so a generated client broke on
+the most common failure of all.
+
+**Unbounded plan.** `PUT /plan` accepted any number of clips, bypassing the
+`clips ≤ 50` cap on `JobOptions` entirely — one request could queue thousands of
+ffmpeg encodes. Capped at `MAX_PLAN_CLIPS`.
+
+**Non-finite timings.** `1e999` parses as `inf`, which satisfied `gt=0` and
+`end > start`, persisted into the plan and reached ffmpeg as `-t inf`. `NaN` was
+worse in `edits.diff`: every comparison against NaN is False, so a NaN retiming
+passed the "timings unchanged" guard as *unchanged*. Both refused now —
+`allow_inf_nan=False` at the schema, an explicit finiteness check in `diff`.
+
+**Container ran as root.** Stage 1 and stage 5 hand caller-supplied media to
+ffmpeg. A demuxer bug should not also be a root shell. Now `USER qatf` (uid
+10001).
+
+**Stage 3 ignored injected settings.** `select.pick_clips` called the
+process-wide `get_settings()`, so `create_app(settings=...)` did not confine the
+one component that opens a network connection and spends a credential. Settings
+are now threaded through `plan_clips`, and the smoke suite asserts the injected
+object arrives.
+
+### Low
+
+**Filtergraph quote breakout.** The `ass=` value is single-quoted and `'` was not
+escaped, so `-o "Ahmed's clips/"` would end the quoting early and the rest of the
+path would parse as filtergraph syntax. CLI-only. Now uses ffmpeg's `'\''` idiom.
+
+---
+
+## What held up
+
+Worth recording, because it is most of the surface:
+
+- **No `shell=True` anywhere.** Every subprocess call passes an argv list, so
+  there is no command injection through filenames or filter arguments.
+- **Uploads stream with the size check inside the loop**, and a failed upload
+  deletes its own job record — no half-written source is left behind.
+- **`slugify` is ASCII-only** and `clip_stem` prefixes an index, so a
+  model-chosen title can never produce traversal or a Windows reserved device
+  name in an output filename. The known cosmetic limitation turns out to be a
+  security property.
+- **No pickle, yaml or eval.** `json.loads` only.
+- **Domain errors carry their own status code**, so there is one mapping layer
+  rather than per-route guesses about what a failure means.
+
+---
+
+## Known gaps
+
+Not defects — decisions, or things that belong at a different layer. Know them
+before exposing this.
+
+**No authentication, authorisation, rate limiting or quota.** Any caller can read
+and modify any job. There is no per-user separation at all.
+
+**No request body size limit.** Starlette has none by default. Field-level caps
+bound the worst cases (`MAX_PLAN_CLIPS`, 200 000 words, `QATF_MAX_UPLOAD_MB` for
+multipart), but a large JSON body is still buffered. Set a limit at the reverse
+proxy.
+
+**`job.error` leaks server paths.** `CommandFailed` embeds the full ffmpeg
+command line and a stderr tail, and the worker records `str(exc)` on the job,
+served by `GET /jobs/{id}`. Useful for debugging, and an information disclosure
+if the API is exposed. Trim it or gate it behind a debug flag before you do.
+
+**ffmpeg parses untrusted media.** It is the largest attack surface here by far
+and it is not sandboxed beyond running as a non-root user. On a multi-tenant
+deployment, run the workers in a separate container with a seccomp profile and no
+network.
+
+**The base image floats.** `python:3.12-slim` is unpinned, and a scanner flags
+known CVEs in it. Pin a digest and rebuild on a schedule.
+
+**`docker compose up` publishes `8000:8000`** — with `QATF_HOST=0.0.0.0`, that is
+an unauthenticated API on every interface. Bind to `127.0.0.1:8000:8000` unless
+something is fronting it.
+
+**`.env` discovery walks upward** to the filesystem root. On a shared host, a
+writable parent directory means arbitrary environment variables. Standard for
+dotenv loaders; worth knowing where you start the process.
+
+### Prompt injection
+
+The transcript is embedded in the stage 3 prompt without fencing, and the caller
+chose the audio — so they influence the prompt, and with `PUT /transcript` they
+control it outright.
+
+The blast radius is small: stage 3 has no tools and its output only chooses
+passages the caller already supplied. But `title`, `hook` and `why` are model
+output returned verbatim in API responses, so **a client that renders them as
+HTML has an XSS problem**. Escape on display.
+
+---
+
+## Deploying it
+
+In rough order of how much each buys you:
+
+1. Put authentication in front of it. There is none.
+2. Set `QATF_MEDIA_ROOT` to a tight directory. It defaults to `.`.
+3. Bind to localhost and terminate TLS at a proxy; set a body size limit there.
+4. Keep `QATF_WORKERS=1` on a single GPU, and cap concurrency at the proxy.
+5. Run the container as the non-root user it now ships with, read-only where you
+   can, `/media` mounted `:ro`.
+6. Isolate the ffmpeg work if the media is untrusted.
+7. Rotate provider keys; they are process environment, never per-request.
+
+---
+
+## Reporting
+
+This is a prototype with no CI and no release process. If you find something,
+open an issue — there is no embargo process to respect yet.

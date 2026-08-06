@@ -55,6 +55,16 @@ class Job:
     transcript_cached: bool = False
     clips: list[dict] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
+    #: output name -> size in bytes, recorded once when the clip is written.
+    #:
+    #: Deriving this on read instead cost one stat() per clip per job per
+    #: request, which is 75% of `GET /jobs` and scales with the job count on the
+    #: endpoint clients poll. A rendered file does not change size afterwards,
+    #: so the size belongs to the write, not the read.
+    #:
+    #: Absent on records written before this field existed; `api.deps` falls
+    #: back to stat() for those rather than reporting a wrong number.
+    output_sizes: dict[str, int] = field(default_factory=dict)
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
 

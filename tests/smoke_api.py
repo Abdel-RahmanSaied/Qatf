@@ -71,8 +71,13 @@ def fake_transcribe(wav, model_size, device, language,
     )
 
 
-def fake_pick_clips(words, n, lo, hi, model=None):
+def fake_pick_clips(words, n, lo, hi, model=None, settings=None):
     SEEN_MODELS.append(model)
+    # Stage 3 is the only part of the pipeline that opens a network connection
+    # and spends a credential, so it must receive the settings the app was built
+    # with. It used to reach for the process-wide get_settings() instead, which
+    # made create_app(settings=...) a half-truth exactly where it mattered most.
+    SEEN_SETTINGS.append(settings)
     return [
         Clip(10.0, 50.0, "First {clip} title", "a hook", "why", 0.9),
         Clip(60.3, 110.7, "ثاني مقطع", "hook two", "why two", 0.7),
@@ -81,6 +86,7 @@ def fake_pick_clips(words, n, lo, hi, model=None):
 
 
 SEEN_MODELS: list[str | None] = []
+SEEN_SETTINGS: list = []
 SEEN_PROMPTS: list[str | None] = []
 audio.run = fake_run
 encode.run = fake_run
@@ -210,6 +216,8 @@ with TestClient(app) as client:
           abs(job["clips"][0]["start"] - (10.0 - 0.15)) < 0.3, str(job["clips"][0]["start"]))
     check("settings model reached stage 3", SEEN_MODELS[0] == "claude-sonnet-5",
           str(SEEN_MODELS))
+    check("the INJECTED settings reached stage 3, not the process-wide ones",
+          SEEN_SETTINGS[0] is SETTINGS, repr(SEEN_SETTINGS[0]))
     check("hotwords reached stage 2", SEEN_PROMPTS[0] == "بايثون فلاتر",
           str(SEEN_PROMPTS))
     check("device actually used is reported", job["device"] == "cuda",
@@ -241,6 +249,156 @@ with TestClient(app) as client:
     section("transcript")
     t = client.get(f"/jobs/{jid}/transcript").json()
     check("transcript served", t["word_count"] == 260 and t["language"] == "ar")
+    check("served transcript already has fixups applied — what you read is what "
+          "gets burned in", t["words"][25]["text"] == "FIXED", t["words"][25]["text"])
+
+    section("transcript correction round trip")
+    # word30 sits at t=15.0s, inside the first selected clip (10-50s).
+    cuts_before = json.dumps(client.get(f"/jobs/{jid}").json()["clips"])
+    pristine = [dict(w) for w in t["words"]]
+    words = [dict(w) for w in t["words"]]
+    words[30]["text"] = "CORRECTED"
+    r = client.put(f"/jobs/{jid}/transcript", json={"words": words})
+    check("correction accepted", r.status_code == 200, r.text[:200])
+    check("one correction recorded", r.json()["edits_applied"] == 1, r.text[:200])
+    check("correction visible in the served transcript",
+          r.json()["words"][30]["text"] == "CORRECTED")
+    check("fixups still applied alongside it", r.json()["words"][25]["text"] == "FIXED")
+    check("done job drops back to planned — its clips now caption stale text",
+          client.get(f"/jobs/{jid}").json()["state"] == "planned")
+    check("CUT POINTS UNCHANGED by a text correction — the core invariant",
+          json.dumps(client.get(f"/jobs/{jid}").json()["clips"]) == cuts_before)
+
+    retimed = [dict(w) for w in words]
+    retimed[30]["start"] = retimed[30]["start"] - 0.5
+    check("retiming a word is refused",
+          client.put(f"/jobs/{jid}/transcript", json={"words": retimed}).status_code == 422)
+    check("adding a word is refused",
+          client.put(f"/jobs/{jid}/transcript",
+                     json={"words": [*words, {"text": "x", "start": 999.0, "end": 999.5}]}
+                     ).status_code == 422)
+    check("removing a word is refused",
+          client.put(f"/jobs/{jid}/transcript",
+                     json={"words": words[:-1]}).status_code == 422)
+    check("timings survived every refusal",
+          client.get(f"/jobs/{jid}/transcript").json()["words"][30]["start"] == 15.0)
+
+    r = client.post(f"/jobs/{jid}/render")
+    job = wait(client, jid, {"done", "failed"})
+    check("re-render after a correction succeeds", job["state"] == "done",
+          job.get("error") or "")
+    corrected_ass = "\n".join(
+        f.read_text(encoding="utf-8")
+        for f in (SETTINGS.data_dir / jid / ".work").glob("*.ass"))
+    check("correction reached the burned-in captions",
+          "CORRECTED" in corrected_ass and "word30" not in corrected_ass)
+    check("still no model call — corrections are stage 5 only",
+          len(SEEN_MODELS) == 1, str(SEEN_MODELS))
+    check("overlay stored beside the cache, not inside it",
+          (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists()
+          and "CORRECTED" not in next(
+              (SETTINGS.data_dir / jid / ".work").glob("words-*.json")
+          ).read_text(encoding="utf-8"))
+
+    r = client.put(f"/jobs/{jid}/transcript", json={"words": pristine})
+    check("re-submitting the untouched transcript clears corrections",
+          r.json()["edits_applied"] == 0 and r.json()["words"][30]["text"] == "word30")
+    check("cleared overlay is removed, not left empty",
+          not (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists())
+
+    section("output sizes come from the record, not the filesystem")
+    # to_response used to stat() every output on every read, which measured 75%
+    # of GET /jobs and scaled with the job count on the endpoint clients poll.
+    rec = json.loads((SETTINGS.data_dir / jid / "job.json").read_text(encoding="utf-8"))
+    check("worker recorded a size per rendered clip",
+          set(rec["output_sizes"]) == set(rec["outputs"]) and rec["outputs"],
+          str(rec.get("output_sizes")))
+    listed = client.get(f"/jobs/{jid}").json()["outputs"]
+    check("sizes reach the wire", all(o["size_bytes"] > 0 for o in listed),
+          str(listed))
+    # delete the file: a stat-based implementation reports 0, a record-based one
+    # still reports the truth. This is the check that proves the syscall is gone.
+    victim = SETTINGS.data_dir / jid / "clips" / listed[0]["name"]
+    kept = victim.read_bytes()
+    victim.unlink()
+    after = client.get(f"/jobs/{jid}").json()["outputs"][0]["size_bytes"]
+    check("no stat() on the read path", after == listed[0]["size_bytes"],
+          f"{after} vs {listed[0]['size_bytes']}")
+    victim.write_bytes(kept)
+    # a record written before output_sizes existed must still report the truth
+    legacy = store_for_legacy = None
+    legacy_id = client.post("/jobs", json={"path": "talk.mp4", "auto_render": False,
+                                           "device": "cpu"}).json()["id"]
+    wait(client, legacy_id, {"planned", "failed", "done"})
+    lp = SETTINGS.data_dir / legacy_id / "job.json"
+    rec2 = json.loads(lp.read_text(encoding="utf-8"))
+    (SETTINGS.data_dir / legacy_id / "clips").mkdir(parents=True, exist_ok=True)
+    (SETTINGS.data_dir / legacy_id / "clips" / "99-legacy.mp4").write_bytes(b"x" * 4096)
+    rec2["outputs"] = ["99-legacy.mp4"]
+    rec2.pop("output_sizes", None)
+    lp.write_text(json.dumps(rec2), encoding="utf-8")
+    app2 = create_app(SETTINGS)
+    with TestClient(app2) as c2:
+        legacy = c2.get(f"/jobs/{legacy_id}").json()["outputs"]
+    check("a record with no stored sizes falls back to stat, not zero",
+          legacy and legacy[0]["size_bytes"] == 4096, str(legacy))
+
+    section("input validation at the boundary")
+    # `language` lands in the transcript cache FILENAME, so a traversal there is
+    # an arbitrary file write, not a cosmetic bug.
+    check("traversal in language rejected",
+          client.post("/jobs", json={"path": "talk.mp4",
+                                     "language": "../../../../tmp/pwned"}
+                      ).status_code == 422)
+    check("a real language code still accepted",
+          client.post("/jobs", json={"path": "talk.mp4", "language": "ar",
+                                     "auto_render": False}).status_code == 202)
+    # WhisperModel takes a "size OR path" — a free string here chooses what code
+    # the server downloads and loads.
+    for bad in ["evil-user/backdoored-ct2-model", "/etc", "../../secrets"]:
+        check(f"whisper {bad!r} rejected",
+              client.post("/jobs", json={"path": "talk.mp4", "whisper": bad}
+                          ).status_code == 422)
+    check("a real whisper size still accepted",
+          client.post("/jobs", json={"path": "talk.mp4", "whisper": "small",
+                                     "auto_render": False}).status_code == 202)
+
+    # a plan bypasses JobOptions.clips entirely — without a cap, one request
+    # queues thousands of ffmpeg encodes
+    flood = {"clips": [{"start": i, "end": i + 1, "title": "x"} for i in range(5000)]}
+    check("oversized plan rejected",
+          client.put(f"/jobs/{jid}/plan", json=flood).status_code == 422)
+    # `1e999` parses as inf, which satisfies gt=0 and end>start, persists into
+    # the plan and reaches ffmpeg as `-t inf`. Sent as a raw body because a JSON
+    # encoder refuses to emit it — which is exactly why it has to be caught
+    # server-side rather than assumed impossible.
+    JSON = {"content-type": "application/json"}
+    check("infinite clip end rejected",
+          client.put(f"/jobs/{jid}/plan", headers=JSON,
+                     content='{"clips": [{"start": 0, "end": 1e999, "title": "x"}]}'
+                     ).status_code == 422)
+    check("NaN clip end rejected",
+          client.put(f"/jobs/{jid}/plan", headers=JSON,
+                     content='{"clips": [{"start": 0, "end": NaN, "title": "x"}]}'
+                     ).status_code == 422)
+    check("absurd clip length rejected",
+          client.put(f"/jobs/{jid}/plan",
+                     json={"clips": [{"start": 0, "end": 10_000_000, "title": "x"}]}
+                     ).status_code == 422)
+    check("non-finite word timing rejected",
+          client.put(f"/jobs/{jid}/transcript", headers=JSON,
+                     content='{"words": [{"text": "x", "start": 1e999, "end": 2}]}'
+                     ).status_code == 422)
+
+    # FastAPI's default 422 embeds the offending input, which (a) cannot be
+    # serialised when it is inf and (b) reflects caller content back
+    bad = client.put(f"/jobs/{jid}/plan", headers=JSON,
+                     content='{"clips": [{"start": 0, "end": 1e999, "title": "SENTINEL"}]}')
+    check("a validation error is the documented {detail: string} shape",
+          isinstance(bad.json().get("detail"), str), bad.text[:200])
+    check("the rejected input is not echoed back", "SENTINEL" not in bad.text, bad.text[:200])
+    check("the reason and location still reach the caller",
+          "end" in bad.json()["detail"], bad.json()["detail"][:160])
 
     section("plan round trip")
     edited = [{"start": 20.0, "end": 61.0, "title": "hand edited",
@@ -260,13 +418,17 @@ with TestClient(app) as client:
     check("empty plan rejected",
           client.put(f"/jobs/{jid}/plan", json={"clips": []}).status_code == 422)
 
+    models_before = len(SEEN_MODELS)
     r = client.post(f"/jobs/{jid}/render")
     check("render accepted", r.status_code == 202, str(r.status_code))
     job = wait(client, jid, {"done", "failed"})
     check("re-render replaced outputs",
           job["state"] == "done" and len(job["outputs"]) == 1,
           f"{job['state']} {len(job['outputs'])} {job.get('error')}")
-    check("no model call on re-render", len(SEEN_MODELS) == 1, str(SEEN_MODELS))
+    # a delta, not an absolute — other sections legitimately start jobs of their
+    # own, and an absolute count silently couples this check to their order
+    check("no model call on re-render", len(SEEN_MODELS) == models_before,
+          f"{models_before} -> {len(SEEN_MODELS)}")
 
     section("upload job, auto_render off")
     with open(MEDIA / "talk.mp4", "rb") as fh:

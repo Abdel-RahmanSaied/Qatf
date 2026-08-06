@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 
 from ...core.config import Settings
 from ...core.constants import VIDEO_SUFFIXES
@@ -121,13 +122,17 @@ async def create_from_upload(
 
     written = 0
     try:
+        # `fh.write` is blocking, and this is an async endpoint — writing
+        # directly would stall the event loop for the whole upload, so every
+        # concurrent poll waits behind a 2 GB file. The threadpool hop costs
+        # microseconds per megabyte and keeps the server answering.
         with target.open("wb") as fh:
             while chunk := await file.read(UPLOAD_CHUNK):
                 written += len(chunk)
                 if written > settings.max_upload_bytes:
                     raise UploadTooLarge(
                         f"upload exceeds QATF_MAX_UPLOAD_MB ({settings.max_upload_mb} MB)")
-                fh.write(chunk)
+                await run_in_threadpool(fh.write, chunk)
     except BaseException:
         store.delete(job.id)          # no half-written source left behind
         raise

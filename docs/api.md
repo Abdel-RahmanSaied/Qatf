@@ -4,11 +4,11 @@
 uvicorn qatf.api:app --reload      # or: qatf-serve, or: python -m qatf.api
 ```
 
-| | |
-|---|---|
-| Swagger UI | http://localhost:8000/docs |
-| ReDoc | http://localhost:8000/redoc |
-| Schema | http://localhost:8000/openapi.json |
+| Surface | Path |
+| --- | --- |
+| Swagger UI | `http://localhost:8000/docs` |
+| ReDoc | `http://localhost:8000/redoc` |
+| Schema | `http://localhost:8000/openapi.json` |
 
 `/docs` is the live contract and carries the same warnings as this page. This
 file exists for reading offline and for the parts a schema cannot express.
@@ -21,7 +21,7 @@ The pipeline takes minutes, so **nothing is synchronous**. Every start returns
 ## Endpoints
 
 | Method | Path | `operationId` | |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `GET` | `/healthz` | `health` | readiness, provider roster, transcription device |
 | `POST` | `/jobs` | `createJob` | start from a server-side path |
 | `POST` | `/jobs/upload` | `createJobFromUpload` | start from a multipart upload |
@@ -29,7 +29,8 @@ The pipeline takes minutes, so **nothing is synchronous**. Every start returns
 | `GET` | `/jobs/{id}` | `getJob` | **poll this** |
 | `DELETE` | `/jobs/{id}` | `deleteJob` | refuses while running |
 | `POST` | `/jobs/{id}/cancel` | `cancelJob` | cooperative |
-| `GET` | `/jobs/{id}/transcript` | `getTranscript` | words + detected language |
+| `GET` | `/jobs/{id}/transcript` | `getTranscript` | words, as they will be captioned |
+| `PUT` | `/jobs/{id}/transcript` | `correctTranscript` | fix misheard words |
 | `GET` | `/jobs/{id}/plan` | `getPlan` | |
 | `PUT` | `/jobs/{id}/plan` | `replacePlan` | the hand-edit round trip |
 | `POST` | `/jobs/{id}/render` | `renderPlan` | replaces previous outputs |
@@ -54,6 +55,7 @@ stateDiagram-v2
     planned --> rendering: 5 · ffmpeg
     rendering --> done
     planned --> planned: PUT /plan
+    done --> planned: PUT /transcript
     done --> rendering: POST /render
     queued --> cancelled
     rendering --> cancelled
@@ -127,6 +129,12 @@ curl -s localhost:8000/jobs/a1b2c3d4e5f6 | jq '{state, message, device, word_cou
 }
 ```
 
+**Poll `GET /jobs/{id}`, not `GET /jobs`.** The single-job endpoint is flat cost;
+the list endpoint is linear in the number of jobs and dominated by a `stat()` per
+rendered clip, so polling it turns into thousands of syscalls a second once a
+server has accumulated jobs. Numbers in
+[quality.md](quality.md#the-api-layer).
+
 Three fields are worth reading on the way past:
 
 - **`device`** — what stage 2 *actually* used. Under `device: auto` this can be
@@ -134,6 +142,86 @@ Three fields are worth reading on the way past:
 - **`transcript_cached`** — whether stage 2 ran at all.
 - **`outputs`** — grows during `rendering` rather than appearing all at once, so
   progress is visible clip by clip.
+
+---
+
+## Correcting misheard words
+
+`GET /jobs/{id}/transcript` returns the transcript **as it will be captioned** —
+fixups and any existing corrections already applied. What you read is what gets
+burned in.
+
+```bash
+curl -s localhost:8000/jobs/$ID/transcript > t.json
+```
+
+```json
+{ "text": "هو",  "start": 204.11, "end": 204.29 },
+{ "text": "من",  "start": 204.29, "end": 204.58 },   ← should be مين
+{ "text": "قال", "start": 204.58, "end": 204.91 }
+```
+
+The `start` is how you find it: 204.29 s is 3:24, so scrub there, hear what was
+actually said, then fix the text and send the whole list back.
+
+```bash
+jq '{words: .words}' t.json | \
+  curl -X PUT localhost:8000/jobs/$ID/transcript \
+       -H 'content-type: application/json' -d @-
+
+curl -X POST localhost:8000/jobs/$ID/render
+```
+
+> **Only `text` may differ.** The word count and every `start`/`end` must match
+> exactly; anything else is a `422`. That refusal is the core invariant enforced
+> at the boundary — a correction can change what a caption reads and can never
+> move a cut.
+>
+> It is also what makes this cheap: the cut points are *provably* identical, so
+> only stage 5 runs again. No model call, no re-transcription.
+
+To split one word into two, put both in that word's `text`. There is no honest
+timing to give a word Whisper never heard.
+
+### Why not just use `fixups`?
+
+`fixups` is a global find-and-replace, keyed by **value**. It fixes the
+systematic errors — a term the decoder always mishears the same way — and it is
+the right tool for those, because it generalises across the whole file and across
+future videos.
+
+It cannot fix a word that is wrong *here* and correct everywhere else. A rule
+`من = مين` would rewrite every `من` in the file, and `من` is one of the most
+common words in Arabic. Corrections are keyed by **position**, so they touch that
+one word.
+
+Use both. Fixups run first, so a correction wins on the word it names.
+
+### Corrections are an overlay
+
+Stored at `<work>/word-edits.json`, beside the transcript cache and never inside
+it, for two reasons:
+
+- re-transcribing must not silently discard them
+- the cache has to keep saying what Whisper *actually* produced, or the
+  measurements in [quality.md](quality.md) stop meaning anything
+
+Each correction records the text it replaced. If the transcript later moves
+underneath it — a re-transcribe at a different `whisper` size, `denoise` toggled
+— the correction goes **stale**: skipped, not applied, and counted in
+`edits_stale`. An index alone would have landed silently on an unrelated word.
+
+`PUT` is a wholesale replace, so re-submitting the untouched transcript clears
+every correction.
+
+A job in `done` drops back to `planned` when you correct it, because its rendered
+clips now caption text nobody will see again.
+
+### What it does not fix
+
+Correcting text does not move a caption in time, and does not change which
+passages the model picked — selection already ran. If a misheard word made the
+model skip a good moment, fix the word and edit the plan directly.
 
 ---
 
@@ -195,12 +283,13 @@ Every field has a working default, so `{"path": "talk.mov"}` is a complete
 request. Same names and defaults as the CLI flags.
 
 | Field | Default | Range / values |
-|---|---|---|
+| --- | --- | --- |
 | `clips` | `5` | 1–50 |
 | `min_len` | `30` | 1–600 s |
 | `max_len` | `75` | 1–600 s · **use 52 for Shorts** |
 | `reframe` | `crop` | `crop` · `blur` |
-| `codec` | `h264` | `h264` · `h265` |
+| `codec` | `h265` | `h264` · `h265` — h265 is ~3x slower to encode |
+| `preset` | `medium` | `veryslow` … `ultrafast`; the render-time lever |
 | `resolution` | `1080p` | `source` · `1080p` · `1440p` · `4k` · `WxH` |
 | `ten_bit` | `false` | needs a 10-bit source |
 | `crf` | `20` | 0–51, lower is better |
@@ -239,7 +328,7 @@ routers never hand-map a domain failure, which is how HTTP concerns stay out of
 the pipeline.
 
 | Status | Means |
-|---|---|
+| --- | --- |
 | `403` | the path escaped `QATF_MEDIA_ROOT` — a security refusal, not a typo check |
 | `404` | no such job, no plan yet, no such clip |
 | `409` | the job is running, or you asked for something that needs a transcript first |
@@ -286,6 +375,11 @@ and the individual flags.
 stage 3 without a credential fails *after* transcription has already run, which
 is minutes wasted.
 
+Cheap to poll: the ffmpeg probe is primed at startup and served from cache, so the
+handler costs ~1 ms. It used to spawn a process per request and measured p99 over
+a second under load — see
+[quality.md](quality.md#healthz-forked-a-process-per-request).
+
 - **`cuda_devices`** is what **CTranslate2** can actually target, not what
   `nvidia-smi` reports. A card the installed CTranslate2 cannot use (compute
   capability, driver mismatch) is not a usable device, and only the engine knows.
@@ -299,7 +393,7 @@ is minutes wasted.
 ## Configuration
 
 | Variable | Default | |
-|---|---|---|
+| --- | --- | --- |
 | `QATF_DATA_DIR` | `qatf-data` | job directories |
 | `QATF_MEDIA_ROOT` | `.` | the `POST /jobs` sandbox |
 | `QATF_WORKERS` | `1` | concurrent jobs |
@@ -329,7 +423,8 @@ $QATF_DATA_DIR/
     source/                        uploads only
     .work/
       audio.wav                    or audio-denoised.wav
-      words-<model>-<lang>.json    the transcript cache
+      words-<model>-<lang>.json    the transcript cache — what Whisper produced
+      word-edits.json              per-word corrections, applied on read
       *.ass                        generated subtitles
     clips/
       01-slug.mp4
@@ -352,7 +447,7 @@ Deleting a job removes the whole directory, cached transcript included.
    the same GPU. Raise it only for render-only work.
 
 **The API has never run against a real video, a real GPU or a real API key.**
-Every stage boundary is exercised by `tests/smoke_api.py` (74 checks), which
+Every stage boundary is exercised by `tests/smoke_api.py` (91 checks), which
 fakes `pipeline.audio.run`, `pipeline.encode.run`, `pipeline.asr.transcribe` and
 `pipeline.select.pick_clips` — so it proves nothing about those four. The CLI has
 run the whole thing end to end; the server has not.

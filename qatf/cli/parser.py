@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..core.constants import CAPTION_MAX_WORDS
 from ..pipeline import DEVICES, REFRAME_MODES
-from ..pipeline.encode import CODECS
+from ..pipeline.encode import CODECS, DEFAULT_CODEC, DEFAULT_PRESET, PRESETS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,16 +23,25 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--reframe", choices=list(REFRAME_MODES), default="crop",
                     help="crop fills the 9:16 frame from the centre; blur fits "
                          "the whole frame over a blurred fill. On a 16:9 source "
-                         "crop keeps ~3x the subject pixels — prefer it unless "
-                         "the framing genuinely needs the full width.")
+                         "crop keeps ~3x the subject pixels AND renders ~1.8x "
+                         "faster — blur is slower and softer, so prefer crop "
+                         "unless the framing genuinely needs the full width.")
     ap.add_argument("--crf", type=int, default=20,
-                    help="quality, lower is better. 20 is a good h264 default; "
-                         "for h265 the same number is roughly one step better "
+                    help="quality, lower is better. 20 is a good default; on "
+                         "h265 the same number is roughly one step better "
                          "quality at a smaller size.")
-    ap.add_argument("--codec", choices=list(CODECS), default="h264",
-                    help="h265 is ~40%% smaller at the same quality but slower "
-                         "to encode. YouTube accepts it; some upload paths on "
-                         "Instagram and TikTok still prefer h264.")
+    ap.add_argument("--codec", choices=list(CODECS), default=DEFAULT_CODEC,
+                    help="h265 (default) is ~40%% smaller at the same quality "
+                         "and the better archival choice, but measured ~3x "
+                         "slower to encode than h264 at the same preset. "
+                         "YouTube accepts it; some upload paths on Instagram "
+                         "and TikTok still prefer h264.")
+    ap.add_argument("--preset", choices=list(PRESETS), default=DEFAULT_PRESET,
+                    help="encoder speed/quality trade — THE lever on render "
+                         "time. veryfast measured 1.6x faster than medium on "
+                         "h265. medium is the default because a clip is "
+                         "rendered once and watched many times; reach for a "
+                         "faster preset while iterating on framing or captions.")
     ap.add_argument("--resolution", default="1080p",
                     help="source | 1080p | 1440p | 4k | WxH. 'source' keeps the "
                          "cropped region at native pixels with no scaling at "

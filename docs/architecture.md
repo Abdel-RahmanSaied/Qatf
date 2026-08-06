@@ -19,7 +19,7 @@ flowchart LR
 ```
 
 | # | Module | Does | Model? | Deterministic? |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 1 | [`pipeline/audio.py`](../qatf/pipeline/audio.py) | demux to 16 kHz mono wav, optionally denoised | no | yes |
 | 2 | [`pipeline/asr.py`](../qatf/pipeline/asr.py) | transcribe with word-level timings | Whisper | no |
 | 3 | [`pipeline/select.py`](../qatf/pipeline/select.py) | pick which passages become clips | **your LLM** | no |
@@ -63,7 +63,7 @@ kind of semantic guess the model makes.
 ### The corollary you will use most
 
 | Symptom | Stage | Where to look |
-|---|---|---|
+| --- | --- | --- |
 | the clip is boring, or cuts an argument in half | 3 | the selection prompt |
 | the clip opens mid-syllable, or clips a final consonant | 4 | word timings, then `snap` |
 
@@ -143,7 +143,8 @@ qatf/
   pipeline/        the five stages, one module each. the ONLY pipeline logic
     audio.py       1.  demux                    ffmpeg
     asr.py         2.  transcribe + word times  faster-whisper
-    fixups.py      2b. spelling substitutions   text only, never timestamps
+    fixups.py      2b. substitutions by value   text only, never timestamps
+    edits.py       2c. corrections by position  text only, never timestamps
     select.py      3.  pick clips               LLM
     cuts.py        4.  snap to word bounds      deterministic
     captions.py    5a. ASS generation           deterministic
@@ -223,9 +224,36 @@ Delete it to re-transcribe; otherwise iterating on clip selection is free.
 the initial prompt. Keying on the output directory alone silently reused an
 English transcript after `--language ar`.
 
-**Not in the key:** the device (see above), and `--fixups` — substitutions are
-applied *on read*, not baked in, so editing the map never orphans the cache and
-never changes a timestamp.
+**Not in the key:** the device (see above), and both text-correction layers —
+`fixups` and `word-edits.json`. Those are applied *on read*, never baked in, so
+editing either never orphans the cache and never changes a timestamp.
+
+That separation is not just about cost. The cache has to keep saying what Whisper
+**actually produced**: the moment a corrected transcript is indistinguishable
+from a raw one, every measurement in [quality.md](quality.md) stops meaning
+anything.
+
+### Two text layers, deliberately
+
+Both change `Word.text` and neither can touch `Word.start`/`Word.end`.
+
+| | Keyed by | Fixes | Lives in |
+| --- | --- | --- | --- |
+| `fixups.py` | value | a term the decoder **always** mishears the same way | a text file you build up across videos |
+| `edits.py` | position | a word misheard **once**, where the same string is correct elsewhere | `<work>/word-edits.json`, per recording |
+
+The second exists because the first structurally cannot do it. On Egyptian
+Arabic, Whisper writing `من` for `مين` is unfixable by substitution — `من` is one
+of the most common words in the language and correct almost everywhere else it
+appears.
+
+Fixups run first, so a correction wins on the word it names.
+
+`edits.diff()` is where the invariant is enforced: it refuses a submission that
+changes the word count or any timing, so there is no code path — API, CLI or
+hand-edited file — by which a caller can move a cut while claiming to fix a
+spelling. Corrections record the text they replaced, so an overlay that no longer
+lines up goes **stale** and is reported rather than landing on the wrong word.
 
 ---
 
@@ -247,7 +275,9 @@ of the height at a fifth of its original resolution. `crop` takes a 1215×2160
 centre slice and scales it to 1080×1920: nearly native, full frame.
 
 Measured on the same clip at the same CRF, **crop carries 2.1× the bitrate** —
-there is genuinely that much more detail to encode.
+there is genuinely that much more detail to encode — and it renders faster, since
+`blur` adds a full-frame gaussian. See
+[quality.md](quality.md#render-performance).
 
 `crop` is the default and is right for a centred talking head. Reach for `blur`
 only when the framing genuinely needs the full width, and know what it costs.

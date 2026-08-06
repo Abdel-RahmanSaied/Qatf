@@ -104,6 +104,7 @@ curl -X POST localhost:8000/jobs -H 'content-type: application/json' \
 | [providers.md](docs/providers.md) | Provider matrix, the three structured-output tiers, self-hosting |
 | [quality.md](docs/quality.md) | The tuning playbook — what actually moved the numbers |
 | [operations.md](docs/operations.md) | GPU, Docker, caching, deployment limits |
+| [security.md](docs/security.md) | Trust model, where each boundary is enforced, known gaps |
 | [troubleshooting.md](docs/troubleshooting.md) | The traps, each with the symptom that identifies it |
 
 Live API reference: **`/docs`** (Swagger UI) and **`/redoc`** once the server is
@@ -127,14 +128,21 @@ Every provider except OpenRouter against its real endpoint. Whisper's *word
 timestamp accuracy* on Arabic — spelling quality is measured, but nobody has
 checked whether the boundaries `snap` depends on land where words actually start.
 
-No CI. 221 checks run in seconds with no ffmpeg, GPU, API key, or network:
+No CI. 326 checks run with no ffmpeg, GPU, API key, or network:
 
 ```bash
-python tests/smoke_pipeline.py    # 109
+python tests/smoke_pipeline.py    # 155
 python tests/smoke_llm.py         #  38
-python tests/smoke_api.py         #  74
+python tests/smoke_api.py         # 110
+python tests/load_api.py          #  23   concurrent load, ~20s
 ruff check .
 ```
+
+`load_api.py` hammers every endpoint from 24 threads and **asserts** — it found
+`/healthz` spawning a process per request, which no sequential test would.
+
+**The API has no authentication.** Put something in front of it before exposing a
+port — see [security.md](docs/security.md).
 
 ---
 

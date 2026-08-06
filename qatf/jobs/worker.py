@@ -24,17 +24,36 @@ if TYPE_CHECKING:
     from .store import JobStore
 
 
-def caption_words(transcript, opts: dict) -> list[Word]:
-    """Transcript words with the job's fixups applied.
+def baseline_words(transcript, opts: dict) -> list[Word]:
+    """Transcript words with the job's fixups applied, and nothing else.
 
-    Applied here rather than at transcription time so the map can change between
-    renders without re-transcribing — and so `run_render` gets the same text as
-    `run_pipeline` did."""
+    This is what a per-word correction is diffed against, so it must be what the
+    caller was shown minus their own corrections — see `api.routers.plan`."""
     words = transcript.words
     mapping = opts.get("fixups") or {}
     if mapping:
         words, _ = pipeline.fixups.apply(words, mapping)
     return words
+
+
+def caption_words(transcript, opts: dict,
+                  work: Path | None = None) -> tuple[list[Word], int, int]:
+    """The text that actually gets burned in: fixups, then per-word corrections.
+
+    Returns (words, corrections applied, corrections gone stale).
+
+    Both layers are applied here rather than at transcription time, so either can
+    change between renders without re-transcribing — and so `run_render` gets
+    exactly the same text `run_pipeline` did.
+
+    Order matters: fixups are a global rule, corrections are a specific override,
+    so a correction wins on the word it names."""
+    words = baseline_words(transcript, opts)
+    if work is None:
+        return words, 0, 0
+    words, applied, stale = pipeline.edits.apply(
+        words, pipeline.edits.load(pipeline.edits.path(work)))
+    return words, applied, len(stale)
 
 
 def run_pipeline(store: JobStore, job_id: str) -> None:
@@ -63,7 +82,7 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
     )
     if not transcript:
         raise NoSpeechFound("no speech found — nothing to clip")
-    words = caption_words(transcript, opts)
+    words, _, _ = caption_words(transcript, opts, work)
     store.update(job_id, language=transcript.language,
                  word_count=len(words), transcript_cached=cached,
                  device=transcript.device or device)
@@ -75,9 +94,13 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
     store.update(job_id, state=JobState.selecting.value,
                  message=f"[3/5] asking {settings.llm_provider}:{model} "
                          f"for {opts['clips']} clips")
-    # stage 4 (snap) runs inside plan_clips — deterministic, no model
+    # stage 4 (snap) runs inside plan_clips — deterministic, no model.
+    # `settings` is passed, not looked up: stage 3 is the only part of the
+    # pipeline that opens a network connection and spends a credential, so it
+    # must use the object this app was built with, not the environment's.
     clips = pipeline.plan_clips(words, opts["clips"],
-                                opts["min_len"], opts["max_len"], model=model)
+                                opts["min_len"], opts["max_len"],
+                                model=model, settings=settings)
     store.update(job_id, clips=clips_to_dicts(clips),
                  message="[4/5] snapped cuts to word boundaries")
 
@@ -105,7 +128,8 @@ def run_render(store: JobStore, job_id: str) -> None:
     transcript = store.transcript_for(job)
     if transcript is None:
         raise EmptyPlan("job has no transcript to caption from")
-    render_plan(store, job_id, caption_words(transcript, job.options), clips)
+    words, _, _ = caption_words(transcript, job.options, job.work_dir(store.root))
+    render_plan(store, job_id, words, clips)
 
 
 def render_plan(store: JobStore, job_id: str,
@@ -117,13 +141,23 @@ def render_plan(store: JobStore, job_id: str,
         stale.unlink()
 
     store.update(job_id, state=JobState.rendering.value, outputs=[],
+                 output_sizes={},
                  message=f"[5/5] rendering {len(clips)} clips")
 
     done: list[str] = []
+    sizes: dict[str, int] = {}
 
     def on_clip(index: int, total: int, clip: Clip, path: Path) -> None:
         done.append(path.name)
-        store.update(job_id, outputs=list(done),
+        # Record the size here, where the file was just written and is already
+        # in the OS cache. Deriving it on read cost one stat() per clip per job
+        # per request and dominated `GET /jobs`; a rendered clip never changes
+        # size, so this belongs to the write.
+        try:
+            sizes[path.name] = path.stat().st_size
+        except OSError:
+            pass
+        store.update(job_id, outputs=list(done), output_sizes=dict(sizes),
                      message=f"[5/5] rendered {index}/{total}: {path.name}")
 
     size = pipeline.encode.parse_resolution(opts.get("resolution", "1080p"))
@@ -137,7 +171,9 @@ def render_plan(store: JobStore, job_id: str,
         mode=opts["reframe"], font=opts["font"], captions=opts.get("captions", True),
         per_line=opts.get("per_line", 4), crf=opts.get("crf", 20),
         width=size[0], height=size[1],
-        codec=opts.get("codec", "h264"), ten_bit=opts.get("ten_bit", False),
+        codec=opts.get("codec", pipeline.encode.DEFAULT_CODEC),
+        ten_bit=opts.get("ten_bit", False),
+        preset=opts.get("preset", pipeline.encode.DEFAULT_PRESET),
         on_clip=on_clip,
         should_stop=lambda: store.cancel_requested(job_id),
     )

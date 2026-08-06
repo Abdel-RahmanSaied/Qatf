@@ -178,12 +178,59 @@ same.
 
 ---
 
+## One word in the captions is wrong
+
+**First ask which kind it is**, because the two have different fixes:
+
+| The word is | Fix | Why |
+| --- | --- | --- |
+| always misheard the same way | `--fixups` / `fixups` | one rule, whole file, reusable across videos |
+| wrong here, correct elsewhere | `PUT /jobs/{id}/transcript`, or `<work>/word-edits.json` | keyed by position, touches only that word |
+
+The second case is the one that bites on Arabic. Whisper writing `من` for `مين`
+cannot be fixed by substitution — `من` is one of the most common words in the
+language and correct almost everywhere else it appears. A global rule would fix
+one caption and wreck a dozen.
+
+Either way the correction changes text only. Cut points are provably unchanged,
+so a re-render is stage 5 alone: no model call, no re-transcription.
+
+---
+
+## `PUT /transcript` returns 422
+
+You changed something other than word text. The message names the word and what
+moved.
+
+Word timings come from the audio and are what every cut point is snapped to, so
+they are reported and never accepted back. The word count is locked for the same
+reason: there is no honest timing to give a word Whisper never heard.
+
+**To split one word into two, put both in that word's `text`.** The caption
+renders the string; the interval is untouched.
+
+---
+
+## A correction stopped working (`edits_stale` is non-zero)
+
+Corrections are keyed by word index and carry the text they replaced. The
+transcript moved underneath them — usually a re-transcribe at a different
+`whisper` size, or `denoise` toggled — so every index shifted.
+
+**This is the guard working.** Without the recorded `was`, correction #1247 would
+have landed silently on an unrelated word. Stale corrections are skipped and
+counted, never applied.
+
+Re-fetch the transcript, re-apply your corrections, `PUT` again.
+
+---
+
 ## A clip opens or closes mid-syllable
 
 **This is always a stage 4 problem, never stage 3.**
 
 | Symptom | Stage | Look at |
-|---|---|---|
+| --- | --- | --- |
 | the clip is boring or cuts an argument in half | 3 | the selection prompt |
 | the clip opens mid-syllable | 4 | word timings, then `snap` |
 
@@ -193,6 +240,58 @@ the only acoustic truth in the system, and their accuracy on Arabic is
 
 If you hand-edited a plan, confirm `snap` was on. A typed `"start": 20.0` is a
 semantic guess exactly like the model's.
+
+---
+
+## Rendering got about 3x slower
+
+**h265 is the default codec.** libx265 measured 3.06x libx264 at the same preset
+— that is the codec doing more work for a ~40% smaller file, not a regression.
+
+Two ways out, depending on what you want:
+
+- `--preset veryfast` — 1.6x back, still h265. Good while iterating.
+- `--codec h264` — back to the old speed, larger files.
+
+Numbers in [quality.md](quality.md#h264-vs-h265-across-presets).
+
+---
+
+## Rendering takes longer than expected
+
+**Check `--reframe` first.** `blur` runs a full-frame gaussian and is markedly
+slower than `crop` — for a result that also has ~3× fewer subject pixels. If you
+did not deliberately choose it, you are paying twice.
+
+Beyond that, a render is **x264-encode-bound**, which has two consequences people
+usually get backwards:
+
+- **Running clips concurrently barely helps.** x264 already saturates the
+  machine, so parallel encodes mostly contend.
+- **The filter chain is not the problem.** Burning captions, `flags=lanczos` and
+  `+faststart` are all effectively free. Stripping them buys nothing.
+
+The lever that works is the encoder speed preset, currently fixed at `medium`.
+Measurements in [quality.md](quality.md#render-performance).
+
+If a *whole job* feels slow rather than the render, it is stage 2 — see below.
+
+---
+
+## A job spends most of its time transcribing
+
+Working as intended: Whisper dominates a cold run by an order of magnitude.
+Things that actually move it:
+
+- **`--device`** — confirm you got the GPU. `GET /jobs/{id}` reports the device
+  stage 2 *actually* used, and `/healthz` reports what `auto` will pick. A
+  `large-v3` run on CPU is very slow.
+- **`--whisper small`** if the quality bar allows.
+- **`--denoise`** — it is ~20% *faster*, not slower, because a cleaner signal
+  makes the decoder fall back to higher temperatures less often.
+- **The transcript cache.** A second run over the same audio should be free; if
+  it is not, you changed a flag that is part of the cache key — see
+  [A cached transcript is in the wrong language](#a-cached-transcript-is-in-the-wrong-language).
 
 ---
 
