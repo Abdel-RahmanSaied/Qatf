@@ -307,6 +307,19 @@ with TestClient(app) as client:
     check("cleared overlay is removed, not left empty",
           not (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists())
 
+    from qatf.core.types import Word as _W
+    from qatf.jobs import worker as _worker
+
+    class _T:
+        words = [_W("a", 0.0, 0.1)] + [_W("dup", 0.1 + i / 10, 0.2 + i / 10)
+                                       for i in range(5)]
+    _base = _worker.baseline_words(_T(), {})
+    check("repair reaches the read path, so captions and GET /transcript agree",
+          [w.text for w in _base] == ["a", "dup", "", "", "", ""],
+          str([w.text for w in _base]))
+    check("and the word count the PUT contract depends on is unchanged",
+          len(_base) == 6)
+
     section("output sizes come from the record, not the filesystem")
     # to_response used to stat() every output on every read, which measured 75%
     # of GET /jobs and scaled with the job count on the endpoint clients poll.

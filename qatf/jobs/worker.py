@@ -26,14 +26,19 @@ if TYPE_CHECKING:
 
 
 def baseline_words(transcript, opts: dict) -> list[Word]:
-    """Transcript words with the job's fixups applied, and nothing else.
+    """Transcript words with the job's fixups and repairs applied, and nothing
+    else.
 
     This is what a per-word correction is diffed against, so it must be what the
-    caller was shown minus their own corrections — see `api.routers.plan`."""
+    caller was shown minus their own corrections — see `api.routers.plan`.
+    Repair belongs here rather than in `caption_words` for that reason: put it
+    downstream and the burned-in captions would disagree with what
+    `GET /jobs/{id}/transcript` returns."""
     words = transcript.words
     mapping = opts.get("fixups") or {}
     if mapping:
         words, _ = pipeline.fixups.apply(words, mapping)
+    words, _ = pipeline.health.repair(words)
     return words
 
 
