@@ -42,10 +42,20 @@ def preflight(args: argparse.Namespace) -> str | None:
         except QatfError as exc:
             return str(exc)
     try:
-        pipeline.filtergraph(args.reframe, None)
+        # x0=0 only satisfies track mode's "needs a path or a seed"; this call
+        # is here to validate the mode name, not to build the real graph.
+        pipeline.filtergraph(args.reframe, None, x0=0)
         pipeline.encode.parse_resolution(args.resolution)
     except ValueError as exc:
         return str(exc)
+    if args.reframe == "track":
+        # Fail now rather than after transcribing an hour of audio. Stage 4b is
+        # the first place this would otherwise be discovered, and by then the
+        # expensive stage has already run.
+        try:
+            pipeline.detect.probe_detector(args.track_tier)
+        except QatfError as exc:
+            return str(exc)
     return None
 
 
@@ -139,11 +149,28 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     size = pipeline.encode.parse_resolution(args.resolution)
-    if size is None:
+    src_dims = None
+    if size is None or args.reframe == "track":
         src = probe_video(args.video)
-        size = pipeline.encode.native_size(src["width"], src["height"], args.reframe)
-        log(f"      source {src['width']}x{src['height']} -> native "
+        src_dims = (int(src["width"]), int(src["height"]))
+    if size is None:
+        size = pipeline.encode.native_size(*src_dims, args.reframe)
+        log(f"      source {src_dims[0]}x{src_dims[1]} -> native "
             f"{size[0]}x{size[1]} (no scaling)")
+
+    tracks = None
+    if args.reframe == "track":
+        log(f"[4b/5] tracking subjects across {len(clips)} clips "
+            f"({args.track_tier})")
+        tracks = pipeline.track_clips(args.video, clips, work, src_dims,
+                                      tier=args.track_tier)
+        lost = sum(1 for t in tracks if t.fallback)
+        weak = sum(1 for t in tracks if not t.fallback and t.coverage < 0.5)
+        log(f"      {len(tracks) - lost - weak} tracked, {weak} thin, "
+            f"{lost} found no subject and fell back to a centre crop")
+        if lost or weak:
+            log(f"      review {work}/track-NN.json for those")
+
     log(f"[5/5] rendering {len(clips)} clips at {size[0]}x{size[1]} "
         f"{args.codec} -preset {args.preset}"
         f"{' 10-bit' if args.ten_bit else ''}")
@@ -152,7 +179,7 @@ def run(args: argparse.Namespace) -> int:
         mode=args.reframe, font=args.font, captions=not args.no_captions,
         per_line=args.per_line, crf=args.crf,
         width=size[0], height=size[1], codec=args.codec, ten_bit=args.ten_bit,
-        preset=args.preset,
+        preset=args.preset, tracks=tracks, src=src_dims,
         on_clip=lambda i, total, clip, path: log(f"      -> {path}"),
     )
 

@@ -72,6 +72,18 @@ class TranscriptTooLong(QatfError):
     status_code = 413
 
 
+# -- stage 4b --------------------------------------------------------------
+
+class DetectorNotAvailable(QatfError):
+    """`--reframe track` was asked for and no detector can run.
+
+    Deliberately not a silent fall back to `crop`: asking for tracking and
+    quietly getting a static centre crop is the same class of lie as asking for
+    `--device cuda` and quietly getting CPU."""
+
+    status_code = 503
+
+
 # -- plan / render ---------------------------------------------------------
 
 class EmptyPlan(QatfError):

@@ -117,6 +117,11 @@ python tests/smoke_llm.py
 python tests/smoke_api.py
 python tests/load_api.py                      # ~20s, 24 threads, asserts
 ruff check .
+
+# the one suite that DOES need ffmpeg — it renders clips and measures where the
+# subject landed. Fixture B additionally needs OpenCV and one network fetch
+# (cached after the first run); it skips rather than fails without them.
+python tests/verify_render.py                 # ~40s
 ```
 
 Transcription is cached at `<work>/words-<model>-<lang>.json`. Delete it to
@@ -728,6 +733,12 @@ Neither is warranted yet.
   correct dimensions is not sufficient — the overflow bug passed every dimension
   check. Generate a test source with
   `ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30:duration=20`.
+  For the reframe path that inspection is now automated: `tests/verify_render.py`
+  renders and measures where the subject landed. **Every fixture there renders
+  `crop` as a control and asserts the control FAILS**, because a control that
+  cannot fail is measuring nothing — twice now a broken harness reported the
+  subject absent from both renders and read exactly like a broken feature
+  (`drawbox` evaluating `x` at init; then bgr24 read as rgb24).
 - **For anything text-layout related, measure glyph positions — do not compare
   frames byte-for-byte, and do not neutralise the thing you are testing.** Both
   shortcuts produced confident wrong answers on the RTL bug (see above). Render

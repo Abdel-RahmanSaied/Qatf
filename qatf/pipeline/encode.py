@@ -16,11 +16,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..core.constants import CAPTION_MAX_WORDS, TARGET_H, TARGET_W
-from ..core.types import Clip, Word
+from ..core.types import Clip, Track, Word
 from ..core.utils import run, slugify
 from .captions import build_ass
 
-REFRAME_MODES = ("crop", "blur")
+#: `track` is `crop` with a moving x. It is deliberately a third mode rather
+#: than a change to `crop`: every number in docs/quality.md was measured against
+#: the two static graphs, and a mode that did not exist cannot invalidate them.
+REFRAME_MODES = ("crop", "blur", "track")
 
 #: Named output sizes. `source` is resolved per-video from the crop region, so
 #: it is not in this table.
@@ -112,25 +115,102 @@ def native_size(src_w: int, src_h: int, mode: str) -> tuple[int, int]:
     For `crop` that is the crop region itself — a 3840x2160 source yields a
     1215x2160 slice, so 1216x2160 (rounded to even) is every source pixel with
     no scaling at all. For `blur` the constraint is the full frame width, which
-    has to fit inside 9/16 of the height, so height drives the size."""
-    if mode == "crop":
+    has to fit inside 9/16 of the height, so height drives the size.
+
+    `track` takes the same window as `crop` and only moves it, so it takes the
+    same size. Falling through to the `blur` branch here would have asked for a
+    3840x6826 output on a 4K source."""
+    if mode in ("crop", "track"):
         return even(min(src_w, round(src_h * 9 / 16))), even(src_h)
     # blur: the source must fit within the width, so the frame is as tall as
     # 16/9 of that width
     return even(src_w), even(round(src_w * 16 / 9))
 
 
+def crop_x_px(cx: float, src_w: int, src_h: int) -> int:
+    """Normalised subject centre -> the crop filter's left edge, in pixels.
+
+    `crop`'s x is an edge, not a centre, so the half-width comes off here. The
+    result is clamped to the frame and forced even: at 4:2:0 an odd offset
+    lands the luma and chroma planes half a chroma sample apart, which shows up
+    as colour shimmering along vertical edges while the window pans."""
+    out_w = even(min(src_w, round(src_h * 9 / 16)))
+    x = int(round(cx * src_w - out_w / 2))
+    x = max(0, min(x, src_w - out_w))
+    return x - (x % 2)
+
+
+def write_sendcmd(track: Track, path: Path, src_w: int, src_h: int) -> Path:
+    """Write the crop path as an ffmpeg sendcmd script.
+
+    One command per keyframe; sendcmd holds the previous value until the next
+    one, so the gaps a shot change leaves are correct rather than missing.
+
+    The values are integers this file computed — nothing from the track reaches
+    the script as text — so a hand-edited track cannot inject sendcmd syntax.
+    The escaping that does matter is on the *path*, in `filtergraph`."""
+    lines = [f"{k.t:.3f} crop x {crop_x_px(k.cx, src_w, src_h)};"
+             for k in track.keyframes]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _escape_path(path: Path) -> str:
+    """Escape a path for use inside a single-quoted filter argument.
+
+    **libavfilter tokenizes filter arguments twice** — once in the graph parser,
+    then again in `av_opt_set_from_string` on the filter's own options — and an
+    escape has to survive both passes. That is why the two characters here are
+    treated differently, and the asymmetry is not a typo:
+
+      ':'  ->  '\\:'      one backslash. Inside single quotes it is literal at
+                          level 1 and consumed as an escape at level 2.
+      "'"  ->  "'\\\\\\''"  the close-escape-reopen idiom, with the backslash
+                          itself escaped so a backslash survives level 1 and is
+                          still there to protect the quote at level 2.
+
+    Writing the shell idiom `'\\''` — correct for one level — passes the graph
+    parser and is then re-read as a quote by the second pass, which DELETES the
+    apostrophe: `-o "Ahmed's clips/"` became `Ahmeds clips/`, libass failed to
+    open the file, and every clip died at stage 5 with exit 234. Verified
+    against ffmpeg 7.1.1 in both directions.
+
+    Used by the `ass` filter and by `sendcmd`, so a regression here breaks
+    captions and subject tracking together."""
+    return (str(path).replace("\\", "/")
+            .replace("'", r"'\\\''")
+            .replace(":", r"\:"))
+
+
 def filtergraph(mode: str, ass_path: Path | None,
-                width: int = TARGET_W, height: int = TARGET_H) -> str:
+                width: int = TARGET_W, height: int = TARGET_H,
+                cmd_path: Path | None = None, x0: int | None = None) -> str:
     """9:16 reframe. 'crop' for centred talking heads, 'blur' when the subject
-    moves or the framing is wide.
+    moves or the framing is wide, 'track' to follow the speaker.
 
     `blur` measured 1.8x the render time of `crop` — `gblur=sigma=32` over a
     full frame is the expense — for a result that also carries ~3x fewer subject
-    pixels. It is slower AND softer; pick it only when the framing needs it."""
+    pixels. It is slower AND softer; pick it only when the framing needs it.
+
+    `track` takes the crop window from stage 4c. Two shapes: with `cmd_path` it
+    is driven per-frame by sendcmd; with `x0` alone it is a static crop at a
+    measured offset, which is what a single-keyframe track means and costs
+    exactly what `crop` costs."""
     if mode == "crop":
         base = (
             f"[0:v]crop=w='min(iw,ih*9/16)':h=ih:x='(iw-out_w)/2':y=0,"
+            f"scale={width}:{height}:flags=lanczos,setsar=1[v0]"
+        )
+    elif mode == "track":
+        if cmd_path is None and x0 is None:
+            raise ValueError("track mode needs cmd_path or x0")
+        # x0 seeds the window so frame 0 is already framed; without it the first
+        # frame renders at x=0 until the first command lands.
+        start_x = x0 if x0 is not None else 0
+        prefix = f"sendcmd=f='{_escape_path(cmd_path)}'," if cmd_path else ""
+        base = (
+            f"[0:v]{prefix}crop=w='min(iw,ih*9/16)':h=ih:x={start_x}:y=0,"
             f"scale={width}:{height}:flags=lanczos,setsar=1[v0]"
         )
     elif mode == "blur":
@@ -146,16 +226,7 @@ def filtergraph(mode: str, ass_path: Path | None,
 
     if ass_path is None:
         return base + ";[v0]null[v]"
-
-    # ffmpeg filter args need ':' and '\' escaped inside the graph. The value is
-    # single-quoted, and inside single quotes ffmpeg recognises no escape except
-    # the close-escape-reopen idiom — so a path containing an apostrophe
-    # ("-o Ahmed's clips/") would otherwise terminate the quoting early and the
-    # rest of the path would be parsed as filtergraph syntax.
-    escaped = (str(ass_path).replace("\\", "/")
-               .replace("'", r"'\''")
-               .replace(":", r"\:"))
-    return base + f";[v0]ass='{escaped}'[v]"
+    return base + f";[v0]ass='{_escape_path(ass_path)}'[v]"
 
 
 def render(video: Path, clip: Clip, ass_path: Path | None,
@@ -163,7 +234,8 @@ def render(video: Path, clip: Clip, ass_path: Path | None,
            fps: float | None = None,
            width: int = TARGET_W, height: int = TARGET_H,
            codec: str = DEFAULT_CODEC, ten_bit: bool = False,
-           preset: str = DEFAULT_PRESET) -> Path:
+           preset: str = DEFAULT_PRESET,
+           cmd_path: Path | None = None, x0: int | None = None) -> Path:
     """Encode one clip.
 
     `preset` is the encoder speed/quality trade and the only knob that
@@ -191,7 +263,8 @@ def render(video: Path, clip: Clip, ass_path: Path | None,
         "-ss", f"{clip.start:.3f}",
         "-i", str(video),
         "-t", f"{clip.duration:.3f}",
-        "-filter_complex", filtergraph(mode, ass_path, width, height),
+        "-filter_complex", filtergraph(mode, ass_path, width, height,
+                                       cmd_path=cmd_path, x0=x0),
         "-map", "[v]", "-map", "0:a?",
         "-c:v", spec["encoder"], "-preset", preset, "-crf", str(crf),
         "-pix_fmt", spec["pix_fmt_10bit"] if ten_bit else spec["pix_fmt"],
@@ -213,6 +286,22 @@ def clip_stem(index: int, clip: Clip) -> str:
     return f"{index:02d}-{slugify(clip.title)}"
 
 
+def _track_args(track: Track | None, cmd_path: Path,
+                src: tuple[int, int]) -> tuple[Path | None, int]:
+    """(sendcmd file, initial x) for one clip.
+
+    A track with one keyframe or none needs no sendcmd file: a window that never
+    moves is a static crop, and rendering it as one costs exactly what `crop`
+    costs. That is the common case whenever the detector found nothing, so the
+    fallback path is also the cheap path."""
+    if track is None or not track.keyframes:
+        return None, crop_x_px(0.5, *src)
+    x0 = crop_x_px(track.keyframes[0].cx, *src)
+    if len(track.keyframes) == 1:
+        return None, x0
+    return write_sendcmd(track, cmd_path, *src), x0
+
+
 def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
                work: Path, *, mode: str = "crop", font: str = "Arial",
                captions: bool = True, per_line: int = CAPTION_MAX_WORDS,
@@ -220,6 +309,8 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
                width: int = TARGET_W, height: int = TARGET_H,
                codec: str = DEFAULT_CODEC, ten_bit: bool = False,
                preset: str = DEFAULT_PRESET,
+               tracks: list[Track] | None = None,
+               src: tuple[int, int] | None = None,
                on_clip: Callable[[int, int, Clip, Path], None] | None = None,
                should_stop: Callable[[], bool] | None = None) -> list[Path]:
     """Render a whole plan.
@@ -229,7 +320,13 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
     that would fight QATF_WORKERS, GPU memory, and the cancel checkpoint below.
 
     `should_stop` is checked between clips only — it cannot interrupt an ffmpeg
-    call already in flight."""
+    call already in flight.
+
+    `tracks` is one solved Track per clip, positionally. It is only read in
+    `track` mode, and a missing or empty one degrades to a centre crop for that
+    clip alone — one clip where no face was found must not fail the batch."""
+    if mode == "track" and src is None:
+        raise ValueError("track mode needs the source dimensions as src=(w, h)")
     outputs: list[Path] = []
     total = len(clips)
     for i, clip in enumerate(clips, 1):
@@ -238,9 +335,13 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
         stem = clip_stem(i, clip)
         ass = (build_ass(clip, words, work / f"{stem}.ass", per_line=per_line, font=font)
                if captions else None)
+        cmd_path, x0 = (_track_args(tracks[i - 1] if tracks and i <= len(tracks) else None,
+                                    work / f"{stem}.cmd", src)
+                        if mode == "track" else (None, None))
         out = render(video, clip, ass, out_dir / f"{stem}.mp4", mode,
                      crf=crf, fps=fps, width=width, height=height,
-                     codec=codec, ten_bit=ten_bit, preset=preset)
+                     codec=codec, ten_bit=ten_bit, preset=preset,
+                     cmd_path=cmd_path, x0=x0)
         outputs.append(out)
         if on_clip:
             on_clip(i, total, clip, out)

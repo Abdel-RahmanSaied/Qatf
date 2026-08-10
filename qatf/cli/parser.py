@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ..core.constants import CAPTION_MAX_WORDS
+from ..core.constants import CAPTION_MAX_WORDS, DEFAULT_TRACK_TIER, TRACK_TIERS
 from ..pipeline import DEVICES, REFRAME_MODES
 from ..pipeline.encode import CODECS, DEFAULT_CODEC, DEFAULT_PRESET, PRESETS
 
@@ -22,10 +22,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-len", type=int, default=75)
     ap.add_argument("--reframe", choices=list(REFRAME_MODES), default="crop",
                     help="crop fills the 9:16 frame from the centre; blur fits "
-                         "the whole frame over a blurred fill. On a 16:9 source "
-                         "crop keeps ~3x the subject pixels AND renders ~1.8x "
-                         "faster — blur is slower and softer, so prefer crop "
-                         "unless the framing genuinely needs the full width.")
+                         "the whole frame over a blurred fill; track follows the "
+                         "subject. On a 16:9 source crop keeps ~3x the subject "
+                         "pixels AND renders ~1.8x faster — blur is slower and "
+                         "softer, so prefer crop unless the framing genuinely "
+                         "needs the full width. track is crop with a moving "
+                         "window and needs OpenCV: pip install -e \".[track]\"")
+    ap.add_argument("--track-tier", choices=list(TRACK_TIERS),
+                    default=DEFAULT_TRACK_TIER,
+                    help="how hard --reframe track looks. fast is 1fps face "
+                         "detection; balanced is 3fps; best is 8fps. Never "
+                         "silently downgraded — asking for a tier this host "
+                         "cannot run quickly runs it slowly and says so.")
     ap.add_argument("--crf", type=int, default=20,
                     help="quality, lower is better. 20 is a good default; on "
                          "h265 the same number is roughly one step better "
