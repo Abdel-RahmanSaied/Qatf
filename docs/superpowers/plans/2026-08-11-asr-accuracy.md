@@ -211,7 +211,14 @@ print('defects:', len(health.find_timing_defects(w)))
 "
 ```
 
-Expected: exactly one run, `count == 7`, starting at `242.0`; and `19` timing defects (12 zero + 7 long).
+Expected: exactly one run, `count == 7`, starting at `242.0`; and **21** timing
+defects — 12 `zero`, 2 `tiny`, 7 `long`.
+
+The two `tiny` ones are `الـ` at 0.02s (t=69.2) and `ايه` at 0.04s (t=547.4).
+Keep them classified: 20ms is below a single glottal pulse, so it cannot be a
+spoken word — `الـ` is a proclitic Whisper split off with a near-zero span, which
+is exactly the degenerate-timing case. `tiny_timings` is consumed by the scorer
+in Tasks 4 and 6.
 
 - [ ] **Step 6: Run lint and commit**
 
