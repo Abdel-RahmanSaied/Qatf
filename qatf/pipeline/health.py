@@ -128,19 +128,19 @@ def repair(words: list[Word], min_run: int = MIN_REPEAT_RUN
 
 
 def warnings(words: list[Word]) -> list[str]:
-    """Human-readable flags naming what a defect is and where to look for it.
+    """Human-readable flags for defects that are NOT repaired — timing only.
 
-    Timing damage is surfaced rather than fixed, so the operator can go and look
-    at the clip edges there. Silence would be the wrong answer: a 15s word is
-    also a 15s caption, and it will not announce itself in a diff.
+    Repetition runs are deliberately absent here. `repair` already fixes them,
+    and the caller logs how many tokens it blanked — a line in `warnings` too
+    would announce the same defect twice. It would also be dead: `repair`
+    blanks in place, so by the time anything downstream calls `warnings` the
+    duplicate tokens are already gone, and a repetition scan over what's left
+    would find nothing (or, worse, find the blanks themselves as a fresh
+    "run" of empty tokens — a phantom defect this function must not invent).
 
-    Repetition runs get a line too, even though `repair` already blanks them —
-    the point is the same as the timing lines: name the timestamp so a human
-    can go inspect the clip, this time to confirm the blank reads naturally
-    rather than to fix a cut. Call this BEFORE `repair` to see it; called after,
-    on the words `repair` already mutated, a run with an empty `token` is a run
-    of the padding `repair` itself left behind, not a fresh defect — skipped, or
-    every repaired transcript would report a phantom repetition of "".
+    Timing damage IS surfaced here, because nothing fixes it. The operator has
+    to go and look at the clip edges. Silence would be the wrong answer: a 15s
+    word is also a 15s caption, and it will not announce itself in a diff.
 
     `nonfinite` is folded into the same near-zero-duration line as `zero`/`tiny`
     rather than given its own paragraph: all three mean `end - start` cannot be
@@ -150,11 +150,6 @@ def warnings(words: list[Word]) -> list[str]:
     the actual bug (see the nonfinite comment in find_timing_defects); grouping
     it is a display choice, not an omission."""
     out: list[str] = []
-    for run in find_repetitions(words):
-        if not run.token:
-            continue
-        out.append(f"{run.count}x {run.token!r} starting at {run.start:.1f}s — "
-                   f"repair() keeps the first and blanks the rest")
     for d in find_timing_defects(words):
         if d.kind == "long":
             out.append(f"word {d.index} ({d.text!r}) spans "
