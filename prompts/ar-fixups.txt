@@ -15,9 +15,40 @@
 
 # ث -> س, how the dialect pronounces it. The vocabulary catches most, not all.
 مسلا = مثلا
+بسلا = مثلا
 
 # AI read as two Arabic letters rather than the term
 الاي = الذكاء
 
 # platform
 المنصبة = المنصة
+
+# --- from the "متسلمش دماغك" pass (12-min 4K, car audio) -------------------
+#
+# Every rule below was verified to match a real token in that transcript before
+# being added. A rule that matches nothing is worse than no rule: it reads as
+# coverage and provides none. Four of the five rules above match zero tokens in
+# that file — they are kept because they earned their place on other material,
+# not because they fire here.
+
+# THE ONE THAT MATTERS. Whisper produced one token where the speaker said two,
+# and the collapse INVERTS the meaning: the clip's whole point is that the
+# person who was hurt does NOT forget. Substituting two words into one token is
+# the sanctioned move — `edits.diff` names it in its own error message — and it
+# leaves the word count and every timing untouched, so no cut can move.
+هممكن = مش ممكن
+
+# ق -> ء / ك, and hamza dropped. Ordinary dialect, none of these are real words,
+# so a whole-token rule cannot damage a correct occurrence elsewhere.
+العصد = القصد
+قويسة = كويسة
+تنشأمش = تتشاءمش
+أرأة = آراء
+الأجال = الأجيال
+
+# heard as place names on noisy car audio — أمانة (trust) became عمانة
+عمانة = أمانة
+
+# only ever appears as "سراحة." with the stop; apply() strips trailing
+# punctuation before matching and puts it back, so this catches it
+سراحة = بصراحة

@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..core.constants import CAPTION_MAX_WORDS
+from ..core.constants import CAPTION_MAX_WORDS, DEFAULT_TRACK_TIER
 from ..jobs.model import RUNNING_STATE_VALUES, RUNNING_STATES, JobState
 
 # encode holds no heavy imports, so naming these at module level costs nothing
@@ -91,11 +91,22 @@ class JobOptions(BaseModel):
                     "Shorts: stage 4 snaps cuts onto word boundaries AFTER the "
                     "model picks them and routinely adds a few seconds.",
     )
-    reframe: Literal["crop", "blur"] = Field(
+    reframe: Literal["crop", "blur", "track"] = Field(
         "crop",
         description="crop takes a centre slice and keeps ~3x the subject pixels; "
                     "blur letterboxes the whole frame over a blurred fill. Use "
-                    "blur only when the framing genuinely needs the full width.",
+                    "blur only when the framing genuinely needs the full width. "
+                    "track is crop with a window that follows the speaker, and "
+                    "needs OpenCV on the SERVER (`pip install -e \".[track]\"`) "
+                    "— without it the job fails with 503 rather than quietly "
+                    "rendering a static crop.",
+    )
+    track_tier: Literal["fast", "balanced", "best"] = Field(
+        DEFAULT_TRACK_TIER,
+        description="how hard `reframe: track` looks: face detection at 1fps, "
+                    "3fps or 8fps. Ignored by the other two modes. Never "
+                    "silently downgraded — a tier this host runs slowly runs "
+                    "slowly and says so.",
     )
     codec: Literal["h264", "h265"] = Field(
         DEFAULT_CODEC,
@@ -197,13 +208,20 @@ class JobOptions(BaseModel):
         parse_resolution(self.resolution)
         # allowlist, not a spelling check — see MODEL_SIZES
         from ..pipeline.asr import MODEL_SIZES
+        # Neither message quotes the rejected value back. The 422 handler in
+        # `api/__init__.py` strips FastAPI's `input` field, but that only covers
+        # errors FastAPI composes: a value formatted into a validator's own
+        # message sails straight through it as part of the reason. Live testing
+        # found all three of these reflecting caller content while the suite
+        # reported the rule as held, because the existing check only exercised
+        # the FastAPI-generated path.
         if self.whisper not in MODEL_SIZES:
             raise ValueError(
-                f"unknown whisper model {self.whisper!r}. Use one of: "
+                f"unknown whisper model. Use one of: "
                 f"{', '.join(sorted(MODEL_SIZES))}")
         if self.preset not in PRESETS:
             raise ValueError(
-                f"unknown preset {self.preset!r}. Use one of: {', '.join(PRESETS)}")
+                f"unknown preset. Use one of: {', '.join(PRESETS)}")
         return self
 
 
