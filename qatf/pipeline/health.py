@@ -103,3 +103,66 @@ def find_timing_defects(words: list[Word], max_span: float = MAX_WORD_SPAN
         out.append(TimingDefect(index=i, kind=kind, text=w.text,
                                 start=w.start, end=w.end))
     return out
+
+
+def repair(words: list[Word], min_run: int = MIN_REPEAT_RUN
+           ) -> tuple[list[Word], int]:
+    """Blank the duplicates in each repetition run. Returns (words, blanked).
+
+    Blanking rather than deleting is the whole trick. Removing the tokens would
+    change the word count, which breaks `edits.py`'s position-keyed overlay and
+    the `PUT /jobs/{id}/transcript` contract that refuses any submission
+    changing the count. A blanked token keeps its index and both timings and
+    simply renders as nothing — `captions.group_words` skips it.
+
+    Applied on read, never written to the cache: the cache has to keep saying
+    what Whisper actually produced, or the numbers in docs/quality.md stop being
+    reproducible."""
+    blanked = 0
+    for run in find_repetitions(words, min_run):
+        for k in range(run.index + 1, run.index + run.count):
+            if words[k].text:
+                words[k].text = ""
+                blanked += 1
+    return words, blanked
+
+
+def warnings(words: list[Word]) -> list[str]:
+    """Human-readable flags naming what a defect is and where to look for it.
+
+    Timing damage is surfaced rather than fixed, so the operator can go and look
+    at the clip edges there. Silence would be the wrong answer: a 15s word is
+    also a 15s caption, and it will not announce itself in a diff.
+
+    Repetition runs get a line too, even though `repair` already blanks them —
+    the point is the same as the timing lines: name the timestamp so a human
+    can go inspect the clip, this time to confirm the blank reads naturally
+    rather than to fix a cut. Call this BEFORE `repair` to see it; called after,
+    on the words `repair` already mutated, a run with an empty `token` is a run
+    of the padding `repair` itself left behind, not a fresh defect — skipped, or
+    every repaired transcript would report a phantom repetition of "".
+
+    `nonfinite` is folded into the same near-zero-duration line as `zero`/`tiny`
+    rather than given its own paragraph: all three mean `end - start` cannot be
+    trusted as a real span (NaN/inf make the subtraction meaningless the same
+    way a zero or 20ms span does), and the operator's next move is identical for
+    all three — go look at that timestamp in the clip. A dropped kind would be
+    the actual bug (see the nonfinite comment in find_timing_defects); grouping
+    it is a display choice, not an omission."""
+    out: list[str] = []
+    for run in find_repetitions(words):
+        if not run.token:
+            continue
+        out.append(f"{run.count}x {run.token!r} starting at {run.start:.1f}s — "
+                   f"repair() keeps the first and blanks the rest")
+    for d in find_timing_defects(words):
+        if d.kind == "long":
+            out.append(f"word {d.index} ({d.text!r}) spans "
+                       f"{d.end - d.start:.1f}s at {d.start:.1f}s — the caption "
+                       f"holds that long and snap may anchor a cut on it")
+    bad = [d for d in find_timing_defects(words) if d.kind in ("zero", "tiny", "nonfinite")]
+    if bad:
+        where = ", ".join(f"{d.start:.1f}s" for d in bad[:5])
+        out.append(f"{len(bad)} word(s) have a zero, near-zero or non-finite "
+                   f"duration ({where}{', …' if len(bad) > 5 else ''})")
+    return out
