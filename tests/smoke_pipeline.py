@@ -909,5 +909,12 @@ check("an ordinary word is not a defect",
 check("a 20ms word is a defect — below one glottal pulse, so not a real word",
       any(d.kind == "tiny" for d in health.find_timing_defects(
           [Word("ok", 0.0, 0.4), Word("الـ", 1.0, 1.02)])))
+check("a NaN timing is a defect — every comparison against NaN is False, so an "
+      "unchecked one reports as no defect at all",
+      [d.kind for d in health.find_timing_defects(
+          [Word("x", float("nan"), 1.0)])] == ["nonfinite"])
+check("an infinite end is a defect",
+      [d.kind for d in health.find_timing_defects(
+          [Word("x", 0.0, float("inf"))])] == ["nonfinite"])
 
 raise SystemExit(report())
