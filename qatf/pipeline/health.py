@@ -44,7 +44,7 @@ class RepetitionRun:
 
 @dataclass
 class TimingDefect:
-    """One word whose timing cannot be right. `kind` is zero | long."""
+    """One word whose timing cannot be right. `kind` is zero | tiny | long."""
 
     index: int
     kind: str
@@ -86,6 +86,8 @@ def find_timing_defects(words: list[Word], max_span: float = MAX_WORD_SPAN
         span = w.end - w.start
         if span <= 0.0:
             kind = "zero"
+        elif span < 0.04:
+            kind = "tiny"
         elif span > max_span:
             kind = "long"
         else:
