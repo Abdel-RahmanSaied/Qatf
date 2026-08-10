@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import pipeline
+from ..core.constants import DEFAULT_TRACK_TIER
 from ..core.errors import EmptyPlan, NoSpeechFound
 from ..core.types import Clip, Word, clips_from_dicts, clips_to_dicts
 from ..core.utils import probe_video
@@ -160,20 +161,43 @@ def render_plan(store: JobStore, job_id: str,
         store.update(job_id, outputs=list(done), output_sizes=dict(sizes),
                      message=f"[5/5] rendered {index}/{total}: {path.name}")
 
+    mode = opts["reframe"]
     size = pipeline.encode.parse_resolution(opts.get("resolution", "1080p"))
-    if size is None:
+    # `track` needs the real dimensions whatever the requested resolution is —
+    # stage 4c solves a crop path in normalised units and stage 5b turns it back
+    # into pixels against the SOURCE frame, not the output one.
+    src_dims = None
+    if size is None or mode == "track":
         src = probe_video(job.video)
-        size = pipeline.encode.native_size(src["width"], src["height"],
-                                           opts["reframe"])
+        src_dims = (int(src["width"]), int(src["height"]))
+    if size is None:
+        size = pipeline.encode.native_size(*src_dims, mode)
+
+    tracks = None
+    if mode == "track":
+        # Stages 4b and 4c. Raises DetectorNotAvailable (503) if OpenCV or the
+        # weights are missing, rather than degrading to a centre crop — asking
+        # for tracking and quietly getting a static crop is the same lie as
+        # asking for `device: cuda` and quietly getting CPU.
+        store.update(job_id, message=f"[5/5] tracking subjects across "
+                                     f"{len(clips)} clips")
+        tracks = pipeline.track_clips(
+            Path(job.video), clips, job.work_dir(store.root), src_dims,
+            tier=opts.get("track_tier", DEFAULT_TRACK_TIER))
+        lost = sum(1 for t in tracks if t.fallback)
+        if lost:
+            store.update(job_id, message=f"[5/5] {lost}/{len(tracks)} clips found "
+                                         f"no subject and fall back to a centre crop")
 
     pipeline.render_all(
         Path(job.video), clips, words, out_dir, job.work_dir(store.root),
-        mode=opts["reframe"], font=opts["font"], captions=opts.get("captions", True),
+        mode=mode, font=opts["font"], captions=opts.get("captions", True),
         per_line=opts.get("per_line", 4), crf=opts.get("crf", 20),
         width=size[0], height=size[1],
         codec=opts.get("codec", pipeline.encode.DEFAULT_CODEC),
         ten_bit=opts.get("ten_bit", False),
         preset=opts.get("preset", pipeline.encode.DEFAULT_PRESET),
+        tracks=tracks, src=src_dims,
         on_clip=on_clip,
         should_stop=lambda: store.cancel_requested(job_id),
     )

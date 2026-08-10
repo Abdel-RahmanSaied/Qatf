@@ -20,15 +20,17 @@ support.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from ..core.constants import TRACK_SAMPLE_FPS, TRACK_TIERS
-from ..core.errors import DetectorNotAvailable
+from ..core.errors import CommandFailed, DetectorNotAvailable, FFmpegNotFound
 from ..core.types import Clip, Detection, detections_from_dicts, detections_to_dicts
-from ..core.utils import binary, log, probe_video, slugify
+from ..core.utils import binary, log, probe_duration, probe_video, slugify
 
 #: Width the frames are scaled to before detection. Detection does not need 4K —
 #: a face is a face at 640 wide — and decoding at full resolution is most of the
@@ -134,10 +136,44 @@ def sample_times(spans: list[tuple[float, float]], fps: float) -> list[float]:
 
 # -- cache ------------------------------------------------------------------
 
-def cache_path(work: Path, detector: str, tier: str) -> Path:
-    """Both components slugified, for the same reason `asr.cache_path` does it:
-    these reach a filename, and `tier` arrives from a request body."""
-    return work / f"faces-{slugify(detector)}-{slugify(tier)}.json"
+def cache_key(video: Path) -> str:
+    """A short identity for the footage plus the settings that shape a detection.
+
+    The video part is (resolved path, size, mtime) rather than a content hash:
+    a `stat()` is free where reading 75GB of ProRes is not, and the two kinds of
+    error are not symmetric. Over-triggering — a move, a copy, a touch — costs
+    one re-detection. Under-triggering ships fifty clips cropped to where a
+    *different* video's face was, with `Track.fallback` False, so nothing flags
+    it. Bias the key toward re-detecting.
+
+    DETECT_WIDTH and YUNET_SCORE are in here for the reason `asr.cache_path`
+    carries the Whisper size: a knob that does not reach the key is a knob that
+    silently does nothing on a warm work directory, and YUNET_SCORE is the one
+    documented as most likely to produce a visibly wrong crop."""
+    try:
+        st = video.stat()
+        identity = f"{video.resolve()}|{st.st_size}|{int(st.st_mtime)}"
+    except OSError:
+        # No file to stat means detection is about to fail anyway; key on the
+        # path alone rather than raising from a pure naming function.
+        identity = str(video)
+    raw = f"{identity}|w={DETECT_WIDTH}|score={YUNET_SCORE}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def cache_path(work: Path, video: Path, detector: str, tier: str) -> Path:
+    """Where one video's detections live.
+
+    `video` is not optional, and that is the point: the previous signature keyed
+    only on detector and tier, so a second video rendered into the same output
+    directory found every span already "covered" and inherited the first one's
+    face positions.
+
+    detector and tier are slugified for the same reason `asr.cache_path` does
+    it: these reach a filename, and `tier` arrives from a request body. The key
+    is a hex digest, so it needs no slugifying to be path-safe."""
+    return (work /
+            f"faces-{slugify(detector)}-{slugify(tier)}-{cache_key(video)}.json")
 
 
 def read_cache(path: Path) -> tuple[list[tuple[float, float]], list[Detection]]:
@@ -260,26 +296,70 @@ def _frames(video: Path, span: tuple[float, float], fps: float,
 
     One ffmpeg per span rather than a seek per sample: seeking is slow and, on
     long-GOP footage, lands on the wrong frame often enough to smear the
-    timeline the whole feature depends on."""
+    timeline the whole feature depends on.
+
+    `sample_times` supplies both the seek point and every label, so a span
+    extended later by a plan edit re-samples the same instants instead of
+    filling the cache with pairs of samples milliseconds apart.
+
+    Labelling from the grid, not by accumulating `start + index / fps`, is the
+    part that is easy to get wrong: `start` is rounded, so walking from it
+    diverges from the true grid within a few frames. Measured — spans (2.37, 5)
+    and (2.0, 5) at 3fps agreed on 2.667 and then produced 3.334 and 3.333 for
+    the same instant, which is precisely the duplicate-observation bug the
+    anchoring exists to prevent.
+
+    Failure is loud in both directions it can go quiet: a non-zero exit raises
+    rather than reading as "no faces here", because `detections_for` records
+    whatever comes back as covered and a silent empty result poisons the cache
+    for every later run."""
     a, b = span
-    proc = subprocess.Popen(
-        [binary("ffmpeg"), "-v", "error", "-ss", f"{a:.3f}", "-i", str(video),
-         "-t", f"{b - a:.3f}", "-vf", f"fps={fps},scale={width}:{height}",
-         "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    size = width * height * 3
-    index = 0
-    try:
-        while True:
-            buf = proc.stdout.read(size)
-            if len(buf) < size:
-                break
-            yield a + index / fps, buf
-            index += 1
-    finally:
-        proc.stdout.close()
-        proc.wait()
+    grid = sample_times([span], fps)
+    if not grid:
+        return
+    start = grid[0]
+    cmd = [binary("ffmpeg"), "-v", "error", "-ss", f"{start:.3f}", "-i", str(video),
+           "-t", f"{b - start:.3f}", "-vf", f"fps={fps},scale={width}:{height}",
+           "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+
+    # stderr goes to a temp file, never a pipe. Nothing reads it until the
+    # decode is over, and a damaged long-GOP source emits `error` lines fast
+    # enough to fill the ~64KB pipe buffer — at which point ffmpeg blocks on the
+    # write, stops producing frames, and `wait()` below never returns.
+    with tempfile.TemporaryFile() as errors:
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errors)
+        except FileNotFoundError as exc:
+            raise FFmpegNotFound(f"{cmd[0]} not found on PATH") from exc
+
+        size = width * height * 3
+        index = 0
+        drained = False
+        try:
+            while True:
+                buf = proc.stdout.read(size)
+                if len(buf) < size:
+                    drained = True
+                    break
+                # grid[index] where the grid reaches; the fallback only covers
+                # ffmpeg handing back more frames than the span asked for.
+                yield (grid[index] if index < len(grid)
+                       else round(start + index / fps, 3)), buf
+                index += 1
+        finally:
+            proc.stdout.close()
+            if not drained:
+                # The consumer stopped early or raised. ffmpeg still has the
+                # rest of the span to decode and would block on a closed pipe.
+                proc.kill()
+            proc.wait()
+
+        if proc.returncode != 0:
+            errors.seek(0)
+            tail = "\n".join(errors.read().decode("utf-8", "replace")
+                             .strip().splitlines()[-15:])
+            raise CommandFailed(
+                f"ffmpeg failed decoding {a:.3f}s-{b:.3f}s of {video}\n{tail}")
 
 
 def detect_span(video: Path, span: tuple[float, float], fps: float,
@@ -341,9 +421,12 @@ def detections_for(video: Path, clips: list[Clip], work: Path, *,
     meta = probe_video(video)
     src_w, src_h = int(meta["width"]), int(meta["height"])
 
-    path = cache_path(work, name, tier)
+    path = cache_path(work, video, name, tier)
     covered, cached = read_cache(path)
-    wanted = clip_spans(clips)
+    # Clamped to the real duration: a span reaching past the last frame decodes
+    # to nothing and would then be written to the cache as covered, so the
+    # margin around a final clip would look permanently detected-and-empty.
+    wanted = clip_spans(clips, probe_duration(video))
     todo = missing(covered, wanted)
 
     if not todo:

@@ -1,7 +1,9 @@
 """Stage 5b — reframe to 9:16, burn captions, encode.
 
-Both filtergraphs are verified to produce 1080x1920 with correct duration.
-Neither tracks the subject; see "Reframing is static" in CLAUDE.md.
+All three filtergraphs are verified to produce 1080x1920 with correct duration.
+`crop` and `blur` are static; `track` takes a solved crop path from stage 4c and
+drives it with `sendcmd`. See "Tracking frames a face, not a speaker" in
+CLAUDE.md for what that does and does not do.
 
 Performance, measured (4 clips at 1080x1920, captions burned in, 16 cores):
 the encoder is the only thing worth tuning here. The filter chain is noise —
@@ -16,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..core.constants import CAPTION_MAX_WORDS, TARGET_H, TARGET_W
+from ..core.errors import ReframeNotConfigured
 from ..core.types import Clip, Track, Word
 from ..core.utils import run, slugify
 from .captions import build_ass
@@ -98,9 +101,14 @@ def parse_resolution(value: str) -> tuple[int, int] | None:
             return even(int(w)), even(int(h))
         except ValueError:
             pass
+    # The rejected value is deliberately NOT quoted back. This message reaches
+    # the caller through the 422 handler, and "never echo caller input" is a
+    # rule the handler cannot enforce on its own: it strips FastAPI's `input`
+    # field, but it cannot un-say a value a validator formatted into its own
+    # prose. The allowed set is what makes the message actionable anyway.
     raise ValueError(
-        f"unknown resolution {value!r}. Use source, "
-        f"{', '.join(RESOLUTIONS)}, or WxH like 1216x2160"
+        f"unknown resolution. Use source, {', '.join(RESOLUTIONS)}, "
+        f"or WxH like 1216x2160"
     )
 
 
@@ -326,7 +334,9 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
     `track` mode, and a missing or empty one degrades to a centre crop for that
     clip alone — one clip where no face was found must not fail the batch."""
     if mode == "track" and src is None:
-        raise ValueError("track mode needs the source dimensions as src=(w, h)")
+        raise ReframeNotConfigured(
+            "track mode needs the source dimensions as src=(w, h) — stage 4c "
+            "solves in normalised units and this is where they become pixels")
     outputs: list[Path] = []
     total = len(clips)
     for i, clip in enumerate(clips, 1):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -503,6 +504,48 @@ kept = cuts.within_duration(
 check("duration filter keeps only the middle", [c.title for c in kept] == ["ok"],
       str([c.title for c in kept]))
 
+# snap used to rewrite the clip it was given and hand back the same object. The
+# first test written for the drift below could not see it: `before` and `after`
+# were one object, so it compared a value with itself and reported no change.
+_input = Clip(10.2, 20.7, "t")
+_before = (_input.start, _input.end)
+_out = cuts.snap(_input, w)
+check("snap does not mutate the clip it is given",
+      (_input.start, _input.end) == _before, f"{_before} -> {(_input.start, _input.end)}")
+check("snap returns a new object", _out is not _input)
+check("snap carries the rest of the clip across",
+      _out.title == "t" and _out.score == _input.score)
+
+# `--plan` and `PUT /jobs/{id}/plan` re-snap by default, so the documented
+# hand-edit round trip runs snap over its own output. Each pass used to move the
+# end onto the NEXT word — measured on real Arabic, five passes grew a clip from
+# 56.70s to 59.21s, which is how a clip chosen to sit under 60s crosses it.
+_once = cuts.snap(Clip(10.2, 20.7, "t"), w)
+_twice = cuts.snap(_once, w)
+check("snap is idempotent — a second pass changes nothing",
+      (_twice.start, _twice.end) == (_once.start, _once.end),
+      f"{(_once.start, _once.end)} -> {(_twice.start, _twice.end)}")
+_many = _once
+for _ in range(8):
+    _many = cuts.snap(_many, w)
+check("and stays put over eight hand-edit round trips",
+      abs(_many.duration - _once.duration) < 1e-9,
+      f"{_once.duration:.4f} -> {_many.duration:.4f}")
+# the fixed point must be a REAL boundary, not just any value snap leaves alone
+check("the idempotent value is still on a word boundary",
+      any(abs(_once.start - max(0.0, x.start - 0.15)) < 1e-6 for x in w)
+      and any(abs(_once.end - (x.end + 0.35)) < 1e-6 for x in w))
+
+# `hi * 1.4` admitted 72.8s for --max-len 52, defeating the only reason anyone
+# passes 52 (landing under the 60s Shorts ceiling once snapping has had its say)
+_over = cuts.within_duration([Clip(0, 56.7, "the real clip 03")], 28, 52)
+check("a clip well over max-len is dropped, not admitted by a 40% margin",
+      _over == [], f"kept {[c.duration for c in _over]}")
+check("but snapping's own slack is still allowed",
+      len(cuts.within_duration([Clip(0, 53.0, "just over")], 28, 52)) == 1)
+check("the slack is absolute, so it does not scale with the request",
+      len(cuts.within_duration([Clip(0, 130.0, "long")], 60, 100)) == 0)
+
 section("model response parsing — stage 3")
 good = """```json
 [{"start_mmss": "00:10", "end_mmss": "01:00", "title": "a", "hook": "h",
@@ -548,6 +591,17 @@ from qatf.core.types import (  # noqa: E402
     track_to_dict,
 )
 from qatf.pipeline import detect, framing  # noqa: E402
+
+
+def _key_with(module, name, value, video):
+    """`cache_key` as it would be with one module-level constant changed."""
+    original = getattr(module, name)
+    setattr(module, name, value)
+    try:
+        return module.cache_key(video)
+    finally:
+        setattr(module, name, original)
+
 
 CW = framing.crop_width(1920, 1080)
 check("crop_width on 16:9", abs(CW - 0.3164) < 0.001, f"{CW:.4f}")
@@ -600,6 +654,10 @@ shaky = framing.solve(jitter, Clip(0, 10, "t"), CW, tier="balanced")
 check("detector jitter inside the deadzone does not move the window",
       len({k.cx for k in shaky.keyframes}) == 1)
 
+check("a still subject emits one keyframe, not one per frame — sendcmd holds "
+      "the last value and a repeat is a no-op that still costs a parse",
+      len(held.keyframes) == 1, f"{len(held.keyframes)} keyframes")
+
 cut = ([det(t / 2.0, 0.30) for t in range(4)] +
        [det(2.0 + t / 2.0, 0.75) for t in range(4)])
 across = framing.solve(cut, Clip(0, 4, "t"), CW, tier="balanced")
@@ -607,6 +665,41 @@ jump = max(abs(b.cx - a.cx)
            for a, b in zip(across.keyframes, across.keyframes[1:], strict=False))
 check("a shot change re-anchors instantly instead of panning across it",
       jump > 0.4, f"largest step {jump:.3f}")
+
+# One bad sample is what YuNet at 0.6 produces on a poster or a reflection, and
+# what `subject` produces when two similarly sized faces trade places. Treating
+# it as a cut re-anchors twice inside two samples, and the re-anchor path
+# consults neither the deadzone nor TRACK_MAX_PAN — a visible whip.
+spike = ([det(i / 3.0, 0.30) for i in range(9)] + [det(3.0, 0.90)] +
+         [det(3.0 + i / 3.0, 0.30) for i in range(1, 9)])
+spiked = framing.solve(spike, Clip(0, 6, "t"), CW, tier="balanced")
+worst = max(abs(b.cx - a.cx) / max(1e-9, b.t - a.t)
+            for a, b in zip(spiked.keyframes, spiked.keyframes[1:], strict=False))
+check("a single outlier detection does not re-anchor the window",
+      worst <= TRACK_MAX_PAN * CW * 1.05, f"peak speed {worst:.4f}")
+
+# TRACK_SHOT_JUMP alone is a per-sample distance, and the tiers sample 8x apart.
+# At `fast` (1s between samples) a walking presenter cleared it on every sample
+# and the path stepped instead of panning.
+stride = [det(float(i), 0.20 + 0.10 * i) for i in range(6)]
+walked = framing.solve(stride, Clip(0, 6, "t"), CW, tier="fast")
+check("ordinary motion at the fast tier's 1s sample gap is not read as a cut",
+      len(framing._segment(framing._observations(stride, Clip(0, 6, "t")))) == 1)
+step = max(abs(b.cx - a.cx) / max(1e-9, b.t - a.t)
+           for a, b in zip(walked.keyframes, walked.keyframes[1:], strict=False))
+check("so the window pans within the speed limit instead of stepping",
+      step <= TRACK_MAX_PAN * CW * 1.05, f"peak speed {step:.4f}")
+# 0.85 of frame width in one second, not 0.73: below TRACK_SHOT_SPEED a cut is
+# genuinely indistinguishable from a sprint at this sample rate, and the tier
+# documents that it absorbs those rather than guessing. Writing the fixture at
+# 0.73 tested the blind spot and read as a broken feature.
+check("a genuine cut is still a cut at the fast tier",
+      len(framing._segment([(0.0, 0.10), (1.0, 0.12), (2.0, 0.95),
+                            (3.0, 0.95)])) == 2)
+check("the return from an outlier does not re-anchor either — a spike is two "
+      "large steps, and confirming only the first half still whips",
+      len(framing._segment([(0.0, 0.30), (0.33, 0.30), (0.67, 0.90),
+                            (1.0, 0.30), (1.33, 0.30)])) == 1)
 
 section("subject tracking — the trust boundary")
 nan = Track(keyframes=[Keyframe(float("nan"), 0.5), Keyframe(0.0, float("inf")),
@@ -634,6 +727,15 @@ check("an oversized track is capped", len(huge.keyframes) == TRACK_MAX_KEYFRAMES
 check("a track sanitised to nothing becomes a centre crop",
       framing.sanitise(Track(keyframes=[Keyframe(float("nan"), 0.5)]),
                        CW, 10.0).keyframes == [Keyframe(0.0, 0.5)])
+_before = Track(keyframes=[Keyframe(0.0, -5.0), Keyframe(99.0, 0.5)])
+_after = framing.sanitise(_before, CW, 10.0)
+check("sanitise leaves the caller's track alone on every path — it used to "
+      "rewrite it in place when anything survived and copy when nothing did",
+      _before.keyframes == [Keyframe(0.0, -5.0), Keyframe(99.0, 0.5)]
+      and _after.keyframes != _before.keyframes)
+check("sanitise carries the provenance across",
+      framing.sanitise(Track(keyframes=[Keyframe(0.0, 0.5)], detector="yunet",
+                             tier="best", coverage=0.9), CW, 10.0).detector == "yunet")
 check("track round trip is lossless",
       track_from_dict(track_to_dict(solved)) == solved)
 check("track round trip tolerates a partial hand-edited dict",
@@ -660,8 +762,33 @@ check("sample times sit on a grid anchored at zero, so extending a span "
       == {1.0})
 raises("a non-positive sample rate is rejected", ValueError,
        detect.sample_times, [(0, 1)], 0.0)
+check("a span is clamped to the end of the video, so the margin past the last "
+      "frame is never recorded as detected",
+      detect.clip_spans([Clip(10, 20, "a")], 21.0) == [(8.0, 21.0)])
 check("the face cache cannot escape the work directory through the tier",
-      detect.cache_path(Path("/w"), "haar", "../../etc/passwd").parent == Path("/w"))
+      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "haar",
+                        "../../etc/passwd").parent == Path("/w"))
+
+# The regression this guards is the `--language ar` incident repeating: two
+# videos rendered into one output directory shared a cache, so the second
+# inherited the first's face positions with fallback=False and nothing flagged
+# it. A key that omits an input is a key that returns another input's answer.
+check("the face cache key separates two videos",
+      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "yunet", "balanced")
+      != detect.cache_path(Path("/w"), Path("/v/b.mp4"), "yunet", "balanced"))
+check("the face cache key covers the detector knobs, so lowering the score "
+      "threshold is not a no-op on a warm work directory",
+      detect.cache_key(Path("/v/a.mp4"))
+      != _key_with(detect, "YUNET_SCORE", 0.9, Path("/v/a.mp4")))
+check("the face cache key covers the detection width",
+      detect.cache_key(Path("/v/a.mp4"))
+      != _key_with(detect, "DETECT_WIDTH", 320, Path("/v/a.mp4")))
+check("the same video keys the same twice",
+      detect.cache_key(Path("/v/a.mp4")) == detect.cache_key(Path("/v/a.mp4")))
+_real = Path(__file__).resolve()
+check("the key follows the file, not just its name — a re-encode in place "
+      "re-detects rather than reusing the old positions",
+      detect.cache_key(_real) != detect.cache_key(_real.parent / "_harness.py"))
 
 section("subject tracking — detector registry and model lookup")
 # Structural, and not busywork: `fast` mapped to a detector that OpenCV 5.0
@@ -719,9 +846,12 @@ raises("an unknown detector is rejected", DetectorNotAvailable,
 section("subject tracking — the render seam")
 check("track is a mode, and the static two are untouched",
       enc.REFRAME_MODES == ("crop", "blur", "track"))
+# One assertion, not `exact or within-2px`: the tolerant clause subsumed the
+# exact one, so a 1px regression passed and the precise half was decoration.
 check("crop centre maps to the frame centre",
-      enc.crop_x_px(0.5, 1920, 1080) == enc.even((1920 - enc.even(round(1080 * 9 / 16))) // 2)
-      or abs(enc.crop_x_px(0.5, 1920, 1080) - (1920 - round(1080 * 9 / 16)) / 2) <= 2)
+      enc.crop_x_px(0.5, 1920, 1080)
+      == enc.even((1920 - enc.even(round(1080 * 9 / 16))) // 2),
+      str(enc.crop_x_px(0.5, 1920, 1080)))
 check("crop x is clamped inside the frame",
       enc.crop_x_px(-3.0, 1920, 1080) == 0
       and enc.crop_x_px(9.0, 1920, 1080) == 1920 - enc.even(round(1080 * 9 / 16)))
@@ -739,7 +869,7 @@ odd = enc.filtergraph("track", None, cmd_path=Path("/tmp/Ahmed's: clips/a.cmd"),
 check("the sendcmd path is escaped exactly as the ass path is",
       r"'\\\''" in odd and r"\:" in odd, odd.split("sendcmd=f=")[1][:44])
 
-_cmd_file = Path(os.environ.get("TMPDIR", "/tmp")) / "qatf-smoke-track.cmd"
+_cmd_file = Path(tempfile.gettempdir()) / "qatf-smoke-track.cmd"
 enc.write_sendcmd(Track(keyframes=[Keyframe(0.0, 0.5), Keyframe(0.5, 0.6)]),
                   _cmd_file, 1920, 1080)
 _written = _cmd_file.read_text(encoding="utf-8").splitlines()

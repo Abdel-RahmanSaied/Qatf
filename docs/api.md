@@ -287,7 +287,8 @@ request. Same names and defaults as the CLI flags.
 | `clips` | `5` | 1–50 |
 | `min_len` | `30` | 1–600 s |
 | `max_len` | `75` | 1–600 s · **use 52 for Shorts** |
-| `reframe` | `crop` | `crop` · `blur` |
+| `reframe` | `crop` | `crop` · `blur` · `track` — `track` needs OpenCV **on the server** |
+| `track_tier` | `balanced` | `fast` · `balanced` · `best`; face detection at 1 · 3 · 8 fps. `track` only |
 | `codec` | `h265` | `h264` · `h265` — h265 is ~3x slower to encode |
 | `preset` | `medium` | `veryslow` … `ultrafast`; the render-time lever |
 | `resolution` | `1080p` | `source` · `1080p` · `1440p` · `4k` · `WxH` |
@@ -317,6 +318,15 @@ Two fields behave differently from what their names suggest:
 - **`font` is resolved on the rendering host**, which under the API is the
   server, not the caller's machine. libass falls back silently, so a missing
   Arabic face ships as tofu rather than an error.
+
+`reframe: track` is the third: it runs a **face detector on the server**, so the
+server needs OpenCV (`pip install -e ".[track]"`; the weights are vendored). If
+it cannot, the job fails with `DetectorNotAvailable` rather than quietly
+rendering a static crop — same contract as `device: cuda`. Note also that
+tracking frames the largest face, not the speaker: the active-speaker model is
+not built, so `track_tier` buys sample rate and nothing else. Detections are
+cached per video under the job's work directory, so re-rendering an edited plan
+does not re-run the detector.
 
 ---
 

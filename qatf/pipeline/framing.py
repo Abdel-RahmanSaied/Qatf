@@ -25,6 +25,7 @@ from ..core.constants import (
     TRACK_MAX_PAN,
     TRACK_SAMPLE_FPS,
     TRACK_SHOT_JUMP,
+    TRACK_SHOT_SPEED,
     TRACK_SMOOTH_SECONDS,
     TRACK_SPEAKING_MIN,
 )
@@ -81,6 +82,54 @@ def _observations(dets: list[Detection], clip: Clip) -> list[tuple[float, float]
     return out
 
 
+def _cut_threshold(dt: float) -> float:
+    """How far the subject may move in `dt` seconds before it must be a cut.
+
+    Scaled by the gap because the gap varies: 8x between tiers, and more than
+    that wherever the detector found nobody for a while. An absolute per-sample
+    distance means something different in each of those cases — see
+    TRACK_SHOT_JUMP."""
+    return max(TRACK_SHOT_JUMP, TRACK_SHOT_SPEED * max(0.0, dt))
+
+
+def _is_cut(obs: list[tuple[float, float]], index: int) -> bool:
+    """Whether the step into obs[index] is a shot change rather than motion.
+
+    A cut has to be confirmed on BOTH sides, because a single bad sample
+    produces two large steps — into it and back out of it — and either one alone
+    looks exactly like a cut. YuNet at 0.6 fires on posters and reflections, and
+    `subject`'s largest-face fallback flips between two similarly sized faces in
+    a two-shot, so lone bad samples are the norm rather than the exception.
+
+    So the step must land somewhere that PERSISTS into the next sample (or the
+    spike itself opens a segment), and it must leave somewhere that was ITSELF
+    established (or the return from the spike opens one). Checking only the
+    first was the more obvious half and it is not enough: the window held
+    position through the spike and then re-anchored on the way back, which is
+    the same whip from the other direction. A real cut passes both; the moving
+    average absorbs what does not.
+
+    A jump in the final sample is therefore never a cut. That is the right way
+    to be wrong: an unconfirmed re-anchor at the very end of a clip buys one
+    frame of correct framing and risks a whip on the last thing the viewer
+    sees."""
+    prev, cur = obs[index - 1], obs[index]
+    if abs(cur[1] - prev[1]) <= _cut_threshold(cur[0] - prev[0]):
+        return False
+
+    if index + 1 >= len(obs):
+        return False
+    nxt = obs[index + 1]
+    if abs(nxt[1] - cur[1]) > _cut_threshold(nxt[0] - cur[0]):
+        return False                      # cur is a one-sample spike
+
+    if index >= 2:
+        before = obs[index - 2]
+        if abs(prev[1] - before[1]) > _cut_threshold(prev[0] - before[0]):
+            return False                  # prev was the spike; this is the return
+    return True
+
+
 def _segment(obs: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
     """Split the observations wherever the subject jumps far enough to be a cut
     rather than a movement. Smoothing across a hard cut would invent a pan that
@@ -88,14 +137,11 @@ def _segment(obs: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
     if not obs:
         return []
     segments = [[obs[0]]]
-    # strict=False: pairing each element with its successor is exactly what the
-    # length mismatch is for. `edits.diff` uses strict=True for the opposite
-    # reason — there a length mismatch is the bug being caught.
-    for prev, cur in zip(obs, obs[1:], strict=False):
-        if abs(cur[1] - prev[1]) > TRACK_SHOT_JUMP:
-            segments.append([cur])
+    for index in range(1, len(obs)):
+        if _is_cut(obs, index):
+            segments.append([obs[index]])
         else:
-            segments[-1].append(cur)
+            segments[-1].append(obs[index])
     return segments
 
 
@@ -123,7 +169,15 @@ def _drive(segments: list[list[tuple[float, float]]], duration: float,
     one time an instant jump is correct, because the source already jumped.
 
     Both limits scale by `crop_w`, because they are budgets against what the
-    viewer sees rather than against the source frame."""
+    viewer sees rather than against the source frame.
+
+    A keyframe is emitted only where the window actually moves. sendcmd holds
+    the previous value until the next command, so a repeat is a no-op that still
+    costs a parse at graph init and an `avfilter_graph_send_command` plus an
+    expression re-parse at runtime. Emitting unconditionally at TRACK_EMIT_FPS
+    put ~1800 identical `crop x` lines in the script for a stationary subject in
+    a 60s clip, ate the TRACK_MAX_KEYFRAMES budget on redundancy, and made a
+    hand-edited `track-NN.json` unreadable. The rendered result is identical."""
     deadzone = TRACK_DEADZONE * crop_w
     settle = deadzone * _SETTLE_RATIO
     max_pan = TRACK_MAX_PAN * crop_w
@@ -132,6 +186,14 @@ def _drive(segments: list[list[tuple[float, float]]], duration: float,
     cur = _clamp(segments[0][0][1], lo, hi)
     moving = False
     t = 0.0
+
+    def emit(when: float, where: float) -> None:
+        value = round(where, 5)
+        # The first keyframe always lands: `encode._track_args` seeds the crop
+        # window from it, so dropping it would render frame 0 at x=0.
+        if keys and keys[-1].cx == value:
+            return
+        keys.append(Keyframe(round(when, 4), value))
 
     for index, seg in enumerate(segments):
         if index > 0:
@@ -143,7 +205,7 @@ def _drive(segments: list[list[tuple[float, float]]], duration: float,
             t = max(t, seg[0][0])
             cur = _clamp(seg[0][1], lo, hi)
             moving = False
-            keys.append(Keyframe(round(t, 4), round(cur, 5)))
+            emit(t, cur)
             t += step
 
         seg_end = seg[-1][0] if index + 1 < len(segments) else duration
@@ -158,7 +220,7 @@ def _drive(segments: list[list[tuple[float, float]]], duration: float,
             if moving:
                 reach = max_pan * step
                 cur = _clamp(cur + _clamp(gap, -reach, reach), lo, hi)
-            keys.append(Keyframe(round(t, 4), round(cur, 5)))
+            emit(t, cur)
             t += step
 
     return keys
@@ -215,6 +277,13 @@ def solve(dets: list[Detection], clip: Clip, crop_w: float, *,
 def sanitise(track: Track, crop_w: float, duration: float) -> Track:
     """Make any track safe to render, wherever it came from.
 
+    Returns a new Track and never touches the one passed in — the same contract
+    as `solve`. An earlier version rewrote `track.keyframes` in place on the
+    success path and built a fresh Track on the fallback path, so a caller could
+    rely on neither: using it for the side effect worked on one input and
+    silently did nothing on the other, and keeping the original to compare
+    against found it already modified.
+
     Enforced here rather than only at the HTTP layer because the risk is a crop
     window off the edge of the frame — an ffmpeg failure — not a bad request.
     The CLI reading a hand-edited `track-NN.json` is held to the same rule.
@@ -249,5 +318,5 @@ def sanitise(track: Track, crop_w: float, duration: float) -> Track:
         return Track(keyframes=[Keyframe(0.0, 0.5)], detector=track.detector,
                      tier=track.tier, coverage=0.0, fallback=True)
 
-    track.keyframes = clean
-    return track
+    return Track(keyframes=clean, detector=track.detector, tier=track.tier,
+                 coverage=track.coverage, fallback=track.fallback)

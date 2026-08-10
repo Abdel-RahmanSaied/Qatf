@@ -22,7 +22,7 @@ import json
 import os
 from pathlib import Path
 
-from ..core.errors import SeedTooLong
+from ..core.errors import SeedTooLong, TranscriberNotAvailable
 from ..core.types import Transcript, Word, words_from_dicts, words_to_dicts
 from ..core.utils import log, slugify
 
@@ -95,13 +95,32 @@ def resolve_device(requested: str = "auto") -> str:
     return "cuda" if cuda_device_count() > 0 else "cpu"
 
 
+def whisper_model_class():
+    """Import WhisperModel, or say which package is missing and how to get it.
+
+    Imported inside the functions that need it — CLAUDE.md's import-cost rule —
+    which is exactly why the failure needs typing here: a lazy import turns a
+    missing extra into a `ModuleNotFoundError` raised from the middle of a
+    running job rather than at startup. It reached the job record raw, with no
+    status code and no install hint, until a live API run surfaced it."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise TranscriberNotAvailable(
+            "stage 2 needs faster-whisper — install it with "
+            "`pip install -e \".[all]\"`, or pass --plan to render a plan you "
+            "already have and skip transcription entirely"
+        ) from exc
+    return WhisperModel
+
+
 def load_model(model_size: str, device: str, requested: str = "auto"):
     """Construct a WhisperModel, falling back to CPU when a GPU load fails.
 
     The fallback applies only when the device was auto-selected. If the caller
     named `cuda` explicitly, the failure is raised — they asked a specific
     question and deserve the real answer."""
-    from faster_whisper import WhisperModel
+    WhisperModel = whisper_model_class()
 
     try:
         return WhisperModel(model_size, device=device,
@@ -170,7 +189,7 @@ def _transcribe_on(wav: Path, model_size: str, device: str,
     guard around construction alone never sees it."""
     if device == "cuda":
         register_cuda_dlls()
-    from faster_whisper import WhisperModel
+    WhisperModel = whisper_model_class()
 
     model = WhisperModel(model_size, device=device,
                          compute_type=compute_type_for(device))

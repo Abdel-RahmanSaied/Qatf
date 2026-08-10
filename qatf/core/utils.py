@@ -74,6 +74,27 @@ def probe_video(path) -> dict:
             f"could not read dimensions from {path}: {out.stdout!r}") from exc
 
 
+def probe_duration(path) -> float | None:
+    """Container duration in seconds, or None when it cannot be determined.
+
+    None rather than an exception: plenty of valid containers (a raw stream, a
+    still-growing recording) simply do not carry one, and the callers use this
+    to *clamp* a range. Not knowing the end of the video is a reason to skip the
+    clamp, not to fail a render."""
+    out = subprocess.run(
+        [binary("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return None
+    try:
+        value = float(out.stdout.strip().splitlines()[0])
+    except (IndexError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 #: `/healthz` answers this on every request, and `check_ffmpeg` spawns a
 #: process. Measured under concurrent polling that put /healthz at p99 > 1s —
 #: twenty times the endpoint that does real work — because process creation
