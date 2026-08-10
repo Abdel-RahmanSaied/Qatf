@@ -906,5 +906,8 @@ check("a word longer than the span limit is a defect",
       any(d.kind == "long" and d.index == 2 for d in _defects), str(_defects))
 check("an ordinary word is not a defect",
       all(d.index != 0 for d in _defects))
+check("a 20ms word is a defect — below one glottal pulse, so not a real word",
+      any(d.kind == "tiny" for d in health.find_timing_defects(
+          [Word("ok", 0.0, 0.4), Word("الـ", 1.0, 1.02)])))
 
 raise SystemExit(report())
