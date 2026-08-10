@@ -917,4 +917,27 @@ check("an infinite end is a defect",
       [d.kind for d in health.find_timing_defects(
           [Word("x", 0.0, float("inf"))])] == ["nonfinite"])
 
+_src = [Word("a", 0.0, 0.1), Word("x", 0.1, 0.2), Word("x", 0.2, 0.3),
+        Word("x", 0.3, 0.4), Word("x", 0.4, 0.5), Word("b", 0.5, 0.6)]
+_times = [(w.start, w.end) for w in _src]
+_fixed, _n = health.repair(_src)
+check("the duplicates are blanked, the first is kept",
+      [w.text for w in _fixed] == ["a", "x", "", "", "", "b"], str([w.text for w in _fixed]))
+check("three duplicates were blanked", _n == 3, str(_n))
+check("REPAIR PRESERVES THE WORD COUNT — edits.py is keyed by position",
+      len(_fixed) == len(_times))
+check("REPAIR NEVER TOUCHES A TIMING — snap anchors cuts on these",
+      [(w.start, w.end) for w in _fixed] == _times)
+check("a clean transcript is left alone",
+      health.repair([Word("a", 0.0, 0.1), Word("b", 0.1, 0.2)])[1] == 0)
+
+check("warnings name the timestamp so the clip can be inspected",
+      any("242.0" in s for s in health.warnings(
+          [Word("x", 242.0 + i / 10, 242.1 + i / 10) for i in range(5)])))
+
+check("captions skip a blanked token instead of emitting an empty word",
+      [[w.text for w in line] for line in
+       captions.group_words([Word("PHP", 0, 1), Word("", 1, 2), Word("ماتت", 2, 3)])]
+      == [["PHP", "ماتت"]])
+
 raise SystemExit(report())
