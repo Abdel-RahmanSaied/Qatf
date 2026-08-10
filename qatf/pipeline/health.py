@@ -12,6 +12,7 @@ once means the scorer cannot disagree with the runtime about what a defect is.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..core.types import Word
@@ -44,7 +45,7 @@ class RepetitionRun:
 
 @dataclass
 class TimingDefect:
-    """One word whose timing cannot be right. `kind` is zero | tiny | long."""
+    """One word whose timing cannot be right. `kind` is nonfinite | zero | tiny | long."""
 
     index: int
     kind: str
@@ -83,15 +84,22 @@ def find_timing_defects(words: list[Word], max_span: float = MAX_WORD_SPAN
     tell them apart."""
     out: list[TimingDefect] = []
     for i, w in enumerate(words):
-        span = w.end - w.start
-        if span <= 0.0:
-            kind = "zero"
-        elif span < 0.04:
-            kind = "tiny"
-        elif span > max_span:
-            kind = "long"
+        if not (math.isfinite(w.start) and math.isfinite(w.end)):
+            # Checked BEFORE the span comparisons, not after: every comparison
+            # against NaN is False, so an unchecked NaN falls through all three
+            # branches and reports as no defect at all. `edits.diff` learned
+            # this first; see the trust-boundary table in CLAUDE.md.
+            kind = "nonfinite"
         else:
-            continue
+            span = w.end - w.start
+            if span <= 0.0:
+                kind = "zero"
+            elif span < 0.04:
+                kind = "tiny"
+            elif span > max_span:
+                kind = "long"
+            else:
+                continue
         out.append(TimingDefect(index=i, kind=kind, text=w.text,
                                 start=w.start, end=w.end))
     return out
