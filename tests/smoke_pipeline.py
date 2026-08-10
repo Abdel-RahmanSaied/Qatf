@@ -932,8 +932,10 @@ check("a clean transcript is left alone",
       health.repair([Word("a", 0.0, 0.1), Word("b", 0.1, 0.2)])[1] == 0)
 
 check("warnings name the timestamp so the clip can be inspected",
-      any("242.0" in s for s in health.warnings(
-          [Word("x", 242.0 + i / 10, 242.1 + i / 10) for i in range(5)])))
+      any("242.0" in s for s in health.warnings([Word("x", 242.0, 258.0)])))
+check("warnings do NOT re-report a repetition run — repair owns those, and the "
+      "caller logs how many it blanked",
+      health.warnings([Word("x", i / 10, 0.1 + i / 10) for i in range(6)]) == [])
 
 check("captions skip a blanked token instead of emitting an empty word",
       [[w.text for w in line] for line in
