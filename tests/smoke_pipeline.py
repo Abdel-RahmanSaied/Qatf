@@ -9,6 +9,7 @@ refactor cannot quietly undo a fix that cost a rendered frame to find.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import types
@@ -19,7 +20,12 @@ from _harness import check, raises, report, section
 from qatf import pipeline
 from qatf.core import utils
 from qatf.core.constants import CAPTION_MAX_CHARS, TARGET_H, TARGET_W
-from qatf.core.errors import ModelResponseError, SeedTooLong, TranscriptStructureChanged
+from qatf.core.errors import (
+    DetectorNotAvailable,
+    ModelResponseError,
+    SeedTooLong,
+    TranscriptStructureChanged,
+)
 from qatf.core.types import Clip, Word, clips_from_dicts, clips_to_dicts
 from qatf.core.utils import mmss_to_seconds, slugify, ts_ass, ts_human
 from qatf.pipeline import asr, captions, cuts, edits, fixups, select
@@ -387,6 +393,18 @@ check("colon escaped for the ass filter", r"C\:/x/y/cap.ass" in graph, graph[-40
 win = pipeline.filtergraph("crop", Path(r"C:\x\y\cap.ass")).split("ass='")[1]
 check("windows separators normalised", win.startswith(r"C\:/x/y/cap.ass"), win)
 check("no stray path backslashes", win.count("\\") == 1, win)
+
+# libavfilter tokenizes filter args TWICE — graph parser, then the filter's own
+# av_opt_set_from_string. The shell idiom `'\''` is correct for ONE level: it
+# passes the parser and is then re-read as a quote by the second pass, which
+# DELETES the apostrophe. `-o "Ahmed's clips/"` became `Ahmeds clips/` and every
+# clip died at stage 5 with exit 234. Reproduced against ffmpeg 7.1.1, and the
+# reason the escape carries three backslashes rather than one.
+apos = pipeline.filtergraph("crop", Path("/out/Ahmed's clips/cap.ass")).split("ass='")[1]
+check("apostrophe survives BOTH of libavfilter's tokenizer passes",
+      r"Ahmed'\\\''s clips" in apos, apos[:40])
+check("the single-level shell idiom is NOT what we emit — it truncates the path",
+      r"Ahmed'\''s clips/" not in apos)
 raises("unknown mode rejected", ValueError, pipeline.filtergraph, "zoom", None)
 
 # Forcing a round 30 on NTSC-rate source (30000/1001) duplicates ~1 frame every
@@ -514,5 +532,222 @@ restored = clips_from_dicts(clips_to_dicts(original))
 check("dict round trip is lossless", restored == original)
 check("tolerates a partial hand-edited dict",
       clips_from_dicts([{"start": 1, "end": 2}])[0].title == "clip")
+
+section("subject tracking — geometry and subject choice")
+from qatf.core.constants import (  # noqa: E402
+    TRACK_MAX_KEYFRAMES,
+    TRACK_MAX_PAN,
+    TRACK_SAMPLE_FPS,
+    TRACK_TIERS,
+)
+from qatf.core.types import (  # noqa: E402
+    Detection,
+    Keyframe,
+    Track,
+    track_from_dict,
+    track_to_dict,
+)
+from qatf.pipeline import detect, framing  # noqa: E402
+
+CW = framing.crop_width(1920, 1080)
+check("crop_width on 16:9", abs(CW - 0.3164) < 0.001, f"{CW:.4f}")
+check("crop_width on an already-vertical source is the whole frame",
+      framing.crop_width(1080, 1920) == 1.0)
+raises("crop_width rejects a zero dimension", ValueError, framing.crop_width, 0, 1080)
+
+
+def det(t, cx, w=0.1, speaking=0.0):
+    return Detection(t=t, cx=cx, cy=0.5, w=w, h=w * 1.5, score=0.9, speaking=speaking)
+
+
+check("speaking beats size",
+      framing.subject([det(0, 0.2, w=0.3), det(0, 0.8, w=0.05, speaking=0.9)]).cx == 0.8)
+check("largest face wins when nobody is confidently speaking",
+      framing.subject([det(0, 0.2, w=0.3), det(0, 0.8, w=0.05)]).cx == 0.2)
+check("no candidates is no subject", framing.subject([]) is None)
+check("a zero-width box is not a subject", framing.subject([det(0, 0.5, w=0.0)]) is None)
+check("a NaN centre is not a subject",
+      framing.subject([det(0, float("nan"))]) is None)
+
+section("subject tracking — the solver")
+empty = framing.solve([], Clip(0, 10, "t"), CW, tier="balanced")
+check("nothing found falls back to centre", empty.keyframes == [Keyframe(0.0, 0.5)])
+check("the fallback is reported, not hidden", empty.fallback and empty.coverage == 0.0)
+
+walk = [det(i / 3.0, 0.25 + 0.5 * (i / 30.0)) for i in range(31)]
+solved = framing.solve(walk, Clip(0, 10, "t"), CW, detector="haar", tier="balanced")
+xs = [k.cx for k in solved.keyframes]
+check("a moving subject produces a moving window", max(xs) - min(xs) > 0.1)
+check("keyframe times are monotonic",
+      all(b.t >= a.t for a, b in zip(solved.keyframes, solved.keyframes[1:], strict=False)))
+check("the window never leaves the frame",
+      min(xs) >= CW / 2 - 1e-6 and max(xs) <= 1 - CW / 2 + 1e-6)
+pan = max(abs(b.cx - a.cx) / max(1e-9, b.t - a.t)
+          for a, b in zip(solved.keyframes, solved.keyframes[1:], strict=False))
+check("pan speed is limited, and the limit scales with the visible frame",
+      pan <= TRACK_MAX_PAN * CW * 1.05, f"{pan:.4f} <= {TRACK_MAX_PAN * CW:.4f}")
+check("coverage is reported", solved.coverage > 0.9, str(solved.coverage))
+check("the detector and tier are recorded on the track",
+      solved.detector == "haar" and solved.tier == "balanced")
+
+still = [det(i / 3.0, 0.5) for i in range(31)]
+held = framing.solve(still, Clip(0, 10, "t"), CW, tier="balanced")
+check("a stationary subject holds the frame perfectly still",
+      len({k.cx for k in held.keyframes}) == 1)
+
+jitter = [det(i / 3.0, 0.5 + (0.01 if i % 2 else -0.01)) for i in range(31)]
+shaky = framing.solve(jitter, Clip(0, 10, "t"), CW, tier="balanced")
+check("detector jitter inside the deadzone does not move the window",
+      len({k.cx for k in shaky.keyframes}) == 1)
+
+cut = ([det(t / 2.0, 0.30) for t in range(4)] +
+       [det(2.0 + t / 2.0, 0.75) for t in range(4)])
+across = framing.solve(cut, Clip(0, 4, "t"), CW, tier="balanced")
+jump = max(abs(b.cx - a.cx)
+           for a, b in zip(across.keyframes, across.keyframes[1:], strict=False))
+check("a shot change re-anchors instantly instead of panning across it",
+      jump > 0.4, f"largest step {jump:.3f}")
+
+section("subject tracking — the trust boundary")
+nan = Track(keyframes=[Keyframe(float("nan"), 0.5), Keyframe(0.0, float("inf")),
+                       Keyframe(1.0, 0.5)])
+clean = framing.sanitise(nan, CW, 10.0)
+check("non-finite keyframes are dropped before any comparison",
+      clean.keyframes == [Keyframe(1.0, 0.5)])
+out_of_range = Track(keyframes=[Keyframe(-1.0, 0.5), Keyframe(99.0, 0.5),
+                                Keyframe(2.0, 0.5)])
+check("keyframes outside the clip are dropped",
+      framing.sanitise(out_of_range, CW, 10.0).keyframes == [Keyframe(2.0, 0.5)])
+escaped = framing.sanitise(Track(keyframes=[Keyframe(0.0, -5.0), Keyframe(1.0, 5.0)]),
+                           CW, 10.0)
+check("a crop window outside the frame is clamped, not rejected",
+      [round(k.cx, 4) for k in escaped.keyframes] == [round(CW / 2, 4),
+                                                      round(1 - CW / 2, 4)])
+whip = framing.sanitise(Track(keyframes=[Keyframe(0.0, 0.2), Keyframe(0.033, 0.8)]),
+                        CW, 10.0)
+check("a deliberate hard reframe survives — pan speed is taste, not safety",
+      [k.cx for k in whip.keyframes] == [0.2, 0.8])
+huge = framing.sanitise(Track(keyframes=[Keyframe(i / 100.0, 0.5)
+                                         for i in range(TRACK_MAX_KEYFRAMES + 500)]),
+                        CW, 1e9)
+check("an oversized track is capped", len(huge.keyframes) == TRACK_MAX_KEYFRAMES)
+check("a track sanitised to nothing becomes a centre crop",
+      framing.sanitise(Track(keyframes=[Keyframe(float("nan"), 0.5)]),
+                       CW, 10.0).keyframes == [Keyframe(0.0, 0.5)])
+check("track round trip is lossless",
+      track_from_dict(track_to_dict(solved)) == solved)
+check("track round trip tolerates a partial hand-edited dict",
+      track_from_dict({"keyframes": [{"t": 1, "cx": 0.5}]}).detector == "")
+
+section("subject tracking — span arithmetic, stage 4b")
+check("spans coalesce, including touching ones",
+      detect.merge_spans([(5, 9), (0, 5), (22, 30), (20, 25)]) == [(0, 9), (20, 30)])
+check("only uncovered footage is detected",
+      detect.missing([(0, 10)], [(5, 20)]) == [(10, 20)])
+check("a hole between two covered spans is found",
+      detect.missing([(0, 10), (15, 20)], [(0, 20)]) == [(10, 15)])
+check("fully cached means no detection at all",
+      detect.missing([(0, 30)], [(5, 20)]) == [])
+check("clip spans carry a margin so a moved cut stays cached",
+      detect.clip_spans([Clip(10, 20, "a")]) == [(8.0, 22.0)])
+check("the margin cannot reach below zero",
+      detect.clip_spans([Clip(1.0, 5.0, "a")])[0][0] == 0.0)
+check("adjacent clips merge into one span",
+      len(detect.clip_spans([Clip(10, 20, "a"), Clip(21, 30, "b")])) == 1)
+check("sample times sit on a grid anchored at zero, so extending a span "
+      "cannot double-sample an instant",
+      set(detect.sample_times([(0, 1)], 3.0)) & set(detect.sample_times([(1, 2)], 3.0))
+      == {1.0})
+raises("a non-positive sample rate is rejected", ValueError,
+       detect.sample_times, [(0, 1)], 0.0)
+check("the face cache cannot escape the work directory through the tier",
+      detect.cache_path(Path("/w"), "haar", "../../etc/passwd").parent == Path("/w"))
+
+section("subject tracking — detector registry and model lookup")
+# Structural, and not busywork: `fast` mapped to a detector that OpenCV 5.0
+# deleted, and nothing in the suite noticed until a pip install did.
+check("every tier maps to a detector",
+      set(detect.TIER_DETECTOR) == set(TRACK_TIERS),
+      str(sorted(set(TRACK_TIERS) - set(detect.TIER_DETECTOR))))
+check("every mapped detector is one the code can actually build",
+      set(detect.TIER_DETECTOR.values()) <= set(detect.DETECTORS),
+      str(set(detect.TIER_DETECTOR.values()) - set(detect.DETECTORS)))
+check("every tier has a sample rate",
+      set(TRACK_SAMPLE_FPS) == set(TRACK_TIERS))
+check("sample rates rise with the tier",
+      TRACK_SAMPLE_FPS["fast"] < TRACK_SAMPLE_FPS["balanced"] < TRACK_SAMPLE_FPS["best"])
+
+check("there is exactly one detector, so there is nothing to degrade to",
+      detect.DETECTORS == ("yunet",))
+
+# The weights are vendored rather than downloaded, so the failure mode is a
+# missing or truncated file in the wheel — which these two catch and a
+# functional test on a developer machine with a warm cache would not.
+check("the bundled YuNet weights ship with the package",
+      detect.BUNDLED_MODEL.exists(), str(detect.BUNDLED_MODEL))
+check("the bundled weights are the model, not a git-lfs pointer",
+      detect.BUNDLED_MODEL.exists()
+      and detect.BUNDLED_MODEL.stat().st_size == 232_589
+      and hashlib.sha256(detect.BUNDLED_MODEL.read_bytes()).hexdigest()
+      == "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4")
+check("the model licence travels with the weights",
+      (detect.BUNDLED_MODEL.parent / "LICENSE.yunet").exists())
+
+_yun = os.environ.get("QATF_YUNET_MODEL")
+os.environ["QATF_YUNET_MODEL"] = "/definitely/not/here.onnx"
+check("an override naming a missing file resolves to nothing — it must not "
+      "silently fall back to the bundled copy",
+      detect.yunet_model() is None)
+_here = Path(__file__).resolve()
+os.environ["QATF_YUNET_MODEL"] = str(_here)
+check("an existing model path is honoured", detect.yunet_model() == _here)
+os.environ["QATF_YUNET_MODEL"] = str(_here.parent / "." / _here.name)
+check("the model path is canonicalised, so what gets logged is the real path",
+      detect.yunet_model() == _here)
+if _yun is None:
+    os.environ.pop("QATF_YUNET_MODEL", None)
+else:
+    os.environ["QATF_YUNET_MODEL"] = _yun
+check("with no override the bundled weights are used, so a fresh install "
+      "tracks offline and first try",
+      detect.yunet_model() == detect.BUNDLED_MODEL)
+raises("an unknown tier cannot be probed", DetectorNotAvailable,
+       detect.probe_detector, "nonsense")
+raises("an unknown detector is rejected", DetectorNotAvailable,
+       detect._open_detector, "nope", (64, 64))
+
+section("subject tracking — the render seam")
+check("track is a mode, and the static two are untouched",
+      enc.REFRAME_MODES == ("crop", "blur", "track"))
+check("crop centre maps to the frame centre",
+      enc.crop_x_px(0.5, 1920, 1080) == enc.even((1920 - enc.even(round(1080 * 9 / 16))) // 2)
+      or abs(enc.crop_x_px(0.5, 1920, 1080) - (1920 - round(1080 * 9 / 16)) / 2) <= 2)
+check("crop x is clamped inside the frame",
+      enc.crop_x_px(-3.0, 1920, 1080) == 0
+      and enc.crop_x_px(9.0, 1920, 1080) == 1920 - enc.even(round(1080 * 9 / 16)))
+check("crop x is always even, so chroma cannot shimmer while panning",
+      all(enc.crop_x_px(i / 97.0, 1920, 1080) % 2 == 0 for i in range(98)))
+graph = enc.filtergraph("track", None, cmd_path=Path("/tmp/a.cmd"), x0=100)
+check("track mode drives crop from sendcmd", "sendcmd=f='/tmp/a.cmd'" in graph)
+check("track mode seeds the first frame", ":x=100:" in graph)
+static = enc.filtergraph("track", None, x0=100)
+check("a single-keyframe track needs no sendcmd file", "sendcmd" not in static)
+raises("track mode with neither a path nor a seed is rejected", ValueError,
+       enc.filtergraph, "track", None)
+raises("an unknown mode is still rejected", ValueError, enc.filtergraph, "nope", None)
+odd = enc.filtergraph("track", None, cmd_path=Path("/tmp/Ahmed's: clips/a.cmd"), x0=0)
+check("the sendcmd path is escaped exactly as the ass path is",
+      r"'\\\''" in odd and r"\:" in odd, odd.split("sendcmd=f=")[1][:44])
+
+_cmd_file = Path(os.environ.get("TMPDIR", "/tmp")) / "qatf-smoke-track.cmd"
+enc.write_sendcmd(Track(keyframes=[Keyframe(0.0, 0.5), Keyframe(0.5, 0.6)]),
+                  _cmd_file, 1920, 1080)
+_written = _cmd_file.read_text(encoding="utf-8").splitlines()
+check("sendcmd emits one integer command per keyframe",
+      len(_written) == 2 and _written[0].startswith("0.000 crop x ")
+      and _written[0].rstrip(";").split()[-1].isdigit())
+check("nothing from the track reaches the script as text",
+      all(c not in _cmd_file.read_text(encoding="utf-8") for c in "'\"$`"))
+_cmd_file.unlink(missing_ok=True)
 
 raise SystemExit(report())

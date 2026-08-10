@@ -127,7 +127,18 @@ object arrives.
 
 **Filtergraph quote breakout.** The `ass=` value is single-quoted and `'` was not
 escaped, so `-o "Ahmed's clips/"` would end the quoting early and the rest of the
-path would parse as filtergraph syntax. CLI-only. Now uses ffmpeg's `'\''` idiom.
+path would parse as filtergraph syntax. CLI-only.
+
+Fixed twice. The first fix used the shell idiom `'\''`, which turned the breakout
+into a **truncation**: libavfilter tokenizes filter arguments twice — the graph
+parser, then `av_opt_set_from_string` on the filter's own options — and the
+apostrophe that survives pass one is re-read as a quote by pass two and deleted.
+`Ahmed's clips/` became `Ahmeds clips/`, libass could not open the file, and
+every clip died at stage 5 with exit 234. `encode._escape_path` now emits
+`'\\\''`, verified against ffmpeg 7.1.1 by rendering into such a directory with
+captions and `--reframe track` both active — the two consumers of that escape.
+Pinned by two checks in `smoke_pipeline.py`, one of which asserts the
+single-level form is *not* emitted.
 
 ---
 

@@ -92,3 +92,15 @@ desktop.ini
 # machine-specific: absolute ffmpeg paths and per-user permission rules.
 # .claude/settings.json (shared config) stays committed.
 .claude/settings.local.json
+
+# agent memory. Machine-specific by construction — it records which suites can
+# run on THIS host, which provider the local .env selects, and that .env holds
+# live credentials. None of that is true of another checkout, and the last of
+# them does not belong in public history.
+memory/
+
+# rendered fixtures from tests/verify_render.py. Regenerated on every run, and
+# one of them is a photo of a person fetched at test time — neither belongs in
+# the repository. The YuNet weights under qatf/pipeline/assets/ DO belong there
+# and are deliberately not excluded here.
+tests/.render-check/
