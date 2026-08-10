@@ -880,4 +880,31 @@ check("nothing from the track reaches the script as text",
       all(c not in _cmd_file.read_text(encoding="utf-8") for c in "'\"$`"))
 _cmd_file.unlink(missing_ok=True)
 
+section("transcript health — detection")
+from qatf.pipeline import health  # noqa: E402
+
+_rep = [Word("a", 0.0, 0.1), Word("x", 0.1, 0.2), Word("x", 0.2, 0.3),
+        Word("x", 0.3, 0.4), Word("x", 0.4, 0.5), Word("b", 0.5, 0.6)]
+_runs = health.find_repetitions(_rep)
+check("a run of four identical tokens is found",
+      len(_runs) == 1 and _runs[0].token == "x" and _runs[0].count == 4,
+      str(_runs))
+check("the run records where it starts, for the log line",
+      _runs[0].index == 1 and abs(_runs[0].start - 0.1) < 1e-9)
+check("three in a row is not a run — people do repeat themselves",
+      health.find_repetitions([Word("x", 0.0, 0.1), Word("x", 0.1, 0.2),
+                               Word("x", 0.2, 0.3)]) == [])
+check("punctuation does not split a run",
+      len(health.find_repetitions([Word("x", 0.0, 0.1), Word("x.", 0.1, 0.2),
+                                   Word("x", 0.2, 0.3), Word("x", 0.3, 0.4)])) == 1)
+
+_bad = [Word("ok", 0.0, 0.4), Word("zero", 1.0, 1.0), Word("long", 2.0, 20.0)]
+_defects = health.find_timing_defects(_bad)
+check("a zero-length word is a defect",
+      any(d.kind == "zero" and d.index == 1 for d in _defects), str(_defects))
+check("a word longer than the span limit is a defect",
+      any(d.kind == "long" and d.index == 2 for d in _defects), str(_defects))
+check("an ordinary word is not a defect",
+      all(d.index != 0 for d in _defects))
+
 raise SystemExit(report())
