@@ -260,9 +260,17 @@ check("REPAIR NEVER TOUCHES A TIMING — snap anchors cuts on these",
 check("a clean transcript is left alone",
       health.repair([Word("a", 0.0, 0.1), Word("b", 0.1, 0.2)])[1] == 0)
 
+# A LONG word, not a repetition run. `warnings()` reports only what repair does
+# NOT fix — repetition runs are repaired, and their count is logged separately
+# by the caller. The original version of this check passed a repetition run to a
+# timing-warning function, which forced `warnings()` to grow a repetition branch
+# that is then unreachable: `repair()` mutates in place, so by the time the CLI
+# calls `warnings()` those tokens are blank.
 check("warnings name the timestamp so the clip can be inspected",
-      any("242.0" in s for s in health.warnings(
-          [Word("x", 242.0 + i / 10, 242.1 + i / 10) for i in range(5)])))
+      any("242.0" in s for s in health.warnings([Word("x", 242.0, 258.0)])))
+check("warnings do NOT re-report a repetition run — repair owns those, and the "
+      "caller logs how many it blanked",
+      health.warnings([Word("x", i / 10, 0.1 + i / 10) for i in range(6)]) == [])
 
 check("captions skip a blanked token instead of emitting an empty word",
       [[w.text for w in line] for line in
