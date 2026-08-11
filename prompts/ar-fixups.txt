@@ -52,3 +52,10 @@
 # only ever appears as "سراحة." with the stop; apply() strips trailing
 # punctuation before matching and puts it back, so this catches it
 سراحة = بصراحة
+
+# --- X (Twitter), measured on the 30-term-vocabulary transcript ------------
+# The vocabulary does not take these: with `إكس` in the hotword list the model
+# starts DROPPING other speech (measured: uncovered speech 66s -> 167s), so the
+# term is corrected here instead, where it costs nothing.
+اكسة = إكس
+اكس = إكس
