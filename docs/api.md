@@ -148,8 +148,8 @@ Three fields are worth reading on the way past:
 ## Correcting misheard words
 
 `GET /jobs/{id}/transcript` returns the transcript **as it will be captioned** —
-fixups and any existing corrections already applied. What you read is what gets
-burned in.
+fixups, loop repair and any existing corrections already applied. What you read
+is what gets burned in.
 
 ```bash
 curl -s localhost:8000/jobs/$ID/transcript > t.json
@@ -163,6 +163,17 @@ curl -s localhost:8000/jobs/$ID/transcript > t.json
 
 The `start` is how you find it: 204.29 s is 3:24, so scrub there, hear what was
 actually said, then fix the text and send the whole list back.
+
+> **Some words come back with an empty `text`, and you must send them back.**
+> When the decoder loops — four or more identical tokens in a row, which happens
+> on noisy audio — `health.repair` blanks the duplicates rather than deleting
+> them, so the word count and every `start`/`end` stay exactly as Whisper
+> measured them. A blank renders as nothing, but it is still a real element of
+> `words`. Drop them before your `PUT` and you have changed the word count,
+> which is a `422` for the same reason a deletion is.
+>
+> `jq '{words: .words}'` above does the right thing already; a hand-written
+> filter that strips empty strings does not.
 
 ```bash
 jq '{words: .words}' t.json | \
@@ -346,7 +357,7 @@ the pipeline.
 | `415` | unsupported video extension |
 | `422` | validation failed, no speech was found, or the vocabulary seed is too long |
 | `502` | stage 3 returned something that was not the requested JSON, or refused |
-| `503` | ffmpeg is missing, or the stage-3 provider has no credential |
+| `503` | a dependency the server needs is absent: ffmpeg, the stage-3 credential, faster-whisper (`TranscriberNotAvailable`), or OpenCV for `reframe: track` (`DetectorNotAvailable`) |
 
 A `500` means a bug: every deliberate failure is a `QatfError` subclass, so
 anything else escaping the pipeline was not thought through.
