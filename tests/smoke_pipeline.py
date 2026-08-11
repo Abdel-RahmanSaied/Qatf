@@ -964,4 +964,20 @@ try:
 finally:
     score_transcript.probe_duration = _saved_probe_duration
 
+section("decode parameters — stage 2")
+check("DECODE carries the VAD settings so a sweep has one place to change",
+      "vad_parameters" in asr.DECODE
+      and "min_silence_duration_ms" in asr.DECODE["vad_parameters"])
+_merged = asr.merge_decode({"beam_size": 9})
+check("an override merges over the defaults", _merged["beam_size"] == 9)
+check("and leaves the rest intact",
+      _merged["vad_parameters"] == asr.DECODE["vad_parameters"])
+check("merging does not mutate DECODE itself",
+      "beam_size" not in asr.DECODE or asr.DECODE.get("beam_size") != 9)
+_nested = asr.merge_decode({"vad_parameters": {"speech_pad_ms": 200}})
+check("a nested override merges rather than replacing the whole dict",
+      _nested["vad_parameters"]["min_silence_duration_ms"]
+      == asr.DECODE["vad_parameters"]["min_silence_duration_ms"]
+      and _nested["vad_parameters"]["speech_pad_ms"] == 200)
+
 raise SystemExit(report())

@@ -176,10 +176,45 @@ def register_cuda_dlls() -> int:
     return len(found)
 
 
+#: Decode parameters, in one place so a sweep changes one thing at a time.
+#:
+#: EVERY VALUE HERE IS THE CURRENT BEHAVIOUR, NOT A MEASURED OPTIMUM. The only
+#: non-default entry is min_silence_duration_ms, which this project set to 500
+#: for speed; faster-whisper's default under vad_filter is 160, and a higher
+#: value merges across short pauses into longer chunks (capped at
+#: max_speech_duration_s = 30s). A 30s window of noisy audio that decodes to
+#: almost nothing is how 15 seconds of speech became one `آآ` token. That is
+#: hypothesis #1 in docs/quality.md, not a conclusion.
+DECODE: dict = {
+    "vad_filter": True,
+    "vad_parameters": {"min_silence_duration_ms": 500},
+}
+
+
+def merge_decode(overrides: dict | None) -> dict:
+    """DECODE with `overrides` merged one level deep, leaving DECODE untouched.
+
+    One level is enough — `vad_parameters` is the only nested key — and a deeper
+    merge would hide which knob a sweep actually moved. A shallow `dict(DECODE)`
+    is not enough on its own: it copies the top level but leaves `vad_parameters`
+    shared by reference, so `merged["vad_parameters"]["x"] = y` would mutate the
+    module-level dict every later run inherits. Each nested dict is copied too,
+    and a nested override updates the copy rather than replacing it, so
+    overriding `speech_pad_ms` alone still keeps `min_silence_duration_ms`."""
+    merged = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DECODE.items()}
+    for key, value in (overrides or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key].update(value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _transcribe_on(wav: Path, model_size: str, device: str,
                    language: str | None,
                    initial_prompt: str | None = None,
-                   hotwords: str | None = None) -> Transcript:
+                   hotwords: str | None = None,
+                   decode: dict | None = None) -> Transcript:
     """Build the model AND fully consume the segment generator.
 
     Consuming inside this function is the whole point. `WhisperModel(...)`
@@ -197,8 +232,9 @@ def _transcribe_on(wav: Path, model_size: str, device: str,
         str(wav),
         language=language,          # None => autodetect; "ar" / "en" to force
         word_timestamps=True,
-        vad_filter=True,            # drops long silences, big speed win
-        vad_parameters={"min_silence_duration_ms": 500},
+        # VAD and any other decode knob live in DECODE (above), so a sweep can
+        # change exactly one of them per run instead of editing this call.
+        **merge_decode(decode),
         # `hotwords` biases vocabulary on EVERY window; `initial_prompt` seeds
         # only the first. On a 12-minute Egyptian Arabic file, measured over the
         # whole transcript:
@@ -253,7 +289,8 @@ def check_seed_budget(initial_prompt: str | None, hotwords: str | None) -> None:
 def transcribe(wav: Path, model_size: str, device: str,
                language: str | None,
                initial_prompt: str | None = None,
-               hotwords: str | None = None) -> Transcript:
+               hotwords: str | None = None,
+               decode: dict | None = None) -> Transcript:
     """`device` may be auto/cuda/cpu. The device actually used is recorded on the
     returned Transcript, so callers report what happened rather than what was
     asked for.
@@ -270,7 +307,7 @@ def transcribe(wav: Path, model_size: str, device: str,
 
     try:
         return _transcribe_on(wav, model_size, resolved, language,
-                              initial_prompt, hotwords)
+                              initial_prompt, hotwords, decode)
     except Exception as exc:                # noqa: BLE001 — CUDA failures are not one type
         if resolved != "cuda" or device == "cuda":
             raise
@@ -278,7 +315,7 @@ def transcribe(wav: Path, model_size: str, device: str,
         log("      falling back to CPU. For GPU speed install the CUDA runtime: "
             "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
         return _transcribe_on(wav, model_size, "cpu", language,
-                              initial_prompt, hotwords)
+                              initial_prompt, hotwords, decode)
 
 
 def cache_path(work: Path, model_size: str, language: str | None,
@@ -341,13 +378,22 @@ def write_cache(path: Path, transcript: Transcript) -> None:
 def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
                       language: str | None,
                       initial_prompt: str | None = None,
-                      hotwords: str | None = None) -> tuple[Transcript, bool]:
-    """Returns (transcript, was_cached). Delete the cache file to re-transcribe."""
+                      hotwords: str | None = None,
+                      decode: dict | None = None) -> tuple[Transcript, bool]:
+    """Returns (transcript, was_cached). Delete the cache file to re-transcribe.
+
+    `decode` is deliberately NOT part of `cache_path`'s key. During a decode-
+    parameter sweep each run is written to its own explicitly named output file
+    and compared side by side, so the cache key must stay stable across the
+    sweep or every run after the first would silently reuse the first run's
+    transcript. Whether a decode override should invalidate the cache once the
+    sweep is over and a value gets promoted into DECODE is an open question —
+    left for whoever does that promotion, not decided here."""
     cache = cache_path(work, model_size, language, initial_prompt, hotwords)
     if cache.exists():
         return read_cache(cache), True
 
     transcript = transcribe(wav, model_size, device, language,
-                            initial_prompt, hotwords)
+                            initial_prompt, hotwords, decode)
     write_cache(cache, transcript)
     return transcript, False

@@ -61,7 +61,7 @@ def fake_run(cmd, quiet=True):
 
 
 def fake_transcribe(wav, model_size, device, language,
-                    initial_prompt=None, hotwords=None):
+                    initial_prompt=None, hotwords=None, decode=None):
     SEEN_PROMPTS.append(hotwords or initial_prompt)
     return Transcript(
         words=[Word(f"word{i}", i * 0.5, i * 0.5 + 0.45) for i in range(260)],
