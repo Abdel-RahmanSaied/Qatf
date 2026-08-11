@@ -703,9 +703,22 @@ for a,b in sorted(gaps, key=lambda g: g[1]-g[0], reverse=True)[:3]:
 "
 ```
 
-Expected: the largest gap lands inside **424–440s** and is ≥ 10s — the `آآ`
-window. If it does not, the metric is wrong and must be fixed before any tuning
-begins; it is the guard on every later experiment.
+Expected: a gap inside **424–440s** of ≥ 10s — the `آآ` window. It is NOT
+required to be the largest.
+
+Running this for the first time corrected the baseline. The metric finds **six**
+gaps ≥ 10s, and the biggest is **667.9–685.3s (17.4s)** — a window with *zero*
+words, measuring **−19.4 dB against a −22.3 dB known-speech reference**, i.e.
+louder than average speech in the file. It had been recorded as "largest silent
+gap 17.47s" from a words-only analysis, which never looked at the audio and so
+read dropped speech as silence.
+
+That is the whole argument for this metric. The `آآ` case was found by hand only
+because a caption visibly froze; this one leaves no artefact in the transcript at
+all — the words are simply absent. If the metric does not surface the 424–440s
+window, it is wrong and must be fixed before any tuning begins. Do not tune the
+thresholds until an expected number appears; investigate and report what the
+silence intervals actually contain.
 
 - [ ] **Step 3: Commit**
 
