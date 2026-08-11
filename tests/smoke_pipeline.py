@@ -569,6 +569,26 @@ check("every line is MM:SS prefixed", all(line.startswith("[") for line in lines
 check("no word lost", sum(len(line.split(" ")) - 1 for line in lines) == 100)
 check("empty input is empty output", select.build_transcript_blocks([]) == "")
 
+# The checks above only ever use plain non-blank words, which is exactly why
+# this regression slipped through review: guarding `buf.append(w.text)` with
+# `if w.text:` (so a blanked repetition-loop token doesn't become a double
+# space in the prompt) also made `buf` stay empty through an all-blank leading
+# run, and the split condition was `... and buf` — so a block whose leading
+# words are entirely blanked, and whose span crosses `block_seconds` before
+# any real word arrives, never split on schedule and mislabelled the next
+# real word with the stale `block_start`. Reproduces the reviewer's case
+# exactly: a blank run from 0.0-13.5s (crossing the 12s boundary while every
+# word in it is blank), then two real words.
+_blank_run = [Word("", 0.0, 2.0), Word("", 3.0, 5.0), Word("", 6.0, 8.0),
+             Word("", 11.0, 13.5)]
+_real_words = [Word("real1", 13.5, 14.0), Word("real2", 20.0, 20.5)]
+_blocked = select.build_transcript_blocks(_blank_run + _real_words, block_seconds=12.0)
+check("a block boundary still fires on schedule during an all-blank run — "
+      "real1 is labelled from its OWN start (00:13), not the stale "
+      "block_start (00:00) a blank-only leading block would otherwise leave "
+      "behind",
+      "[00:13] real1 real2" in _blocked.splitlines(), repr(_blocked))
+
 section("plan round trip")
 original = [Clip(1.5, 2.5, "t", "h", "w", 0.4)]
 restored = clips_from_dicts(clips_to_dicts(original))
