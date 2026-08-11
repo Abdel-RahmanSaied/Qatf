@@ -27,7 +27,7 @@ from qatf.core.errors import (
     SeedTooLong,
     TranscriptStructureChanged,
 )
-from qatf.core.types import Clip, Word, clips_from_dicts, clips_to_dicts
+from qatf.core.types import Clip, Transcript, Word, clips_from_dicts, clips_to_dicts
 from qatf.core.utils import mmss_to_seconds, slugify, ts_ass, ts_human
 from qatf.pipeline import asr, captions, cuts, edits, fixups, select
 
@@ -299,6 +299,31 @@ raises("over-long prompt rejected up front", SeedTooLong,
 check("model and language still in the key",
       asr.cache_path(_w, "small", "ar") != base
       and asr.cache_path(_w, "large-v3", "en") != base)
+
+section("transcript cache — SQLite")
+_work = Path(tempfile.mkdtemp(prefix="qatf-tc-"))
+_key = asr.cache_key("large-v3", "ar", None, "بايثون فلاتر")
+check("the key is the filename stem the old cache used, so every rule already "
+      "fought for carries over", _key.startswith("words-large-v3-ar-")
+      and len(_key.split("-")[-1]) == 8, _key)
+check("a miss is None, not an exception", asr.read_cache(_work, _key) is None)
+
+_t = Transcript(words=[Word("مدار", 0.0, 0.4), Word("المحيطة", 0.4, 0.9)],
+                language="ar", language_probability=1.0,
+                device="cuda", compute_type="float16")
+asr.write_cache(_work, _key, _t)
+_back = asr.read_cache(_work, _key)
+check("round trip keeps the words", [w.text for w in _back.words] == ["مدار", "المحيطة"])
+check("round trip keeps the timings exactly",
+      [(w.start, w.end) for w in _back.words] == [(0.0, 0.4), (0.4, 0.9)])
+check("round trip keeps the provenance",
+      (_back.language, _back.device, _back.compute_type) == ("ar", "cuda", "float16"))
+check("a different language is a different key — the --language ar incident",
+      asr.cache_key("large-v3", "en") != asr.cache_key("large-v3", "ar"))
+check("a different vocabulary is a different key",
+      asr.cache_key("large-v3", "ar", None, "x") != asr.cache_key("large-v3", "ar", None, "y"))
+check("the database lands in the work directory, beside what it replaced",
+      (_work / "qatf.db").exists())
 
 section("device selection — GPU first, CPU fallback")
 _real_count = asr.cuda_device_count

@@ -139,6 +139,26 @@ def transaction(path: Path) -> Iterator[sqlite3.Connection]:
         con.commit()
 
 
+def close(path: Path) -> None:
+    """Close and forget THIS thread's handle to `path`, if it has one.
+
+    `connect` deliberately caches for the life of the thread — a real win for
+    the shared root database, which the same thread revisits constantly. A
+    per-job database (the transcript cache under `<work>/qatf.db`) is the
+    opposite: opened for one read or write and then not touched again for the
+    rest of that thread's life. Left cached, that handle keeps the file open
+    indefinitely, and on Windows an open handle blocks `shutil.rmtree` when the
+    job is later deleted — including from a thread that never touched the file
+    itself, because deleting a directory does not care which thread holds the
+    lock inside it. Callers that open a per-job database close it again as soon
+    as they are done, rather than leaving it for `connect` to cache away. A
+    no-op if this thread never opened `path`."""
+    key = str(Path(path).resolve())
+    con = _handles().pop(key, None)
+    if con is not None:
+        con.close()
+
+
 def close_all() -> None:
     """Close this thread's handles. For tests and shutdown."""
     for con in _handles().values():
