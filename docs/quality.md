@@ -67,6 +67,15 @@ overlay precisely so the cached transcript keeps saying what Whisper actually
 produced. The moment a corrected transcript is indistinguishable from a raw one,
 every number on this page becomes unreproducible.
 
+**The transcript cache moved to SQLite; that guarantee did not.** The cache is
+now a row in `<work>/qatf.db` (`transcripts`, one row per `asr.cache_key`)
+instead of a `words-<model>-<lang>.json` file, but `read_cache` still returns
+exactly what Whisper produced — fixups, `health.repair` and per-word corrections
+are all still applied by the *caller*, on every read, and none of the three is
+ever written back into the row. Every table on this page was scored against
+that raw row, before or after the move, which is the property that makes them
+comparable at all.
+
 ### Tested and rejected
 
 So nobody repeats them:

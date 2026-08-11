@@ -154,6 +154,8 @@ qatf/
   core/            depends on nothing. imports no pipeline, no jobs, no HTTP
     config.py      Settings, read from the environment once
     constants.py   product decisions (9:16, caption budget, snap margins)
+    db.py          the only module that imports sqlite3 — WAL, thread-local
+                   connections, PRAGMA-versioned migrations
     dotenv.py      hand-rolled .env parser; the real environment always wins
     errors.py      QatfError hierarchy, each carrying its HTTP status
     types.py       Word, Transcript, Clip — plain dataclasses
@@ -189,7 +191,8 @@ qatf/
     parser.py      the argument surface
     runner.py      preflight + the run flow
 qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_pipeline.py, smoke_llm.py, smoke_api.py, _harness.py
+tests/             smoke_db.py, smoke_pipeline.py, smoke_llm.py, smoke_api.py,
+                   _harness.py
 ```
 
 The package directory **shadows the sibling `qatf.py`** on import — Python's path
@@ -236,23 +239,33 @@ waste.
 ## Stage 2 — the transcript cache
 
 ```text
-<work>/words-<model>-<lang>.json
+<work>/qatf.db     transcripts table, one row per key
 ```
 
-Delete it to re-transcribe; otherwise iterating on clip selection is free.
+One database per work directory — `<out>/.work/qatf.db` for the CLI,
+`$QATF_DATA_DIR/<job-id>/.work/qatf.db` for a job. Delete the row (or the whole
+file) to re-transcribe; otherwise iterating on clip selection is free.
 
 **In the key:** the Whisper size, the forced language, the hotword vocabulary and
-the initial prompt. Keying on the output directory alone silently reused an
-English transcript after `--language ar`.
+the initial prompt — the same derivation the pre-SQLite filename used, via
+`asr.cache_key`. Keying on the output directory alone silently reused an English
+transcript after `--language ar`.
 
 **Not in the key:** the device (see above), and both text-correction layers —
-`fixups` and `word-edits.json`. Those are applied *on read*, never baked in, so
-editing either never orphans the cache and never changes a timestamp.
+`fixups` and the per-word overlay (`word_edits`, also a table in the same
+database). Those are applied *on read*, never baked in, so editing either never
+orphans the cache and never changes a timestamp.
 
-That separation is not just about cost. The cache has to keep saying what Whisper
+That separation is not just about cost. The row has to keep saying what Whisper
 **actually produced**: the moment a corrected transcript is indistinguishable
 from a raw one, every measurement in [quality.md](quality.md) stops meaning
-anything.
+anything. Moving the cache from a file to a database row changed nothing about
+that — it is still written once, by `write_cache`, and never touched again by a
+correction.
+
+A pre-SQLite `words-<model>-<lang>.json` is imported into the database the first
+time it is read and then left on disk, never deleted, so an upgrade stays
+reversible by checking out the previous commit.
 
 ### Two text layers, deliberately
 
@@ -261,7 +274,7 @@ Both change `Word.text` and neither can touch `Word.start`/`Word.end`.
 | | Keyed by | Fixes | Lives in |
 | --- | --- | --- | --- |
 | `fixups.py` | value | a term the decoder **always** mishears the same way | a text file you build up across videos |
-| `edits.py` | position | a word misheard **once**, where the same string is correct elsewhere | `<work>/word-edits.json`, per recording |
+| `edits.py` | position | a word misheard **once**, where the same string is correct elsewhere | the `word_edits` table in `<work>/qatf.db`, scoped by job id (API) or resolved output directory (CLI) |
 | `health.py` | run of identical tokens | a decoder repetition loop — damage, not a mishearing, so there is no "correct" text to substitute; the run is blanked instead | nowhere — applied on read like the other two, but nothing is stored |
 
 `health.py` is not really a third member of "two text layers" — it repairs
@@ -345,8 +358,9 @@ trip cheap.
 
 ### Three things it deliberately does not do
 
-Given the dependency budget — a thread pool, one JSON file per job, no broker and
-no database — know these before promising anything:
+Given the dependency budget — a thread pool and job records as SQLite rows, no
+broker and no cross-process job claiming — know these before promising
+anything:
 
 1. **Jobs do not survive a restart.** State persists, the worker does not. On
    startup anything left running is marked `failed: interrupted by a server
