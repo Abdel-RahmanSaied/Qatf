@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
@@ -34,6 +35,7 @@ from qatf.core.errors import CommandFailed
 from qatf.core.types import Word, words_from_dicts
 from qatf.core.utils import binary, probe_duration
 from qatf.pipeline import health
+from qatf.pipeline.health import _TRAILING
 
 #: Errors before this point can be flattered by a seed that decays. Reported
 #: separately for exactly that reason.
@@ -75,7 +77,13 @@ def score(words: list[Word], terms: list[dict], since: float = 0.0) -> dict:
     span = (sel[-1].end - sel[0].start) if sel else 0.0
     runs = health.find_repetitions(sel)
     defects = health.find_timing_defects(sel)
-    text = [w.text.strip().strip(".،") for w in sel]
+    # Strip with health._TRAILING, not a hand-picked ".،": the scorer used to
+    # strip only ".،", so a tracked term followed by "؟", "؛", "!" or ":"
+    # never matched and terms_right understated real accuracy. _TRAILING is
+    # what the pipeline itself strips (health.py, shared with fixups._TRAILING)
+    # — using anything narrower here means the scorer and the pipeline
+    # disagree about what a "word" is.
+    text = [w.text.strip().rstrip(_TRAILING) for w in sel]
 
     term_rows = []
     for t in terms:
@@ -83,6 +91,9 @@ def score(words: list[Word], terms: list[dict], since: float = 0.0) -> dict:
         wrong = sum(1 for x in text if x in t["wrong"])
         term_rows.append({"expected": t["expected"], "right": right, "wrong": wrong,
                           "invented": max(0, right - t["baseline_total"])})
+
+    right_total = sum(r["right"] for r in term_rows)
+    wrong_total = sum(r["wrong"] for r in term_rows)
 
     return {
         "words": len(sel),
@@ -102,9 +113,15 @@ def score(words: list[Word], terms: list[dict], since: float = 0.0) -> dict:
         "max_word_span": round(max((d.end - d.start for d in defects
                                     if d.kind == "long"), default=0.0), 2),
         "terms": term_rows,
-        "terms_right": sum(r["right"] for r in term_rows),
-        "terms_wrong": sum(r["wrong"] for r in term_rows),
+        "terms_right": right_total,
+        "terms_wrong": wrong_total,
         "terms_invented": sum(r["invented"] for r in term_rows),
+        # Project owner's acceptance bar is 85% tracked-term accuracy. Higher
+        # is better here, unlike everything in _WORSE_IF_UP, so it is
+        # deliberately excluded from that tuple — the --baseline comparison
+        # below checks it as a drop, the same shape as the word-count guard.
+        "terms_accuracy": (round(100.0 * right_total / (right_total + wrong_total), 1)
+                           if (right_total + wrong_total) else 0.0),
     }
 
 
@@ -205,3 +222,79 @@ def uncovered_speech(words: list[Word], speech: list[tuple[float, float]],
         if b - cursor >= min_gap:
             gaps.append((cursor, b))
     return gaps
+
+
+def _fmt(s: dict, label: str) -> str:
+    return (f"  {label:<12} words {s['words']:>5}  wpm {s['wpm']:>5}  "
+            f"run {s['longest_run']:>2}  looped {s['looped_tokens']:>3}  "
+            f"zero {s['zero_timings']:>3}  long {s['long_timings']:>3}  "
+            f"maxspan {s['max_word_span']:>6}  "
+            f"terms {s['terms_right']}✓/{s['terms_wrong']}✗  "
+            f"acc {s['terms_accuracy']:.1f}%"
+            f"{'  INVENTED ' + str(s['terms_invented']) if s['terms_invented'] else ''}")
+
+
+#: Metrics where a HIGHER number is worse. `words` is deliberately absent — a
+#: drop in word count is the failure this scorer exists to catch, and it is
+#: checked separately below. `terms_accuracy` is also absent — higher is
+#: better there, so it gets its own drop check next to the word-count one,
+#: not a place in a tuple whose whole premise is "up is bad".
+#: `nonfinite_timings` is deliberately present, unlike the brief draft this
+#: was built from: a defect class missing from this tuple is one no run can
+#: ever fail the gate on, and NaN/inf timings are exactly the kind of thing a
+#: "quieter" config could introduce unnoticed.
+_WORSE_IF_UP = ("longest_run", "looped_tokens", "nonfinite_timings", "zero_timings",
+                "tiny_timings", "long_timings", "max_word_span", "terms_wrong",
+                "terms_invented")
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        raise SystemExit(2)
+    path = Path(args[0])
+    audio = Path(args[args.index("--audio") + 1]) if "--audio" in args else None
+    base = Path(args[args.index("--baseline") + 1]) if "--baseline" in args else None
+
+    words = load_words(path)
+    terms = load_terms(Path(__file__).resolve().parent / "fixtures" / "ar-terms.json")
+    whole = score(words, terms)
+    late = score(words, terms, since=DECAY_SECONDS)
+
+    print(f"\n{path.name}")
+    print(_fmt(whole, "whole file"))
+    print(_fmt(late, f"past {DECAY_SECONDS:.0f}s"))
+
+    if audio:
+        # Report total uncovered seconds, the worst window, and the top
+        # three — nothing here asserts which window ranks first. Running
+        # this on the reference file found six gaps >=10s: the documented
+        # "آآ" window (424-440s) is real but only the THIRD largest, behind
+        # 667.9-685.3s (17.4s, zero words) and 167.9-183.3s. A report that
+        # named one window as "the" gap would be wrong the moment a fix
+        # landed for it and a different gap took over as worst.
+        gaps = uncovered_speech(words, speech_intervals(audio))
+        total = sum(b - a for a, b in gaps)
+        worst = max((b - a for a, b in gaps), default=0.0)
+        print(f"  uncovered speech  {total:.1f}s total, worst window {worst:.1f}s")
+        for a, b in sorted(gaps, key=lambda g: g[1] - g[0], reverse=True)[:3]:
+            print(f"      {a:7.1f}-{b:7.1f}s  ({b - a:.1f}s)")
+
+    print("\n  per term: " + ", ".join(
+        f"{r['expected']} {r['right']}✓/{r['wrong']}✗" for r in whole["terms"]))
+
+    if base:
+        prev = score(load_words(base), terms)
+        regressions = [k for k in _WORSE_IF_UP if whole[k] > prev[k]]
+        if whole["words"] < prev["words"] * 0.97:
+            regressions.append(f"words {prev['words']} -> {whole['words']}")
+        # Same shape as the word-count guard just above: terms_accuracy is
+        # higher-is-better, so a drop — not a rise — is the regression here.
+        if whole["terms_accuracy"] < prev["terms_accuracy"]:
+            regressions.append(
+                f"terms_accuracy {prev['terms_accuracy']} -> {whole['terms_accuracy']}")
+        print(f"\n  vs {base.name}: "
+              + ("REGRESSED on " + ", ".join(regressions) if regressions
+                 else "no regression"))
+        raise SystemExit(1 if regressions else 0)
+    raise SystemExit(0)
