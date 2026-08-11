@@ -313,7 +313,9 @@ with TestClient(app) as client:
     class _T:
         words = [_W("a", 0.0, 0.1)] + [_W("dup", 0.1 + i / 10, 0.2 + i / 10)
                                        for i in range(5)]
-    _base = _worker.baseline_words(_T(), {})
+    # baseline_words now returns (words, blanked) instead of discarding the
+    # repair count — see qatf/jobs/worker.py — so every caller unpacks a pair.
+    _base, _base_blanked = _worker.baseline_words(_T(), {})
     check("repair reaches the read path, so captions and GET /transcript agree",
           [w.text for w in _base] == ["a", "dup", "", "", "", ""],
           str([w.text for w in _base]))
@@ -365,7 +367,7 @@ with TestClient(app) as client:
     # is missing.
     _opts = spec["components"]["schemas"]["JobOptions"]["properties"]
     check("track is offered on the wire",
-          "track" in str(_opts["reframe"]), str(_opts["reframe"]))
+          "track" in _opts["reframe"]["enum"], str(_opts["reframe"]))
     check("the tier is offered with it", "track_tier" in _opts)
 
     SEEN_TRACKING: list[tuple] = []

@@ -29,9 +29,16 @@ VOCAB = " ".join(Path("/app/prompts/ar-tech.txt").read_text(encoding="utf-8").sp
 
 
 def main() -> int:
-    name = sys.argv[1]
-    overrides = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else {}
-    vocab = VOCAB if "--no-vocab" not in sys.argv else None
+    # Split flags from positionals before indexing by position. Indexing
+    # argv[2] directly used to hand `--no-vocab` straight to json.loads and
+    # crash — a flag has no fixed slot once the overrides argument is
+    # optional, so positionals must be found by filtering, not by index.
+    args = sys.argv[1:]
+    flags = [a for a in args if a.startswith("--")]
+    positionals = [a for a in args if not a.startswith("--")]
+    name = positionals[0]
+    overrides = json.loads(positionals[1]) if len(positionals) > 1 else {}
+    vocab = VOCAB if "--no-vocab" not in flags else None
 
     OUT.mkdir(parents=True, exist_ok=True)
     target = OUT / f"words-{name}.json"
@@ -53,7 +60,8 @@ def main() -> int:
 
     print(f"{name}: {len(transcript.words)} words in {elapsed:.0f}s -> {target}")
     print(f"  decode overrides: {json.dumps(overrides, ensure_ascii=False)}")
-    print(f"  vocabulary: {'on' if vocab else 'OFF'} ({len(vocab.split()) if vocab else 0} terms)")
+    n_terms = len(vocab.split()) if vocab else 0
+    print(f"  vocabulary: {'on' if vocab else 'OFF'} ({n_terms} terms)")
     return 0
 
 

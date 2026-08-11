@@ -18,16 +18,21 @@ from .. import pipeline
 from ..core.constants import DEFAULT_TRACK_TIER
 from ..core.errors import EmptyPlan, NoSpeechFound
 from ..core.types import Clip, Word, clips_from_dicts, clips_to_dicts
-from ..core.utils import probe_video
+from ..core.utils import log, probe_video
 from .model import JobState
 
 if TYPE_CHECKING:
     from .store import JobStore
 
 
-def baseline_words(transcript, opts: dict) -> list[Word]:
+def baseline_words(transcript, opts: dict) -> tuple[list[Word], int]:
     """Transcript words with the job's fixups and repairs applied, and nothing
-    else.
+    else. Returns (words, blanked) — `blanked` is `health.repair`'s own count,
+    kept rather than discarded so a caller can log it. It used to be thrown
+    away here (`words, _ = pipeline.health.repair(words)`), which is why
+    `cli/runner.py` could log "blanked N looped token(s)" and the identical
+    job run over `POST /jobs` could not — see `run_pipeline`, the only caller
+    that uses the second element.
 
     This is what a per-word correction is diffed against, so it must be what the
     caller was shown minus their own corrections — see `api.routers.plan`.
@@ -38,15 +43,15 @@ def baseline_words(transcript, opts: dict) -> list[Word]:
     mapping = opts.get("fixups") or {}
     if mapping:
         words, _ = pipeline.fixups.apply(words, mapping)
-    words, _ = pipeline.health.repair(words)
-    return words
+    words, blanked = pipeline.health.repair(words)
+    return words, blanked
 
 
 def caption_words(transcript, opts: dict,
-                  work: Path | None = None) -> tuple[list[Word], int, int]:
+                  work: Path | None = None) -> tuple[list[Word], int, int, int]:
     """The text that actually gets burned in: fixups, then per-word corrections.
 
-    Returns (words, corrections applied, corrections gone stale).
+    Returns (words, blanked, corrections applied, corrections gone stale).
 
     Both layers are applied here rather than at transcription time, so either can
     change between renders without re-transcribing — and so `run_render` gets
@@ -54,12 +59,12 @@ def caption_words(transcript, opts: dict,
 
     Order matters: fixups are a global rule, corrections are a specific override,
     so a correction wins on the word it names."""
-    words = baseline_words(transcript, opts)
+    words, blanked = baseline_words(transcript, opts)
     if work is None:
-        return words, 0, 0
+        return words, blanked, 0, 0
     words, applied, stale = pipeline.edits.apply(
         words, pipeline.edits.load(pipeline.edits.path(work)))
-    return words, applied, len(stale)
+    return words, blanked, applied, len(stale)
 
 
 def run_pipeline(store: JobStore, job_id: str) -> None:
@@ -88,7 +93,21 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
     )
     if not transcript:
         raise NoSpeechFound("no speech found — nothing to clip")
-    words, _, _ = caption_words(transcript, opts, work)
+    words, blanked, _, _ = caption_words(transcript, opts, work)
+    # `cli/runner.py` logs both of these after the same call; `warnings()` had
+    # no other caller, so a job run over `POST /jobs` logged neither and a
+    # repeated-token repair or a bad timing was invisible on the server side —
+    # visible only to someone who happened to run the same video through the
+    # CLI too. `warnings()` here sees `words` after edits are applied rather
+    # than right after repair, unlike the CLI's ordering; that's fine because
+    # fixups and edits only ever touch `Word.text`, never a timing (the core
+    # invariant), so the timing-defect list `warnings()` reports is identical
+    # either side of them.
+    if blanked:
+        log(f"      blanked {blanked} looped token(s) — the decoder repeated "
+            f"itself; timings and word count are untouched")
+    for note in pipeline.health.warnings(words):
+        log(f"      NOTE {note}")
     store.update(job_id, language=transcript.language,
                  word_count=len(words), transcript_cached=cached,
                  device=transcript.device or device)
@@ -134,7 +153,7 @@ def run_render(store: JobStore, job_id: str) -> None:
     transcript = store.transcript_for(job)
     if transcript is None:
         raise EmptyPlan("job has no transcript to caption from")
-    words, _, _ = caption_words(transcript, job.options, job.work_dir(store.root))
+    words, _, _, _ = caption_words(transcript, job.options, job.work_dir(store.root))
     render_plan(store, job_id, words, clips)
 
 

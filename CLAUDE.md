@@ -56,7 +56,8 @@ qatf/
     parser.py      the argument surface
     runner.py      preflight + the run flow
 qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_{pipeline,llm,api}.py, load_api.py, verify_render.py, _harness.py
+tests/             smoke_{pipeline,llm,api}.py, load_api.py, score_transcript.py,
+                   verify_render.py, fixtures/, _harness.py
 docs/              human-facing reference — see "Documentation" below
 ```
 
@@ -594,7 +595,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   corrupted job record, that concurrent renders are refused with 409, and holds
   budgets for per-job list cost, `/healthz` serial cost and poll latency during
   an upload.
-- `tests/smoke_pipeline.py` (234 checks): timestamp formatting and carry, slugify,
+- `tests/smoke_pipeline.py` (271 checks): timestamp formatting and carry, slugify,
   caption grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
   (no forced `-r`, crf forwarded), device resolution and the CUDA-to-CPU
@@ -611,7 +612,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   `json_object` rather than erroring, that vLLM keeps `json_schema`, refusal and
   truncation handling, the context guard, and `parse_response` across all three
   output tiers. Proves request *shape*, not that any endpoint accepts it.
-- `tests/smoke_api.py` (116 checks): job state machine, transcript cache round
+- `tests/smoke_api.py` (127 checks): job state machine, transcript cache round
   trip, the transcript correction round trip (correction reaches the burned-in
   captions, cut points provably unchanged, retiming/add/remove all refused, the
   overlay stays out of the cache file), plan replace with and without re-snap,
