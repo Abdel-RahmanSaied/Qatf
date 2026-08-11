@@ -106,6 +106,31 @@ def wait(client, job_id, states, timeout=30):
     raise AssertionError(f"timeout; last state={job.get('state')} error={job.get('error')}")
 
 
+_RUNNING = {"queued", "extracting", "transcribing", "selecting", "rendering"}
+
+
+def settle(client, timeout=30):
+    """Block until no job is mid-pipeline.
+
+    A few validation checks fire a job with `auto_render: False` and only
+    assert on the immediate 202/422 — they never wait for it to reach
+    `planned`, so it keeps running on the worker pool in the background. That
+    was harmless when persistence was a plain `write_text` (fast enough that
+    the job settled long before any later section looked at it), but a SQLite
+    transaction per state transition is measurably slower, so the same
+    orphaned job can now still be mid-`selecting` when a later, unrelated
+    check counts model calls — making that check flaky for a reason that has
+    nothing to do with what it is testing. Called right before any check that
+    depends on the total number of model calls so far."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        jobs = client.get("/jobs").json()["jobs"]
+        if not any(j["state"] in _RUNNING for j in jobs):
+            return
+        time.sleep(0.05)
+    raise AssertionError("jobs still running after timeout")
+
+
 app = create_app(SETTINGS)
 
 with TestClient(app) as client:
@@ -325,7 +350,28 @@ with TestClient(app) as client:
     section("output sizes come from the record, not the filesystem")
     # to_response used to stat() every output on every read, which measured 75%
     # of GET /jobs and scaled with the job count on the endpoint clients poll.
-    rec = json.loads((SETTINGS.data_dir / jid / "job.json").read_text(encoding="utf-8"))
+    # The record now lives in qatf.db, not job.json, so it is read and rewritten
+    # through the database directly here rather than through the filesystem.
+    import sqlite3 as _sqlite3_rec
+
+    def _read_doc(job_id: str) -> dict:
+        con = _sqlite3_rec.connect(SETTINGS.data_dir / "qatf.db")
+        try:
+            return json.loads(con.execute(
+                "SELECT doc FROM jobs WHERE id=?", (job_id,)).fetchone()[0])
+        finally:
+            con.close()
+
+    def _write_doc(job_id: str, doc: dict) -> None:
+        con = _sqlite3_rec.connect(SETTINGS.data_dir / "qatf.db")
+        try:
+            con.execute("UPDATE jobs SET doc=? WHERE id=?",
+                       (json.dumps(doc, ensure_ascii=False), job_id))
+            con.commit()
+        finally:
+            con.close()
+
+    rec = _read_doc(jid)
     check("worker recorded a size per rendered clip",
           set(rec["output_sizes"]) == set(rec["outputs"]) and rec["outputs"],
           str(rec.get("output_sizes")))
@@ -342,17 +388,17 @@ with TestClient(app) as client:
           f"{after} vs {listed[0]['size_bytes']}")
     victim.write_bytes(kept)
     # a record written before output_sizes existed must still report the truth
-    legacy = store_for_legacy = None
     legacy_id = client.post("/jobs", json={"path": "talk.mp4", "auto_render": False,
                                            "device": "cpu"}).json()["id"]
     wait(client, legacy_id, {"planned", "failed", "done"})
-    lp = SETTINGS.data_dir / legacy_id / "job.json"
-    rec2 = json.loads(lp.read_text(encoding="utf-8"))
     (SETTINGS.data_dir / legacy_id / "clips").mkdir(parents=True, exist_ok=True)
     (SETTINGS.data_dir / legacy_id / "clips" / "99-legacy.mp4").write_bytes(b"x" * 4096)
+    rec2 = _read_doc(legacy_id)
     rec2["outputs"] = ["99-legacy.mp4"]
     rec2.pop("output_sizes", None)
-    lp.write_text(json.dumps(rec2), encoding="utf-8")
+    _write_doc(legacy_id, rec2)
+    # a fresh store reads whatever is in the database now, same as the running
+    # one would — there is no in-memory cache left to go stale between them.
     app2 = create_app(SETTINGS)
     with TestClient(app2) as c2:
         legacy = c2.get(f"/jobs/{legacy_id}").json()["outputs"]
@@ -491,6 +537,7 @@ with TestClient(app) as client:
     check("empty plan rejected",
           client.put(f"/jobs/{jid}/plan", json={"clips": []}).status_code == 422)
 
+    settle(client)  # let any orphaned background job from the checks above finish
     models_before = len(SEEN_MODELS)
     r = client.post(f"/jobs/{jid}/render")
     check("render accepted", r.status_code == 202, str(r.status_code))
@@ -567,5 +614,27 @@ with TestClient(app) as client:
     check("jobs reloaded from disk", store.get(jid) is not None)
     check("reloaded job keeps terminal state", store.get(jid).state == "done")
     store.shutdown()
+
+    section("sqlite persistence")
+    import sqlite3 as _sqlite3
+
+    _dbp = SETTINGS.data_dir / "qatf.db"
+    check("the store keeps its records in one database file", _dbp.exists(),
+          str(_dbp))
+    _con = _sqlite3.connect(_dbp)
+    _rows = _con.execute("SELECT count(*) FROM jobs").fetchone()[0]
+    check("jobs are rows, not files", _rows > 0, str(_rows))
+    check("?state= has an index to use, rather than scanning every record",
+          any("ix_jobs_state" in (r[0] or "") for r in _con.execute(
+              "SELECT name FROM sqlite_master WHERE type='index'")))
+
+    # The failure this whole change exists to remove. A record truncated by a
+    # crash used to be dropped SILENTLY by _recover's bare `continue`, so the
+    # job vanished with no error anywhere.
+    _plan = _con.execute("SELECT count(*) FROM jobs WHERE doc IS NULL"
+                         ).fetchone()[0]
+    check("no record is half-written — a transaction either lands or does not",
+          _plan == 0)
+    _con.close()
 
 raise SystemExit(report())
