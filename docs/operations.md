@@ -91,22 +91,37 @@ temperatures less often.
 ## Caching
 
 ```text
-<work>/words-<model>-<lang>.json
+<work>/qatf.db
 ```
 
 Under the CLI, `<work>` is `<out>/.work/`. Under the API it is
-`$QATF_DATA_DIR/<job-id>/.work/`.
+`$QATF_DATA_DIR/<job-id>/.work/`. The transcript is a row in the `transcripts`
+table, keyed the same way the old `words-<model>-<lang>.json` filename was; the
+per-word correction overlay (`word_edits`) and the face-detection cache
+(`detections`) live in the same file. Job records and cancel flags are a
+*separate* `qatf.db`, one per store root — `$QATF_DATA_DIR/qatf.db` under the
+API — not per job, since the job list itself is what `GET /jobs` queries.
 
-Delete the file to re-transcribe; otherwise iterating on clip selection is free.
+Delete the row (or the whole `qatf.db`) to re-transcribe; otherwise iterating on
+clip selection is free.
 
 **In the key:** Whisper size, forced language, hotword vocabulary, initial
 prompt.
 
 **Not in the key:** the device, and both text-correction layers — `--fixups` and
-`<work>/word-edits.json`. Those are applied on read, so editing either never
-orphans the cache and never changes a timestamp. It also keeps the cache saying
-what Whisper *actually* produced, which is what makes the numbers in
-[quality.md](quality.md) reproducible.
+the per-word overlay. Those are applied on read, so editing either never orphans
+the cache and never changes a timestamp. It also keeps the cache saying what
+Whisper *actually* produced, which is what makes the numbers in
+[quality.md](quality.md) reproducible — the storage medium changed, that
+guarantee did not.
+
+**Upgrading from a pre-SQLite work directory needs nothing.** A `words-*.json`,
+`word-edits.json` or `faces-*.json` file left over from an older install is
+imported into `qatf.db` the first time it is read and then left on disk,
+untouched — nothing in the upgrade path deletes a file. That is what makes a bad
+upgrade reversible: checking out the previous commit finds the same files it
+left behind and reads them exactly as before, because they were never rewritten
+or removed.
 
 > Drop a transcription flag on a re-run and you get a **cache miss**, not the old
 > transcript. Keep `--language`, `--whisper`, `--vocab-file` and `--denoise` the
@@ -195,8 +210,8 @@ CPU-bound render-only work.
 
 ## Before this runs behind anything real
 
-Three gaps, all deliberate given the dependency budget — a thread pool and one
-JSON file per job, no broker and no database:
+Three gaps, all deliberate given the dependency budget — a thread pool and job
+records as SQLite rows, no broker and no cross-process job claiming:
 
 1. **Jobs do not survive a restart.** State persists, the worker does not. On
    startup anything left running is marked `failed: interrupted by a server
@@ -206,6 +221,12 @@ JSON file per job, no broker and no database:
 2. **Cancellation is cooperative.** It lands between stages and between clips,
    never mid-ffmpeg.
 3. **No auth, no rate limiting, no quota.** Put something in front of it.
+4. **Do not run more than one server process against the same `QATF_DATA_DIR`.**
+   SQLite's WAL mode makes concurrent *writes* to the job database safe; it does
+   not make `QATF_WORKERS` safe *across processes*. Two processes would each
+   pull queued jobs onto their own pool and run the same job twice — nothing
+   claims a job atomically yet. See
+   [api.md](api.md#limits-to-know-before-deploying).
 
 Also unaddressed: nothing cleans up old job directories. A 4K source plus its
 wav plus its clips is not small, and `DELETE /jobs/{id}` is the only reaper.
@@ -222,9 +243,10 @@ interface.
 Seconds to run. No ffmpeg, GPU, API key or network needed.
 
 ```bash
-python tests/smoke_pipeline.py    # 155 checks
+python tests/smoke_db.py          #  14 checks
+python tests/smoke_pipeline.py    # 297 checks
 python tests/smoke_llm.py         #  38 checks
-python tests/smoke_api.py         # 110 checks
+python tests/smoke_api.py         # 131 checks
 python tests/load_api.py          #  23 checks, ~20s
 ruff check .
 ```
@@ -244,6 +266,10 @@ python tests/load_api.py --jobs 500 --concurrency 48 --rounds 8
 
 What they actually cover:
 
+- **`smoke_db.py`** — `core/db.py` in isolation: WAL and `busy_timeout` are
+  actually on, migrations are idempotent and carry a v1 database's data forward
+  to v2 without loss, each thread gets its own connection, a failed transaction
+  leaves nothing behind, and a corrupt file raises rather than reading as empty.
 - **`smoke_pipeline.py`** — timestamp formatting and carry, slugify, caption
   grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
