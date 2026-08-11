@@ -433,6 +433,38 @@ goes back over 250us.
 still builds the model, and it is the first thing anyone reaches for when they
 see pydantic in a hot path.
 
+### The SQLite move: read cost roughly doubled, and stayed inside budget
+
+The in-memory job dict above is gone. It was removed (not merely bypassed) in
+the move to SQLite (`qatf/core/db.py`, `qatf/jobs/store.py`): `GET /jobs` and
+`GET /jobs/{id}` now run a query plus a `json.loads` of the stored document,
+where they used to do a dict lookup. Measured with `tests/load_api.py`, three
+back-to-back runs:
+
+```text
+                                run 1     run 2     run 3
+GET /jobs marginal cost/job    38.2 us   36.1 us   43.9 us
+GET /jobs/{id} p99             50.8 ms   50.0 ms   53.1 ms
+/healthz serial floor           0.72 ms   0.69 ms   0.70 ms
+upload stall, worst poll      191.0 ms  180.0 ms  185.5 ms
+```
+
+Before (dict lookup, pre-SQLite, recorded above): **12-20 us/job**. After
+(query + `json.loads`): **36-44 us/job across three runs** — roughly a 2x
+rise. Every run stayed inside the 250us/job budget `load_api.py` asserts —
+5-7x headroom, not a near miss — and `GET /jobs/{id}` p99 (50.0-53.1ms across
+the three runs) stayed well under its own 150ms budget. **No assertion in
+`load_api.py` was loosened or touched** to get these numbers to pass.
+
+**Why the cost exists.** The dict lookup was cheap because the store kept
+every job in memory, but that copy could only ever reflect writes this
+process made — a second process, or the same process after a restart mid-run,
+writing a job would be invisible to it. Querying SQLite on every read is what
+makes `GET /jobs` and `GET /jobs/{id}` correct in the presence of another
+writer, rather than merely fast for one that might be the only one. The extra
+20-25us/job is the price of that correctness, not a regression to chase down
+— and the budget above exists to notice if the price ever climbs past it.
+
 ### `/healthz` forked a process per request
 
 The load test found this. A sequential smoke test never would.
