@@ -981,6 +981,24 @@ check("score() counts a NaN/inf-start word rather than silently dropping it",
 check("...and both are reported as nonfinite timing defects, not lost",
       _nan_scored["nonfinite_timings"] == 2, str(_nan_scored["nonfinite_timings"]))
 
+# `_require_readable`'s probe used to be `path.read_text(encoding="utf-8")`,
+# which is fine for the two JSON arguments but not for `--audio`: a WAV is
+# binary from its first byte (the RIFF header), so that probe raised
+# UnicodeDecodeError — uncaught, since only OSError was handled — and the
+# whole run died exit 1, the exact ambiguity this helper exists to remove.
+# Proven here against a real binary file that is actually committed to the
+# repo, not one this test writes itself, so the check cannot pass vacuously:
+# qatf/pipeline/detect.py loads this exact ONNX file as the YuNet
+# face-detection model, so it is guaranteed present wherever the pipeline
+# package is, and it is committed binary (not text) — see its own LICENSE
+# file alongside it.
+_onnx = Path(pipeline.__file__).parent / "assets" / "face_detection_yunet_2023mar.onnx"
+check("_require_readable accepts a real binary file (committed, not "
+      "written by this test) instead of raising UnicodeDecodeError trying "
+      "to read it as utf-8 text",
+      _onnx.is_file() and score_transcript._require_readable(_onnx, "onnx fixture") == _onnx,
+      str(_onnx))
+
 section("decode parameters — stage 2")
 check("DECODE carries the VAD settings so a sweep has one place to change",
       "vad_parameters" in asr.DECODE
