@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 #: Bumped whenever `_MIGRATIONS` grows. Stored in `PRAGMA user_version`.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: Milliseconds a writer waits for a competing writer before raising. Without
 #: it, two threads writing at once surface as `database is locked` rather than
@@ -73,8 +73,20 @@ CREATE TABLE IF NOT EXISTS detections (
 );
 """
 
+# Do not edit _SCHEMA_V1 above. A database already at version 1 replays only
+# the migrations past its own version (see `_migrate`), so a change to V1's
+# text would never reach an existing file — it would only affect a brand-new
+# one, and the two would silently diverge. Append forward instead.
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS imported (
+  scope TEXT NOT NULL,
+  kind  TEXT NOT NULL,
+  PRIMARY KEY (scope, kind)
+);
+"""
+
 #: index -> the SQL that takes the schema from that version to the next.
-_MIGRATIONS = [_SCHEMA_V1]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]
 
 _local = threading.local()
 

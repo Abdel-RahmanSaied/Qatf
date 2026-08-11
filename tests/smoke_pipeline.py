@@ -1089,6 +1089,35 @@ check("it records what it replaced, so a moved transcript goes stale rather "
       "than landing on an unrelated word", _got[0].was == "من")
 check("scopes do not leak into each other", edits.load(_ew, "job2") == [])
 
+section("per-word overlay — an explicitly cleared overlay stays cleared")
+# Reproduces the resurrection bug found in fix round 1: a pre-SQLite
+# word-edits.json is (by design) left on disk after the first import — see
+# `_load_legacy`'s docstring. Before the `imported` marker table existed,
+# `load` treated "zero rows for this scope" as one state whether the scope
+# had never been written OR had just been explicitly cleared, so it fell
+# through to the still-present legacy file and re-imported it — silently
+# undoing the very correction `save(work, scope, [])` just removed.
+# `PUT /jobs/{id}/transcript` with the pristine transcript IS how a user
+# undoes a correction (`save`'s own docstring says so), so this is that undo
+# reverting itself on the next `GET`.
+import json  # noqa: E402
+
+_lw = Path(tempfile.mkdtemp(prefix="qatf-ed-legacy-"))
+(_lw / edits.FILENAME).write_text(
+    json.dumps({"edits": [{"index": 3, "was": "X", "text": "CORRECTED"}]}),
+    encoding="utf-8")
+_first = edits.load(_lw, "jobL")
+check("first load imports the legacy file",
+      len(_first) == 1 and _first[0].text == "CORRECTED", str(_first))
+edits.save(_lw, "jobL", [])   # the user explicitly clears every correction
+_second = edits.load(_lw, "jobL")
+check("AN EXPLICITLY CLEARED OVERLAY DOES NOT COME BACK FROM THE DEAD — the "
+      "legacy file is still on disk and must not be re-imported on the next "
+      "read just because the table is empty again",
+      _second == [], str(_second))
+check("the legacy file itself is untouched — nothing in the upgrade path "
+      "may delete it, import or no", (_lw / edits.FILENAME).is_file())
+
 section("face cache — SQLite")
 _dw = Path(tempfile.mkdtemp(prefix="qatf-fc-"))
 _dk = detect.cache_key(Path(__file__), "yunet", "balanced")

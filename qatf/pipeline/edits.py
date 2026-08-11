@@ -106,12 +106,58 @@ def _load_legacy(path: Path) -> list[Edit]:
         return []
 
 
+def _import_legacy(work: str | Path, scope: str, edits: list[Edit]) -> None:
+    """Write a legacy file's rows AND the `imported` marker in ONE transaction.
+
+    The marker is what makes "zero rows" mean "zero corrections" permanently
+    once a scope has been imported, rather than "go check the file again" —
+    without it, `load` could not tell a scope that was explicitly cleared via
+    `save(work, scope, [])` apart from one that has never been imported, and
+    the legacy file (deliberately left on disk — see `_load_legacy`) would
+    resurrect the just-cleared corrections on the very next read. Both writes
+    must land together: a marker with no rows would silently discard the
+    import, and rows with no marker would leave the resurrection bug in place
+    for exactly the scope this is trying to fix.
+
+    `ON CONFLICT ... DO UPDATE`/`DO NOTHING` rather than a bare INSERT: two
+    threads racing to import the same never-before-seen scope (a render
+    running `caption_words` while a client calls `GET /transcript`) both pass
+    the "not yet imported" check before either commits, since that check and
+    this write are two separate statements. The first writer wins the race
+    honestly; the second must not crash on a duplicate key — it just
+    rewrites the same values.
+
+    Closes its own connection before returning — see `load`."""
+    try:
+        with db.transaction(_db_path(work)) as con:
+            con.executemany(
+                "INSERT INTO word_edits (scope, idx, was, text) VALUES (?,?,?,?) "
+                "ON CONFLICT(scope, idx) DO UPDATE SET was=excluded.was, "
+                "text=excluded.text",
+                [(scope, e.index, e.was, e.text) for e in edits])
+            con.execute(
+                "INSERT INTO imported (scope, kind) VALUES (?, 'word_edits') "
+                "ON CONFLICT(scope, kind) DO NOTHING",
+                (scope,))
+    finally:
+        db.close(_db_path(work))
+
+
 def load(work: str | Path, scope: str) -> list[Edit]:
     """The overlay for `scope`, or an empty list.
 
     `scope` is the job id on the API path and the resolved output directory on
     the CLI path: one database can hold several output directories' overlays,
     and they must not read each other's.
+
+    The legacy file is imported AT MOST ONCE per scope — tracked in the
+    `imported` table, not by "are there zero rows" — because zero rows is
+    ambiguous between "never imported" and "explicitly cleared". Before the
+    `imported` table existed, every pre-SQLite job (which by design leaves its
+    `word-edits.json` on disk after the first import) would silently resurrect
+    a cleared overlay on the read after `save(work, scope, [])`: `PUT
+    /jobs/{id}/transcript` with the pristine transcript is how a user undoes a
+    correction, and that undo was reverting itself on the next `GET`.
 
     Closes its own connection before returning — see `db.close`. This database
     lives inside a job's own directory, deletable at any time from whatever
@@ -126,10 +172,15 @@ def load(work: str | Path, scope: str) -> list[Edit]:
         found = [Edit(index=r["idx"], was=r["was"], text=r["text"]) for r in rows]
         if found:
             return found
+        already_imported = con.execute(
+            "SELECT 1 FROM imported WHERE scope=? AND kind='word_edits'",
+            (scope,)).fetchone()
+        if already_imported is not None:
+            return []      # imported once already — zero rows now means zero corrections
         legacy = Path(work) / FILENAME
         if legacy.is_file():
             imported = _load_legacy(legacy)
-            save(work, scope, imported)      # the file is left in place
+            _import_legacy(work, scope, imported)   # the file is left in place
             return imported
         return []
     finally:
@@ -142,8 +193,11 @@ def save(work: str | Path, scope: str, edits: list[Edit]) -> None:
     Wholesale replace, matching `PUT /jobs/{id}/transcript`: re-submitting the
     untouched transcript clears every correction, which is how you undo one. An
     empty `edits` list still runs the DELETE, so a cleared overlay is truly gone
-    (zero rows) rather than a special "empty but present" case — indistinguishable
-    from a scope that was never written, which is exactly what `load` needs.
+    (zero rows) rather than a special "empty but present" case. This does NOT
+    touch the `imported` marker — only `_import_legacy` does — so calling this
+    on an already-imported scope (the normal case) correctly leaves "already
+    imported" set and a later `load` does not go looking at the legacy file
+    again just because this call happened to empty the table.
 
     Closes its own connection before returning — see `load`."""
     try:
