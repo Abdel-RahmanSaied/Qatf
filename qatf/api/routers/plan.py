@@ -45,7 +45,7 @@ def _read(store: JobStore, job) -> TranscriptResponse:
     if transcript is None:
         raise NoTranscript("no transcript yet")
     words, _blanked, applied, stale = caption_words(transcript, job.options,
-                                                     job.work_dir(store.root))
+                                                     job.work_dir(store.root), job.id)
     return _payload(transcript, words, applied, stale)
 
 
@@ -137,7 +137,7 @@ def put_transcript(job_id: str, body: TranscriptUpdate,
     corrections = pipeline.edits.diff(baseline, submitted)
 
     work = job.work_dir(store.root)
-    pipeline.edits.save(pipeline.edits.path(work), corrections)
+    pipeline.edits.save(work, job_id, corrections)
 
     fields: dict = {"message": f"transcript corrected ({len(corrections)} word(s))"
                                " — POST /render to re-encode"}

@@ -320,8 +320,8 @@ else:
         ff("-f", "lavfi", "-i", f"color=c=0x101010:s={SRC_W}x{SRC_H}:d=2:r=30",
            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(other))
         check("a second video in the same work directory gets its own cache",
-              detect.cache_path(WORK / "b", other, detector, "balanced")
-              != detect.cache_path(WORK / "b", face_vid, detector, "balanced"))
+              detect.cache_key(other, detector, "balanced")
+              != detect.cache_key(face_vid, detector, "balanced"))
 
         track_b = framing.solve(dets_b, clip_b, crop_w, detector=detector,
                                 tier="balanced")

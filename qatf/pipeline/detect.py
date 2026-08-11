@@ -27,6 +27,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from ..core import db
 from ..core.constants import TRACK_SAMPLE_FPS, TRACK_TIERS
 from ..core.errors import CommandFailed, DetectorNotAvailable, FFmpegNotFound
 from ..core.types import Clip, Detection, detections_from_dicts, detections_to_dicts
@@ -136,7 +137,7 @@ def sample_times(spans: list[tuple[float, float]], fps: float) -> list[float]:
 
 # -- cache ------------------------------------------------------------------
 
-def cache_key(video: Path) -> str:
+def cache_key_for(video: Path) -> str:
     """A short identity for the footage plus the settings that shape a detection.
 
     The video part is (resolved path, size, mtime) rather than a content hash:
@@ -146,10 +147,15 @@ def cache_key(video: Path) -> str:
     *different* video's face was, with `Track.fallback` False, so nothing flags
     it. Bias the key toward re-detecting.
 
-    DETECT_WIDTH and YUNET_SCORE are in here for the reason `asr.cache_path`
+    DETECT_WIDTH and YUNET_SCORE are in here for the reason `asr.cache_key`
     carries the Whisper size: a knob that does not reach the key is a knob that
     silently does nothing on a warm work directory, and YUNET_SCORE is the one
-    documented as most likely to produce a visibly wrong crop."""
+    documented as most likely to produce a visibly wrong crop.
+
+    Named `_for`, not plain `cache_key`, because that name is `cache_key(video,
+    detector, tier)` below — the full row key `read_cache`/`write_cache` use.
+    This is the video-only piece of it, the one thing they share with the old
+    per-detector, per-tier cache file this replaced."""
     try:
         st = video.stat()
         identity = f"{video.resolve()}|{st.st_size}|{int(st.st_mtime)}"
@@ -161,37 +167,81 @@ def cache_key(video: Path) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def cache_path(work: Path, video: Path, detector: str, tier: str) -> Path:
-    """Where one video's detections live.
+def cache_key(video: Path, detector: str, tier: str) -> str:
+    """The `detections` row key for one video, detector and tier: the stem the
+    pre-SQLite filename used, so a `faces-*.json` left over from before the move
+    is still findable by `read_cache`'s importer.
 
-    `video` is not optional, and that is the point: the previous signature keyed
+    `video` is not optional, and that is the point: an earlier version keyed
     only on detector and tier, so a second video rendered into the same output
     directory found every span already "covered" and inherited the first one's
-    face positions.
+    face positions with `Track.fallback` False, and nothing flagged it — see
+    CLAUDE.md open risk #2.
 
-    detector and tier are slugified for the same reason `asr.cache_path` does
-    it: these reach a filename, and `tier` arrives from a request body. The key
-    is a hex digest, so it needs no slugifying to be path-safe."""
-    return (work /
-            f"faces-{slugify(detector)}-{slugify(tier)}-{cache_key(video)}.json")
+    detector and tier are slugified for the same reason `asr.cache_key` slugifies
+    the model size and language: both reach a filename (the legacy import path),
+    and `tier` arrives from a request body. `cache_key_for`'s digest is a hex
+    string, so it needs no slugifying to be path-safe."""
+    return f"faces-{slugify(detector)}-{slugify(tier)}-{cache_key_for(video)}"
 
 
-def read_cache(path: Path) -> tuple[list[tuple[float, float]], list[Detection]]:
-    if not path.exists():
-        return [], []
+def _db_path(work: str | Path) -> Path:
+    """One database per work directory — same file `asr.db_path` names. Not
+    imported from `asr` to keep the stage modules independent of each other;
+    both derivations are one line and must agree only on the constant below."""
+    return Path(work) / "qatf.db"
+
+
+def _read_legacy_cache(path: Path) -> tuple[list[tuple[float, float]], list[Detection]]:
+    """Parse a pre-SQLite `faces-*.json` file. `read_cache` calls this once, on
+    the first read after upgrading, and writes the result into the database —
+    the file itself is left on disk, never deleted."""
     raw = json.loads(path.read_text(encoding="utf-8"))
     spans = [(float(a), float(b)) for a, b in raw.get("spans", [])]
     return merge_spans(spans), detections_from_dicts(raw.get("detections", []))
 
 
-def write_cache(path: Path, spans: list[tuple[float, float]],
-                dets: list[Detection]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        "spans": [[round(a, 3), round(b, 3)] for a, b in merge_spans(spans)],
-        "detections": detections_to_dicts(sorted(dets, key=lambda d: d.t)),
-    }), encoding="utf-8")
-    return path
+def read_cache(work: Path, key: str) -> tuple[list[tuple[float, float]], list[Detection]]:
+    """The cached spans and detections for `key`, or ([], []). Imports a
+    pre-SQLite `faces-*.json` file if one is there — see `_read_legacy_cache`.
+
+    Closes its own connection before returning — see `db.close`. Same reasoning
+    as `edits.load`: this database lives inside a job's own directory, deletable
+    at any time from whatever thread handles the request, and a handle left
+    cached here would block `shutil.rmtree` on Windows regardless of which
+    thread asks for the delete."""
+    try:
+        con = db.connect(_db_path(work))
+        row = con.execute(
+            "SELECT spans, detections FROM detections WHERE key=?", (key,)).fetchone()
+        if row is None:
+            legacy = Path(work) / f"{key}.json"
+            if legacy.is_file():
+                spans, dets = _read_legacy_cache(legacy)
+                write_cache(work, key, spans, dets)   # the file is left in place
+                return spans, dets
+            return [], []
+        spans = [(float(a), float(b)) for a, b in json.loads(row["spans"])]
+        return merge_spans(spans), detections_from_dicts(json.loads(row["detections"]))
+    finally:
+        db.close(_db_path(work))
+
+
+def write_cache(work: Path, key: str, spans: list[tuple[float, float]],
+                dets: list[Detection]) -> None:
+    """Closes its own connection before returning — see `read_cache`."""
+    try:
+        with db.transaction(_db_path(work)) as con:
+            con.execute(
+                "INSERT INTO detections (key, spans, detections) VALUES (?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET spans=excluded.spans, "
+                "detections=excluded.detections",
+                (key,
+                 json.dumps([[round(a, 3), round(b, 3)] for a, b in merge_spans(spans)]),
+                 json.dumps(detections_to_dicts(sorted(dets, key=lambda d: d.t)),
+                            ensure_ascii=False)))
+    finally:
+        db.close(_db_path(work))
 
 
 # -- the detector itself ----------------------------------------------------
@@ -411,7 +461,7 @@ def detections_for(video: Path, clips: list[Clip], work: Path, *,
     """The stage 4b entry point. Returns (detections, detector actually used).
 
     Only the spans no previous run covered are detected; everything else is
-    served from `faces-<detector>-<tier>.json`."""
+    served from the `detections` row keyed `faces-<detector>-<tier>-<video>`."""
     if tier not in TRACK_TIERS:
         raise DetectorNotAvailable(
             f"unknown tracking tier {tier!r}, expected one of {TRACK_TIERS}")
@@ -421,8 +471,8 @@ def detections_for(video: Path, clips: list[Clip], work: Path, *,
     meta = probe_video(video)
     src_w, src_h = int(meta["width"]), int(meta["height"])
 
-    path = cache_path(work, video, name, tier)
-    covered, cached = read_cache(path)
+    key = cache_key(video, name, tier)
+    covered, cached = read_cache(work, key)
     # Clamped to the real duration: a span reaching past the last frame decodes
     # to nothing and would then be written to the cache as covered, so the
     # margin around a final clip would look permanently detected-and-empty.
@@ -439,6 +489,6 @@ def detections_for(video: Path, clips: list[Clip], work: Path, *,
         fresh += detect_span(video, span, fps, name, src_w, src_h)
 
     dets = cached + fresh
-    write_cache(path, covered + todo, dets)
+    write_cache(work, key, covered + todo, dets)
     log(f"stage 4b: +{len(fresh)} detections, {len(dets)} cached total")
     return dets, name

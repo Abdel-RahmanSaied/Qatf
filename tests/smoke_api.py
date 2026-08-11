@@ -320,22 +320,36 @@ with TestClient(app) as client:
           "CORRECTED" in corrected_ass and "word30" not in corrected_ass)
     check("still no model call — corrections are stage 5 only",
           len(SEEN_MODELS) == 1, str(SEEN_MODELS))
-    # the cache now lives in SQLite (qatf.db in the same .work directory), not a
-    # words-*.json file — read it back the same way transcript_for does, with
-    # the key built from this job's own options, and check the correction never
-    # reached the raw row
+    # The overlay now lives in SQLite too (qatf.db in the same .work directory,
+    # word_edits table scoped by job id), not a word-edits.json file — read it
+    # back directly with a fresh connection rather than through qatf.core.db, so
+    # this check does not share a cached thread-local handle with the app under
+    # test (see qatf.core.db.close's docstring for why that matters).
+    import sqlite3 as _sqlite3_edits
+
+    def _overlay_rows(job_id: str) -> int:
+        con = _sqlite3_edits.connect(SETTINGS.data_dir / job_id / ".work" / "qatf.db")
+        try:
+            return con.execute(
+                "SELECT COUNT(*) FROM word_edits WHERE scope=?", (job_id,)).fetchone()[0]
+        finally:
+            con.close()
+
+    # the transcript cache lives in SQLite (qatf.db in the same .work
+    # directory), not a words-*.json file — read it back the same way
+    # transcript_for does, with the key built from this job's own options, and
+    # check the correction never reached the raw row
     _raw_key = pipeline.cache_key("large-v3", "ar", None, "بايثون فلاتر")
     _raw_cached = pipeline.read_cache(SETTINGS.data_dir / jid / ".work", _raw_key)
     check("overlay stored beside the cache, not inside it",
-          (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists()
+          _overlay_rows(jid) == 1
           and _raw_cached is not None
           and all(w.text != "CORRECTED" for w in _raw_cached.words))
 
     r = client.put(f"/jobs/{jid}/transcript", json={"words": pristine})
     check("re-submitting the untouched transcript clears corrections",
           r.json()["edits_applied"] == 0 and r.json()["words"][30]["text"] == "word30")
-    check("cleared overlay is removed, not left empty",
-          not (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists())
+    check("cleared overlay is removed, not left empty", _overlay_rows(jid) == 0)
 
     from qatf.core.types import Word as _W
     from qatf.jobs import worker as _worker

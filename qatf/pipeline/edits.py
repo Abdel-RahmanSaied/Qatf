@@ -29,6 +29,13 @@ alone is not safe: re-transcribing with a different Whisper size, or toggling
 `--denoise`, shifts every position, and correction #1247 would land silently on
 an unrelated word. With `was` recorded, a shifted overlay goes **stale** and is
 reported rather than applied.
+
+The overlay lives in `word_edits` in `<work>/qatf.db` — the same database the
+transcript cache uses (`asr.db_path`) — keyed by `scope` so several overlays can
+share one database without reading each other's: `scope` is the job id on the
+API path and the resolved output directory on the CLI path. A pre-SQLite
+`word-edits.json` is imported into that table on first read and left on disk,
+same as `asr.read_cache` does for `words-*.json`.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ..core import db
 from ..core.errors import TranscriptStructureChanged
 from ..core.types import Word
 
@@ -58,18 +66,13 @@ class Edit:
     text: str
 
 
-def path(work: str | Path) -> Path:
-    """Beside the transcript cache, deliberately not inside it."""
-    return Path(work) / FILENAME
-
-
 def to_dicts(edits: list[Edit]) -> list[dict]:
     return [asdict(e) for e in edits]
 
 
 def from_dicts(data: object) -> list[Edit]:
-    """Tolerant of both the wrapped and bare forms, since this file is meant to
-    be hand-edited."""
+    """Tolerant of both the wrapped and bare forms, since the pre-SQLite file
+    this reads was meant to be hand-edited."""
     if isinstance(data, dict):
         data = data.get("edits", [])
     if not isinstance(data, list):
@@ -85,27 +88,72 @@ def from_dicts(data: object) -> list[Edit]:
     return out
 
 
-def load(file: str | Path) -> list[Edit]:
-    target = Path(file)
-    if not target.is_file():
-        return []
+def _db_path(work: str | Path) -> Path:
+    """One database per work directory — same file `asr.db_path` names. Not
+    imported from `asr` to keep the stage modules independent of each other;
+    both derivations are one line and must agree only on the constant below."""
+    return Path(work) / "qatf.db"
+
+
+def _load_legacy(path: Path) -> list[Edit]:
+    """Parse a pre-SQLite `word-edits.json` overlay. `load` calls this once, on
+    the first read after upgrading, and writes the result into the database —
+    the file itself is left on disk, never deleted, so a bad upgrade stays
+    reversible by checking out the previous commit."""
     try:
-        return from_dicts(json.loads(target.read_text(encoding="utf-8")))
+        return from_dicts(json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError:
         return []
 
 
-def save(file: str | Path, edits: list[Edit]) -> None:
-    """Write the overlay, or remove it when there is nothing left to record —
-    an empty overlay and no overlay must not behave differently."""
-    target = Path(file)
-    if not edits:
-        target.unlink(missing_ok=True)
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps({"edits": to_dicts(edits)}, indent=2, ensure_ascii=False),
-        encoding="utf-8")
+def load(work: str | Path, scope: str) -> list[Edit]:
+    """The overlay for `scope`, or an empty list.
+
+    `scope` is the job id on the API path and the resolved output directory on
+    the CLI path: one database can hold several output directories' overlays,
+    and they must not read each other's.
+
+    Closes its own connection before returning — see `db.close`. This database
+    lives inside a job's own directory, deletable at any time from whatever
+    thread handles the request; a handle left cached here would sit open until
+    process exit, and on Windows an open handle blocks `shutil.rmtree` on the
+    job directory regardless of which thread asks for the delete."""
+    try:
+        con = db.connect(_db_path(work))
+        rows = con.execute(
+            "SELECT idx, was, text FROM word_edits WHERE scope=? ORDER BY idx",
+            (scope,))
+        found = [Edit(index=r["idx"], was=r["was"], text=r["text"]) for r in rows]
+        if found:
+            return found
+        legacy = Path(work) / FILENAME
+        if legacy.is_file():
+            imported = _load_legacy(legacy)
+            save(work, scope, imported)      # the file is left in place
+            return imported
+        return []
+    finally:
+        db.close(_db_path(work))
+
+
+def save(work: str | Path, scope: str, edits: list[Edit]) -> None:
+    """Replace the whole overlay for `scope`, in one transaction.
+
+    Wholesale replace, matching `PUT /jobs/{id}/transcript`: re-submitting the
+    untouched transcript clears every correction, which is how you undo one. An
+    empty `edits` list still runs the DELETE, so a cleared overlay is truly gone
+    (zero rows) rather than a special "empty but present" case — indistinguishable
+    from a scope that was never written, which is exactly what `load` needs.
+
+    Closes its own connection before returning — see `load`."""
+    try:
+        with db.transaction(_db_path(work)) as con:
+            con.execute("DELETE FROM word_edits WHERE scope=?", (scope,))
+            con.executemany(
+                "INSERT INTO word_edits (scope, idx, was, text) VALUES (?,?,?,?)",
+                [(scope, e.index, e.was, e.text) for e in edits])
+    finally:
+        db.close(_db_path(work))
 
 
 def diff(baseline: list[Word], submitted: list[Word]) -> list[Edit]:
