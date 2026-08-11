@@ -46,13 +46,15 @@ def call(method: str, path: str, body=None, raw: bytes | None = None,
             payload = r.read()
             try:
                 return r.status, json.loads(payload or b"null")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # a clip download is an MP4: binary bodies raise
+                # UnicodeDecodeError, which JSONDecodeError does not cover
                 return r.status, payload
     except urllib.error.HTTPError as e:
         payload = e.read()
         try:
             return e.code, json.loads(payload or b"null")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return e.code, {"raw": payload[:200].decode("utf-8", "replace")}
 
 
@@ -139,6 +141,17 @@ section("transcript round trip")
 st, tr = call("GET", f"/jobs/{jid}/transcript")
 words = tr.get("words") or []
 check("GET /transcript -> 200 with words", st == 200 and len(words) > 50, str(len(words)))
+if not words:
+    # Stop cleanly rather than tracebacking on `words[0]`. Every check below
+    # this point needs a transcript; an IndexError here would bury the ACTUAL
+    # failure (the job's own error, already reported above) under a stack trace
+    # from the harness, which is the wrong thing to be reading at 3am.
+    print("\n  transcript is empty — the job failed upstream; skipping the "
+          "round-trip, plan and render sections")
+    print(f"\n{len(passed)} passed, {len(failed)} failed")
+    for name in failed:
+        print("  FAILED:", name)
+    raise SystemExit(1)
 edited = json.loads(json.dumps(words))
 original = edited[0]["text"]
 edited[0]["text"] = "مُصحح"
@@ -162,7 +175,19 @@ call("PUT", f"/jobs/{jid}/transcript", {"words": edited})
 section("plan round trip")
 st, plan = call("GET", f"/jobs/{jid}/plan")
 check("GET /plan -> 200", st == 200, str(st))
-clips = plan.get("clips") or plan if isinstance(plan, list) else plan.get("clips", [])
+
+
+def _clips(payload):
+    """The route may return a bare list or a {"clips": [...]} envelope.
+
+    Written as a function because the inline conditional this replaced —
+    `payload.get("clips") or payload if isinstance(payload, list) else ...` —
+    binds as `(payload.get(...) or payload) if isinstance(...)`, so the list
+    branch called .get on a list and raised. Precedence, not logic."""
+    return payload if isinstance(payload, list) else (payload.get("clips") or [])
+
+
+clips = _clips(plan)
 check("plan has clips", len(clips) >= 1, str(len(clips)))
 first = dict(clips[0])
 first["title"] = "hand edited"
@@ -170,7 +195,7 @@ st, r = call("PUT", f"/jobs/{jid}/plan", {"clips": [first]})
 check("PUT /plan replaces the plan", st == 200,
       f"{st} {json.dumps(r, ensure_ascii=False)[:120]}")
 st, plan2 = call("GET", f"/jobs/{jid}/plan")
-c2 = plan2.get("clips") if isinstance(plan2, dict) else plan2
+c2 = _clips(plan2)
 check("the edit landed and re-snapped", len(c2) == 1, str(len(c2)))
 
 section("render")
