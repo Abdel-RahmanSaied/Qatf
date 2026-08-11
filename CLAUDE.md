@@ -30,6 +30,7 @@ qatf/
     asr.py         2.  transcribe + word times  faster-whisper
     fixups.py      2b. substitutions by value   text only, never timestamps
     edits.py       2c. corrections by position  text only, never timestamps
+    health.py      2d. loop repair + timing flags  text only, never timestamps
     select.py      3.  pick clips               the configured provider
     cuts.py        4.  snap to word bounds      deterministic
     detect.py      4b. find faces               OpenCV, cached against the video
@@ -132,6 +133,9 @@ ruff check .
 # (cached after the first run); it skips rather than fails without them.
 # It honours QATF_FFMPEG, so it does not silently no-op where ffmpeg is off PATH.
 python tests/verify_render.py                 # ~40s
+
+# grade a transcript against docs/quality.md's tracked terms (--audio needs ffmpeg)
+python tests/score_transcript.py <words.json> --audio <wav>   # grade a transcript
 ```
 
 Transcription is cached at `<work>/words-<model>-<lang>.json`. Delete it to
