@@ -141,10 +141,13 @@ python tests/verify_render.py                 # ~40s
 python tests/score_transcript.py <words.json> --audio <wav>   # grade a transcript
 ```
 
-Transcription is cached at `<work>/words-<model>-<lang>.json`. Delete it to
-re-transcribe; otherwise iterating on clip selection is free. The cache key
-includes the Whisper size and the forced language — keying on the output
-directory alone silently reused an English transcript after `--language ar`.
+Transcription is cached in the `transcripts` table of `<work>/qatf.db`, keyed
+on the Whisper size and the forced language (`asr.cache_key`) — keying on the
+output directory alone silently reused an English transcript after
+`--language ar`. A pre-SQLite `<work>/words-<model>-<lang>.json` is imported
+into that table on first read and left on disk; **deleting the JSON alone does
+not force a re-transcription** once the row exists — delete the row (or the
+whole `qatf.db`) instead. Otherwise iterating on clip selection is free.
 
 ---
 
@@ -277,7 +280,10 @@ nothing                       23 wrong,  8 right, 15 wrong after 300s
   errors a substitution structurally cannot reach: a word misheard once where the
   same string is correct elsewhere. `من` → `مين` is unfixable by rule — `من` is
   one of the most common words in Arabic. Keyed by position, stored as an overlay
-  at `<work>/word-edits.json`, applied on read. `PUT /jobs/{id}/transcript`
+  in the `word_edits` table of `<work>/qatf.db`, applied on read. For the CLI,
+  `<work>/word-edits.json` is still the interface — there is no flag — imported
+  into that table and re-imported whenever the file's mtime moves, so editing
+  it again after the first run keeps working. `PUT /jobs/{id}/transcript`
   refuses any submission that changes the word count or a timing, so the
   invariant is enforced by the contract, not by discipline. Each correction
   records the text it replaced; if the transcript moves underneath it (different
@@ -719,8 +725,10 @@ for numbers somebody measured. Two of them encode a real trade worth knowing:
 Deliberately still behind selection quality: a perfectly tracked bad clip is
 still a bad clip.
 
-**The face cache keys on the footage, not the output directory.**
-`faces-<detector>-<tier>-<key>.json`, where `key` hashes (resolved path, size,
+**The face cache keys on the footage, not the output directory.** Stored in the
+`detections` table of `<work>/qatf.db`, row-keyed
+`faces-<detector>-<tier>-<key>.json` (still that exact string — a row key now,
+not a filename), where `key` hashes (resolved path, size,
 mtime) plus `DETECT_WIDTH` and `YUNET_SCORE`. Both halves earn their place: two
 videos rendered into one `-o` directory shared a cache and the second inherited
 the first's face positions with `fallback=False`, and a knob outside the key is a
@@ -836,7 +844,8 @@ Neither is warranted yet.
   entirely on the first pass.
 - **Stages 1, 4 and 5 can be exercised without a GPU or an API key** by seeding
   `<work>/words-<model>-<lang>.json` and running with `--plan`. Use that for
-  render-path work instead of waiting on transcription.
+  render-path work instead of waiting on transcription. (The legacy filename
+  still works — `asr.read_cache` imports it into `qatf.db` on first read.)
 - **Both smoke suites must stay green, and new behaviour gets a check.** They run
   in seconds with no external dependencies; there is no excuse for skipping them.
   `ruff check .` too.

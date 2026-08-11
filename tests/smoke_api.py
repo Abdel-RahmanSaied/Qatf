@@ -351,6 +351,42 @@ with TestClient(app) as client:
           r.json()["edits_applied"] == 0 and r.json()["words"][30]["text"] == "word30")
     check("cleared overlay is removed, not left empty", _overlay_rows(jid) == 0)
 
+    section("transcript correction — a PUT before any GET marks the scope (finding 2)")
+    # `edits.save` never wrote the `imported` marker before this fix — only the
+    # legacy-import path did — and `put_transcript` never calls `load` first.
+    # A pre-SQLite job whose word-edits.json still exists could take a PUT
+    # with no GET ever having run, leave the marker unset, and have the
+    # documented undo (PUT the pristine transcript back) silently revert
+    # itself on the very next read. Reproduce it with nothing but the public
+    # endpoints: a fresh job, a legacy file dropped into its .work directory
+    # the way an old install would have left one, and PUT twice with no GET
+    # ever in between.
+    nid = client.post("/jobs", json={"path": "talk.mp4", "auto_render": False,
+                                     "device": "cpu"}).json()["id"]
+    wait(client, nid, {"planned", "failed", "done"})
+    nwork = SETTINGS.data_dir / nid / ".work"
+    (nwork / pipeline.edits.FILENAME).write_text(
+        json.dumps({"edits": [{"index": 7, "was": "word7", "text": "LEGACY-GHOST"}]}),
+        encoding="utf-8")
+    # fake_transcribe's output is deterministic (word0..word259 at i*0.5s), so
+    # the baseline is known here without ever reading it back through GET.
+    npristine = [{"text": f"word{i}", "start": i * 0.5, "end": i * 0.5 + 0.45}
+                for i in range(260)]
+    ncorrected = [dict(w) for w in npristine]
+    ncorrected[10]["text"] = "APICORRECT"
+    r1 = client.put(f"/jobs/{nid}/transcript", json={"words": ncorrected})
+    check("PUT with no prior GET is accepted", r1.status_code == 200, r1.text[:200])
+    r2 = client.put(f"/jobs/{nid}/transcript", json={"words": npristine})
+    check("clearing it — still no GET ever run — is accepted", r2.status_code == 200,
+          r2.text[:200])
+    served = client.get(f"/jobs/{nid}/transcript").json()
+    check("THE CLEAR STICKS ON THE FIRST READ — it must not resurrect the "
+          "legacy file's correction just because save() ran with no load() "
+          "before it, and must not resurrect the API correction either",
+          served["words"][7]["text"] == "word7"
+          and served["words"][10]["text"] == "word10",
+          str(served["words"][7:11]))
+
     from qatf.core.types import Word as _W
     from qatf.jobs import worker as _worker
 
@@ -643,9 +679,43 @@ with TestClient(app) as client:
     _con = _sqlite3.connect(_dbp)
     _rows = _con.execute("SELECT count(*) FROM jobs").fetchone()[0]
     check("jobs are rows, not files", _rows > 0, str(_rows))
+
+    # The old version of this check only confirmed an index NAMED
+    # ix_jobs_state existed in sqlite_master — true even if `list()` were
+    # rewritten to fetch every row and filter in Python (the exact regression
+    # ix_jobs_state exists to prevent), since nothing there asks whether any
+    # query actually USES the index. Capture the real SQL `JobStore.list()`
+    # runs via a trace callback — not a hand-copied string, the literal query
+    # the store executes — then ask the query planner what it did with it.
+    # That is the only way to prove the index is load-bearing rather than
+    # merely present.
+    # The old version of this check only confirmed an index NAMED
+    # ix_jobs_state existed in sqlite_master — true even if `list()` were
+    # rewritten to fetch every row and filter in Python (the exact regression
+    # ix_jobs_state exists to prevent), since nothing there asks whether any
+    # query actually USES the index. Capture the real SQL `JobStore.list()`
+    # runs via a trace callback — not a hand-copied string, the literal query
+    # the store executes — then ask the query planner what it did with it.
+    # That is the only way to prove the index is load-bearing rather than
+    # merely present.
+    from qatf.core import db as _db
+
+    _store = app.state.store
+    _store_con = _db.connect(_store.db_path)
+    _captured: list[str] = []
+    _store_con.set_trace_callback(lambda sql: _captured.append(sql))
+    try:
+        _store.list(state="planned")
+    finally:
+        _store_con.set_trace_callback(None)
+    _state_query = next((s for s in _captured if "FROM jobs" in s and "WHERE" in s), None)
+    _plan = ([tuple(r) for r in
+              _store_con.execute("EXPLAIN QUERY PLAN " + _state_query).fetchall()]
+             if _state_query else [])
     check("?state= has an index to use, rather than scanning every record",
-          any("ix_jobs_state" in (r[0] or "") for r in _con.execute(
-              "SELECT name FROM sqlite_master WHERE type='index'")))
+          _state_query is not None
+          and any("SEARCH jobs USING INDEX ix_jobs_state" in (r[-1] or "") for r in _plan),
+          f"query={_state_query!r} plan={_plan}")
 
     # The failure this whole change exists to remove. A record truncated by a
     # crash used to be dropped SILENTLY by _recover's bare `continue`, so the

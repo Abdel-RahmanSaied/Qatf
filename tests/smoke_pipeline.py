@@ -1202,6 +1202,75 @@ check("AN EXPLICITLY CLEARED OVERLAY DOES NOT COME BACK FROM THE DEAD — the "
 check("the legacy file itself is untouched — nothing in the upgrade path "
       "may delete it, import or no", (_lw / edits.FILENAME).is_file())
 
+section("per-word overlay — the legacy file stays the interface (finding 1)")
+# Fixing the resurrection bug above by making `load` import the legacy file AT
+# MOST ONCE, tracked by a bare marker, broke the CLI's only interface: `save`
+# has exactly one caller (the API's PUT /transcript), so `<out>/.work/
+# word-edits.json` IS how a CLI user writes a correction — CLAUDE.md, docs/
+# cli.md, docs/quality.md and docs/troubleshooting.md all say so. Once a scope
+# had been imported once, `load`'s `if found: return found` early-exited on
+# the DB rows forever, so re-editing the file after the first run was silently
+# ignored and there was no way to force a re-import short of hand-editing
+# qatf.db. The marker now records the file's mtime, not just that an import
+# happened, so `load` re-imports whenever the file has moved since — the file
+# stays the interface for a CLI user with no flag to remember.
+_lw1 = Path(tempfile.mkdtemp(prefix="qatf-ed-cli-"))
+_legacy1 = _lw1 / edits.FILENAME
+_legacy1.write_text(
+    json.dumps({"edits": [{"index": 0, "was": "A", "text": "FIRST"}]}),
+    encoding="utf-8")
+_first_cli = edits.load(_lw1, "jobCLI")
+check("first load imports the legacy file",
+      len(_first_cli) == 1 and _first_cli[0].text == "FIRST", str(_first_cli))
+
+# Re-edit the file exactly the way a CLI user would: change the text, and the
+# mtime moves forward. Force it forward with os.utime rather than trusting a
+# back-to-back write to land on a different mtime — this must not flake on a
+# filesystem whose mtime resolution is coarser than this test runs in.
+_legacy1.write_text(
+    json.dumps({"edits": [{"index": 0, "was": "A", "text": "SECOND"}]}),
+    encoding="utf-8")
+_bumped1 = _legacy1.stat().st_mtime + 5
+os.utime(_legacy1, (_bumped1, _bumped1))
+_second_cli = edits.load(_lw1, "jobCLI")
+check("EDITING THE FILE AGAIN AFTER THE FIRST RUN IS PICKED UP, NOT IGNORED "
+      "— this was the bug: 'load' returned the stored DB rows forever once a "
+      "scope had been imported once, and a CLI user had no other way in",
+      len(_second_cli) == 1 and _second_cli[0].text == "SECOND", str(_second_cli))
+
+# Clearing the CLI's only interface has to actually clear the correction too,
+# not just get ignored the same way a re-edit was.
+_legacy1.write_text(json.dumps({"edits": []}), encoding="utf-8")
+_bumped1b = _legacy1.stat().st_mtime + 5
+os.utime(_legacy1, (_bumped1b, _bumped1b))
+_emptied_cli = edits.load(_lw1, "jobCLI")
+check("emptying the legacy file and re-loading returns no corrections",
+      _emptied_cli == [], str(_emptied_cli))
+
+section("per-word overlay — save() marks the scope without a prior load() (finding 2)")
+# `save` never wrote the `imported` marker — only `_import_legacy` did — and
+# `put_transcript` (api/routers/plan.py) never calls `load` before it calls
+# `save`. So for a pre-SQLite job whose word-edits.json still exists, a client
+# that PUTs a correction without ever GETting the transcript first left the
+# marker unset. The documented undo — PUT the pristine transcript back, which
+# `diff` turns into `save(work, scope, [])` — then reverted ITSELF on the next
+# `load`, which fell through to the still-present legacy file and reimported
+# the stale correction. Reproduced end to end through the real HTTP API in
+# smoke_api.py; this is the same bug from the pipeline side, with no HTTP
+# layer to obscure it.
+_lw2 = Path(tempfile.mkdtemp(prefix="qatf-ed-api-"))
+_legacy2 = _lw2 / edits.FILENAME
+_legacy2.write_text(
+    json.dumps({"edits": [{"index": 5, "was": "من", "text": "مين"}]}),
+    encoding="utf-8")
+# save() called directly, no load() first — exactly what put_transcript does.
+edits.save(_lw2, "jobAPI", [edits.Edit(index=2, was="X", text="Y")])
+edits.save(_lw2, "jobAPI", [])   # the user clears it; still no load() ever ran
+_after_clear = edits.load(_lw2, "jobAPI")
+check("A save() WITH NO PRIOR load() STILL MARKS THE SCOPE — a PUT that never "
+      "followed a GET does not leave the clear reverting itself on the next "
+      "read", _after_clear == [], str(_after_clear))
+
 section("face cache — SQLite")
 _dw = Path(tempfile.mkdtemp(prefix="qatf-fc-"))
 _dk = detect.cache_key(Path(__file__), "yunet", "balanced")

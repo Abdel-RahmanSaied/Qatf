@@ -34,7 +34,15 @@ check("the schema version is stamped",
 section("core/db — migration is idempotent")
 before = con.execute(
     "SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-db.connect(p)
+# `db.connect` caches the handle per (thread, path) and never re-runs
+# `_migrate` on a cache hit, so calling it again with `con` still open proved
+# nothing — a `_migrate` that dropped and recreated every table on each call
+# would still pass, because the second `connect` never reached `_migrate` at
+# all. `db.close(p)` first forces the second `connect` to be a REAL re-open —
+# a fresh handle that runs `_migrate` again against the file on disk — which
+# is the only way this check can see a destructive replay.
+db.close(p)
+con = db.connect(p)
 after = con.execute(
     "SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
 check("connecting twice does not duplicate or drop tables", before == after,
@@ -67,16 +75,60 @@ finally:
 migrated = db.connect(v1_path)
 check("an existing v1 database migrates forward to the current version",
       migrated.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-      and db.SCHEMA_VERSION == 2, str(db.SCHEMA_VERSION))
+      and db.SCHEMA_VERSION == 3, str(db.SCHEMA_VERSION))
 check("the v2 table exists after migrating an old file",
       migrated.execute(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='imported'"
       ).fetchone() is not None)
-check("a row written under v1 survives the migration to v2",
+check("a row written under v1 survives the migration to v2 and v3",
       tuple(migrated.execute(
           "SELECT was, text FROM word_edits WHERE scope='job-old' AND idx=0"
       ).fetchone()) == ("X", "Y"))
 db.close(v1_path)
+
+section("core/db — a v2 database migrates to v3, rows intact")
+# Same shape as the v1 check above, one version later: `_SCHEMA_V3` only adds a
+# column to a table `_SCHEMA_V2` already created (`ALTER TABLE imported ADD
+# COLUMN mtime REAL`), so this is the migration most likely to be gotten wrong
+# by rewriting `imported` instead of altering it in place — a rewrite would
+# lose whatever v2 had already written. Build a genuine v2 file BY HAND —
+# `_SCHEMA_V1` then `_SCHEMA_V2`, `user_version=2` — rather than through
+# `db.connect`, which would apply all three migrations to a fresh file and
+# prove nothing about upgrading an old one.
+v2_path = TMP / "v2.db"
+_raw2 = sqlite3.connect(v2_path)
+try:
+    with _raw2:
+        _raw2.executescript(db._SCHEMA_V1)
+        _raw2.executescript(db._SCHEMA_V2)
+        _raw2.execute("PRAGMA user_version=2")
+        _raw2.execute(
+            "INSERT INTO word_edits (scope, idx, was, text) VALUES (?,?,?,?)",
+            ("job-v2", 0, "P", "Q"))
+        _raw2.execute(
+            "INSERT INTO imported (scope, kind) VALUES (?, ?)",
+            ("job-v2", "word_edits"))
+finally:
+    _raw2.close()
+
+# Open it the real way — the migration path an actual upgrade takes.
+migrated2 = db.connect(v2_path)
+check("an existing v2 database migrates forward to the current version",
+      migrated2.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+      and db.SCHEMA_VERSION == 3, str(db.SCHEMA_VERSION))
+check("the v3 column exists on the v2 table after migrating",
+      any(r[1] == "mtime" for r in
+          migrated2.execute("PRAGMA table_info(imported)")))
+check("a word_edits row written under v2 survives the migration to v3",
+      tuple(migrated2.execute(
+          "SELECT was, text FROM word_edits WHERE scope='job-v2' AND idx=0"
+      ).fetchone()) == ("P", "Q"))
+check("an imported row written under v2 survives the migration to v3, with "
+      "the new column defaulting to NULL rather than the row being dropped",
+      tuple(migrated2.execute(
+          "SELECT kind, mtime FROM imported WHERE scope='job-v2'"
+      ).fetchone()) == ("word_edits", None))
+db.close(v2_path)
 
 section("core/db — thread affinity")
 # sqlite3 connection objects are NOT safe to share across threads, and the job
@@ -99,8 +151,18 @@ check("the same thread reuses its connection", id(db.connect(p)) == seen["main"]
 section("core/db — transactions are atomic")
 with db.transaction(p) as c:
     c.execute("INSERT INTO cancels (job_id) VALUES ('keep')")
-check("a committed row is visible", con.execute(
-    "SELECT count(*) FROM cancels WHERE job_id='keep'").fetchone()[0] == 1)
+# Read through a BRAND NEW connection, not `con` (or `c`, the same handle that
+# just wrote the row): a sqlite3 connection always sees its own uncommitted
+# writes, transaction or not, so reading back through the writer proves
+# nothing about whether `transaction`'s `con.commit()` actually ran — the
+# check would stay green even with that commit deleted. `tests/smoke_api.py`
+# reads its torn-write check the same way, for the same reason.
+_fresh = sqlite3.connect(p)
+try:
+    check("a committed row is visible", _fresh.execute(
+        "SELECT count(*) FROM cancels WHERE job_id='keep'").fetchone()[0] == 1)
+finally:
+    _fresh.close()
 try:
     with db.transaction(p) as c:
         c.execute("INSERT INTO cancels (job_id) VALUES ('rolled-back')")
