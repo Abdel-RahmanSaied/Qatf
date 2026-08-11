@@ -1,0 +1,12 @@
+{
+  "comment": "Product names measured wrong on words-large-v3-ar-6da1b0b4.json. baseline_total is right+wrong occurrences in that file; a run exceeding it has invented the term.",
+  "terms": [
+    {"expected": "PHP",        "wrong": ["البيتش", "بيتش"],        "baseline_total": 3},
+    {"expected": "جافا سكريبت", "wrong": ["الجفا", "سيكلت"],        "baseline_total": 2},
+    {"expected": "هايرنج",      "wrong": ["هيرنج"],                 "baseline_total": 1},
+    {"expected": "جونيورز",     "wrong": ["نيورز", "وناشوا"],       "baseline_total": 2},
+    {"expected": "سينيورز",     "wrong": ["يورز", "سن"],            "baseline_total": 3},
+    {"expected": "لينكد إن",    "wrong": ["الليك"],                 "baseline_total": 1},
+    {"expected": "إكس",         "wrong": ["اكسة", "اكس"],           "baseline_total": 3}
+  ]
+}
