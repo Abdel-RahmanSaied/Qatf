@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 #: Bumped whenever `_MIGRATIONS` grows. Stored in `PRAGMA user_version`.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Milliseconds a writer waits for a competing writer before raising. Without
 #: it, two threads writing at once surface as `database is locked` rather than
@@ -85,8 +85,23 @@ CREATE TABLE IF NOT EXISTS imported (
 );
 """
 
+# Do not edit _SCHEMA_V2 either, for the same reason as _SCHEMA_V1 above.
+# `imported` shipped with no way to tell "the legacy file changed since we last
+# imported it" from "nothing changed" — it recorded only THAT a scope had been
+# imported, never against WHAT. That is what let `edits.save` writing without
+# `edits.load` first leave a scope unmarked (finding 2 of the sqlite-persistence
+# review), and separately let a re-edited legacy file go on being ignored after
+# the first import (finding 1) — a bare marker cannot distinguish "re-import
+# me" from "stay cleared" no matter how `load`/`save` are rewritten around it.
+# `ALTER TABLE ... ADD COLUMN` is the correct tool for an existing table: it
+# rewrites nothing already stored, unlike dropping and recreating the table
+# would.
+_SCHEMA_V3 = """
+ALTER TABLE imported ADD COLUMN mtime REAL;
+"""
+
 #: index -> the SQL that takes the schema from that version to the next.
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
 
 _local = threading.local()
 

@@ -291,7 +291,8 @@ What they actually cover:
 
 Stages 1, 4 and 5 can be exercised by seeding
 `<work>/words-<model>-<lang>.json` and running with `--plan`. Use that for
-render-path work instead of waiting on transcription.
+render-path work instead of waiting on transcription. (The legacy filename
+still works — `asr.read_cache` imports it into `qatf.db` on first read.)
 
 Any change to a filtergraph or to caption generation must be verified by
 **rendering a clip and looking at an extracted frame**. ffprobe reporting correct

@@ -58,7 +58,9 @@ into the cache, so you can edit the map and re-render without re-transcribing.
 
 Whatever survives all four levers is a word Whisper simply got wrong in one
 place, and no parameter will fix it. Correct it directly: over HTTP with
-`PUT /jobs/{id}/transcript`, or by writing `<work>/word-edits.json` for the CLI.
+`PUT /jobs/{id}/transcript`, or by writing `<work>/word-edits.json` for the
+CLI — imported into `<work>/qatf.db` and re-imported whenever the file's mtime
+moves, so it stays a live interface rather than a one-time upgrade path.
 
 This is not a tuning lever and does not belong in the table above — it is the
 manual floor under it, and it costs one re-render with no model call and no
@@ -560,7 +562,8 @@ pass.
 
 **3 · Exercise stages 1, 4 and 5 without a GPU or an API key** by seeding
 `<work>/words-<model>-<lang>.json` and running with `--plan`. Use that for
-render-path work instead of waiting on transcription.
+render-path work instead of waiting on transcription. (The legacy filename
+still works — `asr.read_cache` imports it into `qatf.db` on first read.)
 
 ---
 

@@ -192,6 +192,11 @@ cannot be fixed by substitution — `من` is one of the most common words in th
 language and correct almost everywhere else it appears. A global rule would fix
 one caption and wreck a dozen.
 
+`<work>/word-edits.json` is imported into the `word_edits` table of
+`<work>/qatf.db` and re-imported every time the file's mtime moves, so editing
+it again after the first run still takes effect — it stays a live interface
+rather than a one-time upgrade path.
+
 Either way the correction changes text only. Cut points are provably unchanged,
 so a re-render is stage 5 alone: no model call, no re-transcription.
 
@@ -317,7 +322,12 @@ transcript.**
 `--language`, `--whisper`, `--vocab`/`--vocab-file` and `--prompt` are all in the
 key. `--fixups` and the device are deliberately **not**.
 
-**Fix.** Delete `<out>/.work/words-*.json` to force a re-transcription.
+**Fix.** The cache is a row in the `transcripts` table of
+`<out>/.work/qatf.db`, keyed by `asr.cache_key`. Deleting
+`<out>/.work/words-*.json` alone does nothing once that row exists — it is
+only the pre-SQLite format, imported into the database on first read and left
+on disk. Delete the row (or the whole `qatf.db`, which holds nothing that
+isn't reproducible) to actually force a re-transcription.
 
 ---
 
