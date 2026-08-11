@@ -43,6 +43,41 @@ check("every table the design names exists",
       {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
       >= {"jobs", "cancels", "transcripts", "word_edits", "detections"})
 
+section("core/db — a v1 database migrates forward, not rewritten")
+# `_migrate` replays only the migrations a file has not seen yet (PRAGMA
+# user_version onward), so a file already at v1 must pick up v2's `imported`
+# table on its next `connect()` without losing what v1 already wrote. Build a
+# genuine v1 file BY HAND — applying only `_SCHEMA_V1`, exactly what `connect`
+# did before `_SCHEMA_V2` existed — rather than through `db.connect`, which
+# would apply both migrations to a fresh file and prove nothing about
+# upgrading an old one.
+v1_path = TMP / "v1.db"
+_raw = sqlite3.connect(v1_path)
+try:
+    with _raw:
+        _raw.executescript(db._SCHEMA_V1)
+        _raw.execute("PRAGMA user_version=1")
+        _raw.execute(
+            "INSERT INTO word_edits (scope, idx, was, text) VALUES (?,?,?,?)",
+            ("job-old", 0, "X", "Y"))
+finally:
+    _raw.close()
+
+# Now open it the real way — the migration path an actual upgrade takes.
+migrated = db.connect(v1_path)
+check("an existing v1 database migrates forward to the current version",
+      migrated.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+      and db.SCHEMA_VERSION == 2, str(db.SCHEMA_VERSION))
+check("the v2 table exists after migrating an old file",
+      migrated.execute(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='imported'"
+      ).fetchone() is not None)
+check("a row written under v1 survives the migration to v2",
+      tuple(migrated.execute(
+          "SELECT was, text FROM word_edits WHERE scope='job-old' AND idx=0"
+      ).fetchone()) == ("X", "Y"))
+db.close(v1_path)
+
 section("core/db — thread affinity")
 # sqlite3 connection objects are NOT safe to share across threads, and the job
 # store is a thread pool. Each thread must get its own handle.

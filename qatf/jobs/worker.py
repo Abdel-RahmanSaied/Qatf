@@ -61,10 +61,17 @@ def caption_words(transcript, opts: dict, work: Path | None = None,
     so a correction wins on the word it names.
 
     `job_id` is the overlay's scope (see `pipeline.edits.load`) and is required
-    whenever `work` is — both name the same job, just at different layers."""
+    whenever `work` is — both name the same job, just at different layers.
+    Enforced, not just documented: `edits.load(work, None)` would not raise —
+    SQLite would happily bind NULL and match zero rows, which reads as "no
+    corrections for this job" instead of the caller bug it actually is, and
+    that would stay silent until someone noticed a job's corrections never
+    took effect."""
     words, blanked = baseline_words(transcript, opts)
     if work is None:
         return words, blanked, 0, 0
+    if not job_id:
+        raise ValueError("caption_words: job_id is required whenever work is given")
     words, applied, stale = pipeline.edits.apply(
         words, pipeline.edits.load(work, job_id))
     return words, blanked, applied, len(stale)
