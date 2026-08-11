@@ -1091,6 +1091,51 @@ except SystemExit as exc:
           "reads as distinguishable from a real scoring regression (exit 1)",
           exc.code == 2, str(exc.code))
 
+# Fix round 1 (reviewer-reproduced): the first `db:` implementation
+# hand-rolled `SELECT ... FROM transcripts` instead of calling
+# `asr.read_cache`, which dropped two things `read_cache` already does — fall
+# back to importing a legacy `words-*.json` when there is no row yet, and
+# close its own connection. The two checks below are the reviewer's
+# reproduction, kept as regression tests.
+_legw = Path(tempfile.mkdtemp(prefix="qatf-score-legacy-"))
+_legk = asr.cache_key("large-v3", "ar")
+(_legw / f"{_legk}.json").write_text(
+    json.dumps({"words": [{"text": "أ", "start": 0.0, "end": 0.4},
+                          {"text": "ب", "start": 0.4, "end": 0.9}]},
+               ensure_ascii=False),
+    encoding="utf-8")
+_via_plain = [w.text for w in score_transcript.load_words(_legw / f"{_legk}.json")]
+try:
+    # Caught here, not left to propagate: the pre-fix hand-rolled `db:`
+    # branch raised an UNCAUGHT SystemExit(2) on exactly this input (no row
+    # yet, no fallback), which would otherwise abort this whole test script
+    # rather than let the harness record one FAIL and keep going.
+    _via_db = [w.text for w in score_transcript.load_words(
+        f"db:{_legw / 'qatf.db'}#{_legk}")]
+except SystemExit as exc:
+    _via_db = f"<SystemExit {exc.code}>"
+check("a work directory holding ONLY a legacy words-*.json (no qatf.db yet "
+      "— the exact shape run-fixed/.work/ is in) scores identically through "
+      "the plain path and through db: — the hand-rolled SELECT used to fail "
+      "this with 'no transcript ... in ...' and exit 2",
+      _via_plain == _via_db == ["أ", "ب"], f"{_via_plain} vs {_via_db}")
+
+_badw = Path(tempfile.mkdtemp(prefix="qatf-score-badpath-"))
+_bad_db = _badw / "qatf.db"
+_exit_code = None
+try:
+    score_transcript.load_words(f"db:{_bad_db}#no-such-key")
+except SystemExit as exc:
+    _exit_code = exc.code
+check("db: naming a database that does not exist, with no legacy file to "
+      "fall back to, exits 2 and creates NOTHING — db.connect (called "
+      "inside read_cache) creates the database file and its parent "
+      "directory as a side effect of opening a connection, so a read-only "
+      "scoring tool must refuse before ever reaching it on a path with "
+      "nothing to read",
+      _exit_code == 2 and not _bad_db.exists(),
+      f"exit={_exit_code}, created={_bad_db.exists()}")
+
 section("decode parameters — stage 2")
 check("DECODE carries the VAD settings so a sweep has one place to change",
       "vad_parameters" in asr.DECODE
