@@ -631,10 +631,43 @@ with TestClient(app) as client:
     # The failure this whole change exists to remove. A record truncated by a
     # crash used to be dropped SILENTLY by _recover's bare `continue`, so the
     # job vanished with no error anywhere.
-    _plan = _con.execute("SELECT count(*) FROM jobs WHERE doc IS NULL"
-                         ).fetchone()[0]
+    #
+    # This check used to be `SELECT count(*) FROM jobs WHERE doc IS NULL`, but
+    # `doc` is declared TEXT NOT NULL in the schema (qatf/core/db.py) — sqlite
+    # rejects a NULL insert into that column outright, so the query could never
+    # return non-zero. The check could not fail, which means it was measuring
+    # nothing (the same reason this project asserts its render control FAILS:
+    # see CLAUDE.md's working agreements). Prove the actual property instead:
+    # open a real transaction, insert a row, blow up before it commits, and
+    # confirm the row never landed — through a connection `qatf.core.db`'s
+    # thread-local cache never touches, so there is no cached-handle shortcut
+    # making a torn write look consistent.
+    import uuid
+
+    from qatf.core import db
+
+    class _SimulatedCrash(Exception):
+        pass
+
+    _torn_id = "torn-" + uuid.uuid4().hex[:12]
+    try:
+        with db.transaction(_dbp) as _tcon:
+            _tcon.execute(
+                "INSERT INTO jobs (id, state, created_at, updated_at, doc) "
+                "VALUES (?,?,?,?,?)",
+                (_torn_id, "queued", "2026-01-01T00:00:00", "2026-01-01T00:00:00",
+                 "{}"),
+            )
+            raise _SimulatedCrash("crash mid-write, before commit")
+    except _SimulatedCrash:
+        pass
+
+    _fresh = _sqlite3.connect(_dbp)  # bypasses db.connect()'s per-thread cache
+    _found = _fresh.execute(
+        "SELECT count(*) FROM jobs WHERE id=?", (_torn_id,)).fetchone()[0]
+    _fresh.close()
     check("no record is half-written — a transaction either lands or does not",
-          _plan == 0)
+          _found == 0, f"found {_found} rows for the row that never committed")
     _con.close()
 
 raise SystemExit(report())
