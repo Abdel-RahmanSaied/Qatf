@@ -22,6 +22,7 @@ import json
 import os
 from pathlib import Path
 
+from ..core import db
 from ..core.errors import SeedTooLong, TranscriberNotAvailable
 from ..core.types import Transcript, Word, words_from_dicts, words_to_dicts
 from ..core.utils import log, slugify
@@ -318,6 +319,29 @@ def transcribe(wav: Path, model_size: str, device: str,
                               initial_prompt, hotwords, decode)
 
 
+def cache_key(model_size: str, language: str | None,
+              initial_prompt: str | None = None,
+              hotwords: str | None = None) -> str:
+    """The cache key: model, forced language, and a digest of the seed.
+
+    Identical derivation to the filename `cache_path` built, minus the directory
+    and the suffix, so every rule already paid for carries over — keying on the
+    output directory alone silently reused an English transcript after
+    `--language ar`, and a vocabulary outside the key is a vocabulary that
+    silently does nothing on a warm cache."""
+    stem = f"words-{slugify(model_size)}-{slugify(language) if language else 'auto'}"
+    seed = f"{initial_prompt or ''}\x00{hotwords or ''}"
+    if seed.strip("\x00"):
+        stem += "-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    return stem
+
+
+def db_path(work: Path) -> Path:
+    """One database per work directory — `<out>/.work/qatf.db` for the CLI,
+    `$QATF_DATA_DIR/<job>/.work/qatf.db` for a job."""
+    return Path(work) / "qatf.db"
+
+
 def cache_path(work: Path, model_size: str, language: str | None,
                initial_prompt: str | None = None,
                hotwords: str | None = None) -> Path:
@@ -327,7 +351,11 @@ def cache_path(work: Path, model_size: str, language: str | None,
     after `--language ar` — the one axis most likely to be wrong. The prompt
     belongs in the key for the same reason: it changes the transcript, so a
     cache hit across two different prompts would quietly serve the old wording
-    and make the prompt look like it did nothing."""
+    and make the prompt look like it did nothing.
+
+    Superseded by `cache_key` + `read_cache`/`write_cache` for the SQLite-backed
+    cache, but kept as-is: it is still what names a pre-SQLite `words-*.json`
+    file on disk, and `read_cache` needs that exact name to find one to import."""
     # BOTH components are slugified, and the language one is a security fix, not
     # tidiness: `language` is a free-form caller-supplied string, and
     # `work / f"words-large-v3-{language}.json"` with language="../../../x"
@@ -342,7 +370,11 @@ def cache_path(work: Path, model_size: str, language: str | None,
     return work / f"{stem}.json"
 
 
-def read_cache(path: Path) -> Transcript:
+def _read_legacy_cache(path: Path) -> Transcript:
+    """Parse a pre-SQLite `words-*.json` file. `read_cache` calls this once, on
+    the first read after upgrading, and writes the result into the database —
+    the file itself is left on disk, never deleted, so a bad upgrade stays
+    reversible by checking out the previous commit."""
     raw = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw, list):          # pre-0.2 format: a bare word list
         raw = {"words": raw}
@@ -355,24 +387,61 @@ def read_cache(path: Path) -> Transcript:
     )
 
 
-def write_cache(path: Path, transcript: Transcript) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "language": transcript.language,
-                "language_probability": transcript.language_probability,
-                # recorded, but deliberately NOT part of the cache key: a CPU and
-                # a GPU transcript of the same audio are interchangeable enough
-                # that re-transcribing on fallback would be pure waste
-                "device": transcript.device,
-                "compute_type": transcript.compute_type,
-                "words": words_to_dicts(transcript.words),
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+def read_cache(work: Path, key: str) -> Transcript | None:
+    """The cached transcript, or None. Imports a pre-SQLite file if one is there.
+
+    What comes back is RAW Whisper output. Fixups, repetition repair and
+    per-word corrections are applied by the callers on read and never written
+    back — the moment a corrected transcript is indistinguishable from a raw one
+    every number in docs/quality.md stops being reproducible.
+
+    Closes its own connection before returning — see `db.close`. This database
+    lives inside a job's own directory, and a job is deletable at any time from
+    whatever HTTP thread handles the request; a handle this thread left cached
+    would otherwise sit there until process exit, and on Windows an open handle
+    blocks `shutil.rmtree` on the job directory regardless of which thread asks
+    for the delete."""
+    try:
+        con = db.connect(db_path(work))
+        row = con.execute(
+            "SELECT language, language_probability, device, compute_type, words "
+            "FROM transcripts WHERE key=?", (key,)).fetchone()
+        if row is None:
+            legacy = Path(work) / f"{key}.json"
+            if legacy.is_file():
+                transcript = _read_legacy_cache(legacy)
+                write_cache(work, key, transcript)   # the file is left in place
+                return transcript
+            return None
+        return Transcript(
+            words=words_from_dicts(json.loads(row["words"])),
+            language=row["language"],
+            language_probability=row["language_probability"],
+            device=row["device"],
+            compute_type=row["compute_type"],
+        )
+    finally:
+        db.close(db_path(work))
+
+
+def write_cache(work: Path, key: str, transcript: Transcript) -> None:
+    """Closes its own connection before returning — see `read_cache`."""
+    try:
+        with db.transaction(db_path(work)) as con:
+            con.execute(
+                "INSERT INTO transcripts "
+                "(key, language, language_probability, device, compute_type, words) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET language=excluded.language, "
+                "language_probability=excluded.language_probability, "
+                "device=excluded.device, compute_type=excluded.compute_type, "
+                "words=excluded.words",
+                (key, transcript.language, transcript.language_probability,
+                 transcript.device, transcript.compute_type,
+                 json.dumps(words_to_dicts(transcript.words), ensure_ascii=False)),
+            )
+    finally:
+        db.close(db_path(work))
 
 
 def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
@@ -380,9 +449,10 @@ def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
                       initial_prompt: str | None = None,
                       hotwords: str | None = None,
                       decode: dict | None = None) -> tuple[Transcript, bool]:
-    """Returns (transcript, was_cached). Delete the cache file to re-transcribe.
+    """Returns (transcript, was_cached). Delete the row (or the legacy file) to
+    re-transcribe.
 
-    `decode` is deliberately NOT part of `cache_path`'s key. Stability is what
+    `decode` is deliberately NOT part of `cache_key`. Stability is what
     CAUSES reuse, not what prevents it — a key that stayed the same across two
     different `decode` values would be exactly the bug: run 2 would read run
     1's cached transcript back and silently report it as run 2's result. It is
@@ -399,19 +469,20 @@ def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
     The hazard this leaves: `transcribe_cached` still ACCEPTS a `decode`
     parameter, and on a warm cache it is silently ignored — a caller who does
     reach this function directly with a `decode` override and an existing
-    cache file gets back whatever `decode` produced the cached transcript, not
+    cache row gets back whatever `decode` produced the cached transcript, not
     the one just requested. That is the exact "a knob outside the key is a
     knob that silently does nothing" pattern CLAUDE.md names for `--language`
-    in `cache_path` and again for the face-detection cache — reproduced here
+    in `cache_key` and again for the face-detection cache — reproduced here
     the moment anything other than `sweep_asr.py` calls this function with a
     non-default `decode`. Not fixed here: whether a decode override should
     invalidate the cache once a value graduates from the sweep into `DECODE`
     is an open question, left for whoever does that promotion."""
-    cache = cache_path(work, model_size, language, initial_prompt, hotwords)
-    if cache.exists():
-        return read_cache(cache), True
+    key = cache_key(model_size, language, initial_prompt, hotwords)
+    cached = read_cache(work, key)
+    if cached is not None:
+        return cached, True
 
     transcript = transcribe(wav, model_size, device, language,
                             initial_prompt, hotwords, decode)
-    write_cache(cache, transcript)
+    write_cache(work, key, transcript)
     return transcript, False

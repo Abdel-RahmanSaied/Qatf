@@ -320,11 +320,16 @@ with TestClient(app) as client:
           "CORRECTED" in corrected_ass and "word30" not in corrected_ass)
     check("still no model call — corrections are stage 5 only",
           len(SEEN_MODELS) == 1, str(SEEN_MODELS))
+    # the cache now lives in SQLite (qatf.db in the same .work directory), not a
+    # words-*.json file — read it back the same way transcript_for does, with
+    # the key built from this job's own options, and check the correction never
+    # reached the raw row
+    _raw_key = pipeline.cache_key("large-v3", "ar", None, "بايثون فلاتر")
+    _raw_cached = pipeline.read_cache(SETTINGS.data_dir / jid / ".work", _raw_key)
     check("overlay stored beside the cache, not inside it",
           (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists()
-          and "CORRECTED" not in next(
-              (SETTINGS.data_dir / jid / ".work").glob("words-*.json")
-          ).read_text(encoding="utf-8"))
+          and _raw_cached is not None
+          and all(w.text != "CORRECTED" for w in _raw_cached.words))
 
     r = client.put(f"/jobs/{jid}/transcript", json={"words": pristine})
     check("re-submitting the untouched transcript clears corrections",

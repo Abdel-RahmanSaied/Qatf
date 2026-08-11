@@ -171,11 +171,11 @@ class JobStore:
         """The cached transcript, or None if this job has not got that far."""
         # fixups are deliberately NOT part of the key — they are applied on read
         # (see worker.caption_words), so editing them must not orphan the cache
-        path = pipeline.cache_path(job.work_dir(self.root), job.options["whisper"],
-                                   job.options.get("language"),
-                                   job.options.get("initial_prompt"),
-                                   job.options.get("hotwords"))
-        return pipeline.read_cache(path) if path.exists() else None
+        key = pipeline.cache_key(job.options["whisper"],
+                                 job.options.get("language"),
+                                 job.options.get("initial_prompt"),
+                                 job.options.get("hotwords"))
+        return pipeline.read_cache(job.work_dir(self.root), key)
 
     # -- cancellation -----------------------------------------------------
 
