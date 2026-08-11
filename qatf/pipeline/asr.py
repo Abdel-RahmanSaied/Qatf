@@ -328,7 +328,16 @@ def cache_key(model_size: str, language: str | None,
     and the suffix, so every rule already paid for carries over — keying on the
     output directory alone silently reused an English transcript after
     `--language ar`, and a vocabulary outside the key is a vocabulary that
-    silently does nothing on a warm cache."""
+    silently does nothing on a warm cache. `cache_path` now delegates here
+    rather than repeating this derivation, so this is the ONLY place it lives."""
+    # BOTH components are slugified, and this is a security fix, not tidiness.
+    # This function's return value is turned back into a path two ways: by
+    # `cache_path`, and directly by `read_cache` (`work / f"{key}.json"`, its
+    # legacy-file lookup). `language` is a free-form caller-supplied string, and
+    # an unslugified `language="../../../x"` would let either one resolve
+    # outside the work directory — a read or write chosen by a POST body.
+    # slugify leaves a real language code untouched ("ar" -> "ar"), so no
+    # existing cache is invalidated.
     stem = f"words-{slugify(model_size)}-{slugify(language) if language else 'auto'}"
     seed = f"{initial_prompt or ''}\x00{hotwords or ''}"
     if seed.strip("\x00"):
@@ -345,29 +354,23 @@ def db_path(work: Path) -> Path:
 def cache_path(work: Path, model_size: str, language: str | None,
                initial_prompt: str | None = None,
                hotwords: str | None = None) -> Path:
-    """The cache key includes the model, the forced language, AND the prompt.
+    """The pre-SQLite filename. Kept so the legacy importer can name the file
+    it is importing, and so the derivation lives in exactly ONE place: this
+    used to repeat `cache_key`'s five lines verbatim, which meant the two
+    agreed only by copy-paste and a future edit to either could silently break
+    the key rules the cache depends on (see `cache_key`) — the model, the
+    forced language, and the seed digest are the whole reason `--language ar`
+    stopped silently reusing an English transcript, and a divergence here would
+    bring that back without a test noticing, since the smoke check on
+    `cache_key` alone has no way to see `cache_path` disagree with it.
 
-    Keying on the output directory alone silently reused an English transcript
-    after `--language ar` — the one axis most likely to be wrong. The prompt
-    belongs in the key for the same reason: it changes the transcript, so a
-    cache hit across two different prompts would quietly serve the old wording
-    and make the prompt look like it did nothing.
-
-    Superseded by `cache_key` + `read_cache`/`write_cache` for the SQLite-backed
-    cache, but kept as-is: it is still what names a pre-SQLite `words-*.json`
-    file on disk, and `read_cache` needs that exact name to find one to import."""
-    # BOTH components are slugified, and the language one is a security fix, not
-    # tidiness: `language` is a free-form caller-supplied string, and
-    # `work / f"words-large-v3-{language}.json"` with language="../../../x"
-    # resolves outside the work directory. write_cache then mkdirs the parent and
-    # writes there — an arbitrary file write chosen by a POST body. slugify
-    # leaves a real language code untouched ("ar" -> "ar"), so no existing cache
-    # is invalidated.
-    stem = f"words-{slugify(model_size)}-{slugify(language) if language else 'auto'}"
-    seed = f"{initial_prompt or ''}\x00{hotwords or ''}"
-    if seed.strip("\x00"):
-        stem += "-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
-    return work / f"{stem}.json"
+    NOT called by `read_cache`: that function is given a `key` (already the
+    output of `cache_key`), not the `model_size`/`language`/... this function
+    needs to rederive one, and a hash cannot be run backwards. `read_cache`
+    builds the legacy filename directly from its `key` — `work / f"{key}.json"`
+    — which is identical to what this function returns for the same inputs,
+    precisely because both now bottom out in `cache_key`."""
+    return work / f"{cache_key(model_size, language, initial_prompt, hotwords)}.json"
 
 
 def _read_legacy_cache(path: Path) -> Transcript:

@@ -299,6 +299,9 @@ raises("over-long prompt rejected up front", SeedTooLong,
 check("model and language still in the key",
       asr.cache_path(_w, "small", "ar") != base
       and asr.cache_path(_w, "large-v3", "en") != base)
+check("cache_path is cache_key plus .json — one derivation, not two copies",
+      asr.cache_path(Path("/w"), "large-v3", "ar", None, "بايثون").name
+      == asr.cache_key("large-v3", "ar", None, "بايثون") + ".json")
 
 section("transcript cache — SQLite")
 _work = Path(tempfile.mkdtemp(prefix="qatf-tc-"))

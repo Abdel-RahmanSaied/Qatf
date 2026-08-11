@@ -76,7 +76,9 @@ def get_transcript(job_id: str, store: JobStore = Depends(get_store)) -> Transcr
     back unchanged like any other word, or it trips the same word-count/timing
     contract as an accidental deletion would.
 
-    Read from `<work>/words-<model>-<lang>.json`. The cache key includes the
+    Read from the `transcripts` row in `<work>/qatf.db` (a pre-SQLite
+    `words-<model>-<lang>.json`, if that is all that is there, is imported into
+    that row on first read and left on disk). The cache key includes the
     Whisper size and the forced language, so `?language=ar` after an English run
     re-transcribes rather than silently reusing the wrong transcript. Fixups and
     corrections are deliberately *not* in the key: they are applied on read, so
