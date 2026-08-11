@@ -34,7 +34,7 @@ from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
 from qatf.core.errors import CommandFailed
 from qatf.core.types import Word, words_from_dicts
 from qatf.core.utils import binary, probe_duration
-from qatf.pipeline import health
+from qatf.pipeline import fixups, health
 from qatf.pipeline.health import _TRAILING
 
 #: Errors before this point can be flattered by a seed that decays. Reported
@@ -48,6 +48,35 @@ def load_terms(path: Path) -> list[dict]:
 
 def load_words(path: Path) -> list[Word]:
     return words_from_dicts(json.loads(path.read_text(encoding="utf-8"))["words"])
+
+
+def delivered_words(words: list[Word], fixups_path: Path | None = None) -> list[Word]:
+    """The words as they will actually be BURNED IN, not as Whisper emitted them.
+
+    Two numbers matter and they answer different questions. Scoring the raw
+    cache measures the MODEL — it is what a decode parameter or a vocabulary
+    term moves, and it must stay visible or a sweep cannot tell whether a change
+    helped. Scoring this measures the PRODUCT — what a viewer reads.
+
+    Reporting only the raw figure understates the tool, because `fixups` and
+    `repair` are first-class stages that run on every read. Reporting only this
+    one hides a model regression behind a substitution table. So the CLI prints
+    both, and neither is allowed to stand in for the other.
+
+    The order matches the read path exactly (`jobs.worker.baseline_words`):
+    fixups first as a global rule, then repair. Anything else would score text
+    the pipeline never produces."""
+    out = [Word(w.text, w.start, w.end) for w in words]      # never mutate the caller's
+    if fixups_path and fixups_path.is_file():
+        out, _ = fixups.apply(out, fixups.load(fixups_path))
+    out, _ = health.repair(out)
+    # Drop the blanks. `repair` keeps them so word COUNT and every position
+    # survive — `edits.py` is keyed by position and the PUT contract refuses a
+    # count change — but nothing blank is delivered: `captions.group_words`
+    # skips them. Scoring them would be actively misleading, because six
+    # consecutive empty tokens are six identical consecutive tokens, so
+    # `find_repetitions` reports the loop repair just FIXED as still present.
+    return [w for w in out if w.text]
 
 
 def _count_expected(text: list[str], expected: str) -> int:
@@ -264,6 +293,16 @@ if __name__ == "__main__":
     print(f"\n{path.name}")
     print(_fmt(whole, "whole file"))
     print(_fmt(late, f"past {DECAY_SECONDS:.0f}s"))
+
+    # What the viewer actually reads, after the read-path stages. Printed
+    # alongside the raw rows rather than instead of them: the raw figure is what
+    # a decode parameter moves, and collapsing the two would let a substitution
+    # table hide a model regression.
+    fx = ROOT / "prompts" / "ar-fixups.txt"
+    delivered = score(delivered_words(words, fx), terms)
+    print(_fmt(delivered, "delivered"))
+    print(f"      (delivered = after {fx.name} + repetition repair, "
+          f"i.e. the text burned into the captions)")
 
     if audio:
         # Report total uncovered seconds, the worst window, and the top
