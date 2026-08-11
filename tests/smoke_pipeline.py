@@ -642,11 +642,11 @@ from qatf.pipeline import detect, framing  # noqa: E402
 
 
 def _key_with(module, name, value, video):
-    """`cache_key` as it would be with one module-level constant changed."""
+    """`cache_key_for` as it would be with one module-level constant changed."""
     original = getattr(module, name)
     setattr(module, name, value)
     try:
-        return module.cache_key(video)
+        return module.cache_key_for(video)
     finally:
         setattr(module, name, original)
 
@@ -813,30 +813,35 @@ raises("a non-positive sample rate is rejected", ValueError,
 check("a span is clamped to the end of the video, so the margin past the last "
       "frame is never recorded as detected",
       detect.clip_spans([Clip(10, 20, "a")], 21.0) == [(8.0, 21.0)])
-check("the face cache cannot escape the work directory through the tier",
-      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "haar",
-                        "../../etc/passwd").parent == Path("/w"))
+# `cache_key` (detector, tier, video) is now the DB row key rather than a
+# filename, so a caller-controlled tier cannot escape a directory through it —
+# what it CAN do is produce a key containing a path separator, which would
+# still be dangerous the moment `read_cache`'s legacy import builds
+# `work / f"{key}.json"` from it. slugify strips exactly that.
+check("the face cache key cannot escape the work directory through the tier",
+      not set("/\\") & set(detect.cache_key(Path("/v/a.mp4"), "haar",
+                                            "../../etc/passwd")))
 
 # The regression this guards is the `--language ar` incident repeating: two
 # videos rendered into one output directory shared a cache, so the second
 # inherited the first's face positions with fallback=False and nothing flagged
 # it. A key that omits an input is a key that returns another input's answer.
 check("the face cache key separates two videos",
-      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "yunet", "balanced")
-      != detect.cache_path(Path("/w"), Path("/v/b.mp4"), "yunet", "balanced"))
+      detect.cache_key(Path("/v/a.mp4"), "yunet", "balanced")
+      != detect.cache_key(Path("/v/b.mp4"), "yunet", "balanced"))
 check("the face cache key covers the detector knobs, so lowering the score "
       "threshold is not a no-op on a warm work directory",
-      detect.cache_key(Path("/v/a.mp4"))
+      detect.cache_key_for(Path("/v/a.mp4"))
       != _key_with(detect, "YUNET_SCORE", 0.9, Path("/v/a.mp4")))
 check("the face cache key covers the detection width",
-      detect.cache_key(Path("/v/a.mp4"))
+      detect.cache_key_for(Path("/v/a.mp4"))
       != _key_with(detect, "DETECT_WIDTH", 320, Path("/v/a.mp4")))
 check("the same video keys the same twice",
-      detect.cache_key(Path("/v/a.mp4")) == detect.cache_key(Path("/v/a.mp4")))
+      detect.cache_key_for(Path("/v/a.mp4")) == detect.cache_key_for(Path("/v/a.mp4")))
 _real = Path(__file__).resolve()
 check("the key follows the file, not just its name — a re-encode in place "
       "re-detects rather than reusing the old positions",
-      detect.cache_key(_real) != detect.cache_key(_real.parent / "_harness.py"))
+      detect.cache_key_for(_real) != detect.cache_key_for(_real.parent / "_harness.py"))
 
 section("subject tracking — detector registry and model lookup")
 # Structural, and not busywork: `fast` mapped to a detector that OpenCV 5.0
@@ -1072,5 +1077,29 @@ check("the merged nested dict is a COPY, not the module's own object",
 check("a nested override does not leak into DECODE — every later sweep run "
       "would silently inherit it",
       "speech_pad_ms" not in asr.DECODE["vad_parameters"])
+
+section("per-word overlay — SQLite")
+_ew = Path(tempfile.mkdtemp(prefix="qatf-ed-"))
+check("no overlay is an empty list, not an error", edits.load(_ew, "job1") == [])
+edits.save(_ew, "job1", [edits.Edit(index=1, was="من", text="مين")])
+_got = edits.load(_ew, "job1")
+check("the overlay round trips",
+      len(_got) == 1 and _got[0].index == 1 and _got[0].text == "مين")
+check("it records what it replaced, so a moved transcript goes stale rather "
+      "than landing on an unrelated word", _got[0].was == "من")
+check("scopes do not leak into each other", edits.load(_ew, "job2") == [])
+
+section("face cache — SQLite")
+_dw = Path(tempfile.mkdtemp(prefix="qatf-fc-"))
+_dk = detect.cache_key(Path(__file__), "yunet", "balanced")
+check("two videos get different keys — one output directory used to serve the "
+      "first video's faces to the second",
+      _dk != detect.cache_key(Path(__file__).parent / "_harness.py",
+                              "yunet", "balanced"))
+detect.write_cache(_dw, _dk, [(0.0, 4.0)],
+                   [Detection(t=1.0, cx=0.5, cy=0.5, w=0.1, h=0.15, score=0.9)])
+_spans, _dets = detect.read_cache(_dw, _dk)
+check("the face cache round trips", _spans == [(0.0, 4.0)] and len(_dets) == 1)
+check("a miss is empty, not an error", detect.read_cache(_dw, "nope") == ([], []))
 
 raise SystemExit(report())

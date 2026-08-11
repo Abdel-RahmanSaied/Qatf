@@ -122,7 +122,7 @@ def run(args: argparse.Namespace) -> int:
     # directory with no flag: the file is the interface, the same way the
     # transcript cache is. Fixups first, so a correction wins on the word it
     # names — see pipeline/edits.py.
-    corrections = pipeline.edits.load(pipeline.edits.path(work))
+    corrections = pipeline.edits.load(work, str(args.out.resolve()))
     if corrections:
         words, applied, stale = pipeline.edits.apply(words, corrections)
         log(f"      applied {applied} word corrections" +
