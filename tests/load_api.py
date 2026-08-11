@@ -366,9 +366,17 @@ with TestClient(app) as client:
         wait_for(client, jid, terminal)
     check("every job survived concurrent mutation",
           all(client.get(f"/jobs/{j}").json()["state"] in terminal for j in targets))
-    bad = [j for j in targets
-           if not json.loads((SETTINGS.data_dir / j / "job.json")
-                             .read_text(encoding="utf-8")).get("id")]
+    # The record lives in qatf.db now (see qatf/jobs/store.py), not job.json —
+    # read the same `doc` column `_persist` writes, straight from the file
+    # `_persist`'s own transaction commits to.
+    import sqlite3 as _sqlite3
+
+    _con = _sqlite3.connect(SETTINGS.data_dir / "qatf.db")
+    _docs = {row[0]: row[1] for row in
+             _con.execute("SELECT id, doc FROM jobs WHERE id IN ({})".format(
+                 ",".join("?" * len(targets))), targets)}
+    _con.close()
+    bad = [j for j in targets if not json.loads(_docs.get(j, "{}")).get("id")]
     check("no job record was corrupted by concurrent persists", not bad, str(bad[:3]))
 
     # ---- phase 5: uploads must not stall the event loop ------------------
