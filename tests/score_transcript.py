@@ -26,6 +26,7 @@ from pathlib import Path
 
 from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
 
+from qatf.core import db
 from qatf.core.errors import CommandFailed
 from qatf.core.types import Word, words_from_dicts
 from qatf.core.utils import binary, probe_duration
@@ -41,8 +42,32 @@ def load_terms(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))["terms"]
 
 
-def load_words(path: Path) -> list[Word]:
-    return words_from_dicts(json.loads(path.read_text(encoding="utf-8"))["words"])
+def load_words(source: str | Path) -> list[Word]:
+    """A transcript from either store.
+
+    `db:<database path>#<key>` reads a row from that SQLite database (the same
+    tables `qatf.pipeline.asr` writes); anything else is treated as a plain
+    words-*.json path, exactly as before. Both forms have to keep working: the
+    stage-2 sweep recorded in docs/quality.md compares runs SIDE BY SIDE as
+    files, and a measurement tool that can only read the live database could
+    never compare today's run against a `sweep-*.json` taken last week — several
+    of which sit in the repo root from a real measurement session."""
+    text = str(source)
+    if text.startswith("db:"):
+        target, _, key = text[3:].partition("#")
+        con = db.connect(Path(target))
+        row = con.execute(
+            "SELECT words FROM transcripts WHERE key=?", (key,)).fetchone()
+        if row is None:
+            # Exit 2, the same "bad input, not a scoring regression" code
+            # `_require_readable` uses below — a typo'd key must read as
+            # distinguishable from a real regression, not a traceback.
+            print(f"error: no transcript {key!r} in {target}", file=sys.stderr)
+            raise SystemExit(2)
+        return words_from_dicts(json.loads(row["words"]))
+    return words_from_dicts(
+        json.loads(_require_readable(Path(text), "input transcript")
+                   .read_text(encoding="utf-8"))["words"])
 
 
 def delivered_words(words: list[Word], fixups_path: Path | None = None) -> list[Word]:
@@ -341,18 +366,26 @@ if __name__ == "__main__":
     if not args:
         print(__doc__)
         raise SystemExit(2)
-    path = _require_readable(Path(args[0]), "input transcript")
+    # Not validated with `_require_readable` here, unlike --audio/--baseline
+    # below: args[0] may be a `db:<database>#<key>` string rather than a
+    # filesystem path, and `load_words` does its own validation for both
+    # forms (a real `_require_readable` call for the plain-file case, an
+    # explicit exit-2 for a missing DB key).
+    source = args[0]
     audio = (_require_readable(Path(args[args.index("--audio") + 1]), "--audio file")
              if "--audio" in args else None)
     base = (_require_readable(Path(args[args.index("--baseline") + 1]), "--baseline file")
             if "--baseline" in args else None)
 
-    words = load_words(path)
+    words = load_words(source)
     terms = load_terms(Path(__file__).resolve().parent / "fixtures" / "ar-terms.json")
     whole = score(words, terms)
     late = score(words, terms, since=DECAY_SECONDS)
 
-    print(f"\n{path.name}")
+    # `Path(...).name` on a `db:` string would just be its own tail, not a
+    # useful label — print the source as given for that form.
+    label = source if source.startswith("db:") else Path(source).name
+    print(f"\n{label}")
     print(_fmt(whole, "whole file"))
     print(_fmt(late, f"past {DECAY_SECONDS:.0f}s"))
 

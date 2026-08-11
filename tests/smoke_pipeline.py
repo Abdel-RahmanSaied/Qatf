@@ -1052,6 +1052,45 @@ check("_require_readable accepts a real binary file (committed, not "
       _onnx.is_file() and score_transcript._require_readable(_onnx, "onnx fixture") == _onnx,
       str(_onnx))
 
+section("scorer reads a transcript from either store")
+# `score_transcript.load_words` used to accept only a JSON path. The stage-2
+# sweep recorded in docs/quality.md compares runs SIDE BY SIDE as files —
+# several sweep-*.json transcripts sit in the repo root from a real
+# measurement session — so a scorer that can only read the live database
+# could never diff today's run against one taken last week. Both forms have
+# to keep working, hence this check on top of the manual verification against
+# the real sweep transcripts (docs/quality.md; those files are gitignored, so
+# they cannot be the fixture here).
+import json  # noqa: E402
+
+_scw = Path(tempfile.mkdtemp(prefix="qatf-score-"))
+_sc_plain = _scw / "words-plain.json"
+_sc_plain.write_text(
+    json.dumps({"words": [{"text": "a", "start": 0.0, "end": 0.5},
+                          {"text": "b", "start": 0.5, "end": 1.0}]}),
+    encoding="utf-8")
+check("load_words still reads a plain words-*.json path, unchanged",
+      [w.text for w in score_transcript.load_words(_sc_plain)] == ["a", "b"])
+
+_sc_key = asr.cache_key("large-v3", "ar")
+asr.write_cache(_scw, _sc_key,
+                Transcript(words=[Word("كلمة", 0.0, 0.5)], language="ar"))
+check("load_words also reads a db:<database>#<key> string, so the sweep "
+      "tooling keeps working once a transcript lives in SQLite instead of a "
+      "words-*.json file",
+      [w.text for w in score_transcript.load_words(f"db:{_scw / 'qatf.db'}#{_sc_key}")]
+      == ["كلمة"])
+
+try:
+    score_transcript.load_words(f"db:{_scw / 'qatf.db'}#no-such-key")
+    check("a missing db key is reported and exits, rather than silently "
+          "reading as an empty transcript", False, "did not raise")
+except SystemExit as exc:
+    check("a missing db key exits 2 — the same usage-error code "
+          "_require_readable uses for a missing plain path — so a typo'd key "
+          "reads as distinguishable from a real scoring regression (exit 1)",
+          exc.code == 2, str(exc.code))
+
 section("decode parameters — stage 2")
 check("DECODE carries the VAD settings so a sweep has one place to change",
       "vad_parameters" in asr.DECODE
