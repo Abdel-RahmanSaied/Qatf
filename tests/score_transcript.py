@@ -30,6 +30,7 @@ from pathlib import Path
 
 from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
 
+from qatf.core.errors import CommandFailed
 from qatf.core.types import Word, words_from_dicts
 from qatf.core.utils import binary, probe_duration
 from qatf.pipeline import health
@@ -126,11 +127,33 @@ def speech_intervals(wav: Path, noise_db: float = -30.0,
     single filler token spanning 424.55-439.59s. No text metric can see that;
     only comparing where there is SPEECH against where there are WORDS can.
     """
+    # Refuse to guess, and do it before spending a real subprocess call on
+    # silencedetect. `probe_duration` returns None for a raw stream, a
+    # still-growing recording, or missing duration metadata (see its own
+    # docstring). `detect.clip_spans` treats a missing duration as "do not
+    # narrow a range" and skips its clamp — safe there, because degrading
+    # only means a span is left wider than it needs to be. Here a missing
+    # duration means "we do not know where speech ends," and the old
+    # `or 0.0` fallback turned that into an empty speech list, which makes
+    # `uncovered_speech` report zero uncovered speech: a failed measurement
+    # rendered as a clean pass, on the one metric whose job is to be the
+    # guard on every later experiment. Same shape as the NaN trap CLAUDE.md
+    # calls out for `edits.diff` — an unchecked non-answer reads as success.
+    duration = probe_duration(wav)
+    if duration is None:
+        raise CommandFailed(
+            f"could not determine the duration of {wav}, so the span after "
+            f"the last detected silence cannot be bounded. Returning a "
+            f"partial speech list here would report zero uncovered speech, "
+            f"which reads as a clean result rather than a failed measurement."
+        )
+
     out = subprocess.run(
         [binary("ffmpeg"), "-hide_banner", "-nostats", "-i", str(wav),
          "-af", f"silencedetect=n={noise_db}dB:d={min_silence}", "-f", "null", "-"],
         capture_output=True, text=True,
     ).stderr
+
     silences: list[tuple[float, float]] = []
     start = None
     for line in out.splitlines():
@@ -139,7 +162,14 @@ def speech_intervals(wav: Path, noise_db: float = -30.0,
         elif "silence_end:" in line and start is not None:
             silences.append((start, float(line.split("silence_end:")[1].split()[0])))
             start = None
-    duration = probe_duration(wav) or 0.0
+    if start is not None:
+        # ffmpeg reached EOF still inside a silence — the file ends mid-silence,
+        # or this build doesn't flush a final silence_end at EOF. Dropping a
+        # pending start here would sweep the trailing silence into "speech" by
+        # omission, producing a false uncovered-speech gap over what is
+        # actually silence. Close it at the probed duration instead.
+        silences.append((start, duration))
+
     speech, cursor = [], 0.0
     for a, b in silences:
         if a > cursor:

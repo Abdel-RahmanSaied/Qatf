@@ -942,4 +942,26 @@ check("captions skip a blanked token instead of emitting an empty word",
        captions.group_words([Word("PHP", 0, 1), Word("", 1, 2), Word("ماتت", 2, 3)])]
       == [["PHP", "ماتت"]])
 
+# `score_transcript.speech_intervals` used to fall back to `duration = 0.0`
+# when `probe_duration` couldn't determine one (raw stream, still-growing
+# recording, missing metadata). That silently returned an empty speech list,
+# so `uncovered_speech` reported zero uncovered speech — a failed measurement
+# read as a clean pass, on the one metric whose whole job is to be the guard
+# on every later ASR-tuning experiment. It must now raise instead. Imported
+# locally (not at module top) to keep this file's own import block untouched
+# by a sibling test module it otherwise has no reason to depend on; `tests/`
+# is already sys.path[0] when this file runs as `python tests/smoke_pipeline.py`.
+import score_transcript  # noqa: E402
+
+from qatf.core.errors import CommandFailed  # noqa: E402
+
+_saved_probe_duration = score_transcript.probe_duration
+score_transcript.probe_duration = lambda path: None
+try:
+    raises("speech_intervals raises rather than silently reporting zero "
+           "uncovered speech when duration cannot be determined",
+           CommandFailed, score_transcript.speech_intervals, Path("no-such-file.wav"))
+finally:
+    score_transcript.probe_duration = _saved_probe_duration
+
 raise SystemExit(report())
