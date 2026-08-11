@@ -76,6 +76,70 @@ So nobody repeats them:
 | `beam_size` 8 / 10 | **worse**, and 50% slower |
 | `dynaudnorm` | correct terms 24 → **13** |
 
+### The stage-2 sweep — how to run one
+
+Baseline, measured on the reference transcript
+(`words-large-v3-ar-6da1b0b4.json`, 1390 words — the same denoised car
+recording as the rest of this page): one repetition run (`ومكتفي` ×7,
+242.0-243.9s), 21 timing defects (12 zero + 2 tiny + 7 long; the longest
+single word spans 15.42s), 108.1s of uncovered speech across six gaps ≥10s,
+and 0.0% tracked-term accuracy (0 right / 17 wrong against
+`tests/fixtures/ar-terms.json`). Every hypothesis below targets one of these
+four numbers.
+
+The uncovered-speech metric's own top three are worth reading before tuning
+anything: 667.9-685.3s (17.5s), 167.9-183.3s (15.4s), 424.6-439.6s (15.0s).
+The first of those has **zero words over it** and measures -19.4 dB against a
+-22.3 dB known-speech reference — louder than average speech, not silence.
+A words-only analysis (no `--audio`) had previously reported it as "largest
+silent gap 17.47s"; it never looked at the audio, so dropped speech read as
+silence. The third, 424.6-439.6s, is the `آآ` collapse discussed below.
+
+Every run changes ONE thing and is scored the same way:
+
+```bash
+python tests/score_transcript.py <new>.json --audio <wav> --baseline <prev>.json
+```
+
+Record the result here whether it wins or loses. The table above exists
+because three plausible changes were worse, and writing them down is what
+stops them being retried.
+
+| Hypothesis | Parameter | Target defect | Result |
+| --- | --- | --- | --- |
+| Our 500ms silence threshold merges chunks to 30s and starves the decoder | `vad_parameters.min_silence_duration_ms` 500 → 160 | 15s of speech in one token | *pending* |
+| Padding changes where word boundaries land | `vad_parameters.speech_pad_ms` | degenerate timings | *pending* |
+| A bad window never triggers temperature fallback | `compression_ratio_threshold`, `log_prob_threshold` | dropped speech | *pending* |
+| The extended vocabulary fixes product names | `--vocab-file prompts/ar-tech.txt` (38 terms) | PHP, JavaScript, seniors | *pending* |
+| N-gram blocking breaks the loop | `no_repeat_ngram_size=3` | `ومكتفي` ×7 | *pending* |
+| Penalising repeats breaks the loop more gently | `repetition_penalty` 1.05 / 1.10 | `ومكتفي` ×7 | *pending* |
+| Anomalous segments in silence are hallucinations | `hallucination_silence_threshold=2.0` | invented proper nouns | *pending* |
+
+Replace each *pending* as runs complete. A row that loses keeps its result.
+
+**`hallucination_silence_threshold` cannot fix the 15s `آآ`.** Reading
+faster-whisper's implementation — before spending a GPU run to find out —
+shows it only skips a segment flagged anomalous when that segment is
+surrounded by silence longer than the threshold. The 424.6-439.6s window is
+not silence: it holds speech at -17.5 dB against a -18.7 dB known-speech
+reference. Listed against the invented proper nouns instead, above, where the
+mechanism actually applies.
+
+**The prime suspect for the dropped speech is this project's own setting.**
+`DECODE` in `asr.py` sets `vad_parameters={"min_silence_duration_ms": 500}`;
+faster-whisper's default under `vad_filter=True` is 160, and VAD chunks are
+capped at `max_speech_duration_s` regardless (30s). A higher silence threshold
+merges speech across short pauses into longer chunks, and a 30s window of
+noisy car audio that mostly decodes to nothing is exactly how 15 seconds of
+speech becomes one token. The value is justified in the code only as "a big
+speed win" and has never been scored for accuracy — that is row 1 of the table
+above.
+
+**The acceptance bar is 85% tracked-term accuracy; the baseline is 0.0%.**
+`terms_accuracy` is printed by the scorer on every run and is guarded as a
+regression by `--baseline`, the same way a word-count drop or a new timing
+defect is — a run that pushes it below the previous best fails the gate.
+
 ---
 
 ## The measurement trap
