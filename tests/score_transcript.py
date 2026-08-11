@@ -26,11 +26,10 @@ from pathlib import Path
 
 from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
 
-from qatf.core import db
 from qatf.core.errors import CommandFailed
 from qatf.core.types import Word, words_from_dicts
 from qatf.core.utils import binary, probe_duration
-from qatf.pipeline import fixups, health
+from qatf.pipeline import asr, fixups, health
 from qatf.pipeline.health import _TRAILING
 
 #: Errors before this point can be flattered by a seed that decays. Reported
@@ -46,25 +45,60 @@ def load_words(source: str | Path) -> list[Word]:
     """A transcript from either store.
 
     `db:<database path>#<key>` reads a row from that SQLite database (the same
-    tables `qatf.pipeline.asr` writes); anything else is treated as a plain
+    database `qatf.pipeline.asr` writes); anything else is treated as a plain
     words-*.json path, exactly as before. Both forms have to keep working: the
     stage-2 sweep recorded in docs/quality.md compares runs SIDE BY SIDE as
     files, and a measurement tool that can only read the live database could
     never compare today's run against a `sweep-*.json` taken last week — several
-    of which sit in the repo root from a real measurement session."""
+    of which sit in the repo root from a real measurement session.
+
+    The `db:` branch goes through `asr.read_cache` rather than querying
+    `transcripts` directly — a hand-rolled `SELECT` was tried first and
+    dropped two things `read_cache` already handles: it falls back to
+    importing a legacy `words-*.json` sitting next to a not-yet-created
+    `qatf.db` (exactly the shape `run-fixed/.work/` is in — a transcript file
+    with no database beside it, which the plain-path branch below has always
+    read directly), and it closes its own connection when it is done (see
+    `read_cache`'s own docstring on why: an open handle blocks
+    `shutil.rmtree` on Windows). Duplicating the query here would have to
+    duplicate both, and the first one silently regresses exactly the fixture
+    this task verifies against."""
     text = str(source)
     if text.startswith("db:"):
         target, _, key = text[3:].partition("#")
-        con = db.connect(Path(target))
-        row = con.execute(
-            "SELECT words FROM transcripts WHERE key=?", (key,)).fetchone()
-        if row is None:
-            # Exit 2, the same "bad input, not a scoring regression" code
-            # `_require_readable` uses below — a typo'd key must read as
-            # distinguishable from a real regression, not a traceback.
-            print(f"error: no transcript {key!r} in {target}", file=sys.stderr)
+        db_file = Path(target)
+        # Same legacy filename `read_cache` itself checks for (`work /
+        # f"{key}.json"`, `work` here being `db_file.parent`) — computed here
+        # too so the guard below can tell "nothing to read" apart from "the
+        # database doesn't exist YET, but importing it is about to create it
+        # correctly", which are different situations with the same
+        # `db_file.is_file()` answer.
+        legacy = db_file.parent / f"{key}.json"
+        if not db_file.is_file() and not legacy.is_file():
+            # Checked BEFORE calling read_cache, not left to it: `db.connect`
+            # creates the database file (and its parent directory) on first
+            # use, as a side effect of opening a connection, regardless of
+            # whether anything is actually there to read. A scoring run given
+            # a bad path is a usage error, not licence to create a stray,
+            # empty qatf.db on disk — a read-only tool must leave no trace
+            # behind it. Same message shape as _require_readable below, for
+            # the same reason: a typo here should read as exit 2 (usage
+            # error), not exit 1 (a real scoring regression).
+            #
+            # A database that does not exist YET but has a legacy transcript
+            # sitting next to it is NOT rejected here — that is exactly the
+            # shape `run-fixed/.work/` is in (a `words-*.json` with no
+            # `qatf.db` beside it, which the plain-path branch below has
+            # always read directly), and `read_cache` creating the database
+            # while importing that file is the correct, intended write, not
+            # the stray one this check exists to prevent.
+            print(f"error: database not found: {db_file}", file=sys.stderr)
             raise SystemExit(2)
-        return words_from_dicts(json.loads(row["words"]))
+        transcript = asr.read_cache(db_file.parent, key)
+        if transcript is None:
+            print(f"error: no transcript {key!r} in {db_file}", file=sys.stderr)
+            raise SystemExit(2)
+        return transcript.words
     return words_from_dicts(
         json.loads(_require_readable(Path(text), "input transcript")
                    .read_text(encoding="utf-8"))["words"])
