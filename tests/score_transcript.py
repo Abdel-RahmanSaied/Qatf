@@ -302,21 +302,34 @@ _WORSE_IF_UP = ("longest_run", "looped_tokens", "nonfinite_timings", "zero_timin
 
 def _require_readable(path: Path, what: str) -> Path:
     """Exit 2 — this file's usage-error code — on a missing or unreadable
-    input path, rather than letting `FileNotFoundError` propagate.
+    input path, rather than letting an exception propagate and exit 1.
 
-    An uncaught exception here exits 1, the same code `raise SystemExit(1 if
-    regressions else 0)` below uses for an actual scoring regression. A typo'd
-    `--baseline` path and a real regression would then be indistinguishable
-    to a caller checking $? — exactly the ambiguity exit codes exist to
-    prevent. `path.is_file()` before the read: a bare `open()` failure would
-    also raise `FileNotFoundError`, but checking first lets one function
-    cover "missing" and "exists but unreadable" (permissions, a directory
-    passed by mistake) with one message shape."""
+    An uncaught exception here would exit 1, the same code `raise
+    SystemExit(1 if regressions else 0)` below uses for an actual scoring
+    regression. A typo'd `--baseline` path and a real regression would then be
+    indistinguishable to a caller checking $? — exactly the ambiguity exit
+    codes exist to prevent. `path.is_file()` before the open: a bare `open()`
+    failure would also raise, but checking first lets one function cover
+    "missing" and "exists but unreadable" (permissions, a directory passed by
+    mistake) with one message shape.
+
+    The probe reads one byte in BINARY mode, not text. This function is
+    shared by three different path arguments and only one of them
+    (`--audio`) is guaranteed text-free — a WAV is binary from its first byte
+    (RIFF header), and `path.read_text(encoding="utf-8")` on one raises
+    `UnicodeDecodeError`, which isn't `OSError` and isn't caught, so the run
+    dies exactly the way this helper exists to prevent. This function's job
+    is only "is it there and can I open it" — the two JSON paths get parsed
+    by `load_words`/`load_terms` immediately afterwards anyway, so malformed
+    JSON is already reported there, with its own error, on its own path
+    length. Deciding "is this valid JSON / a valid WAV" does not belong here
+    twice."""
     if not path.is_file():
         print(f"error: {what} not found: {path}", file=sys.stderr)
         raise SystemExit(2)
     try:
-        path.read_text(encoding="utf-8")
+        with path.open("rb") as f:
+            f.read(1)
     except OSError as exc:
         print(f"error: {what} not readable: {path} ({exc})", file=sys.stderr)
         raise SystemExit(2) from exc
