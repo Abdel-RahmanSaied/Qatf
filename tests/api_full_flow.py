@@ -18,6 +18,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
 VIDEO = "excerpt-ar-4min.mp4"
@@ -113,7 +114,7 @@ FULL = {
     "clips": 3, "min_len": 20, "max_len": 45,
     "language": "ar", "denoise": True,
     "whisper": "large-v3", "device": "cuda",
-    "hotwords": " ".join(open("prompts/ar-tech.txt", encoding="utf-8").read().split()),
+    "hotwords": " ".join(Path("prompts/ar-tech.txt").read_text(encoding="utf-8").split()),
     "fixups": {"بايسون": "بايثون"},
     "reframe": "crop", "codec": "h264", "preset": "veryfast",
     "resolution": "1080p", "crf": 22, "ten_bit": False,
@@ -142,7 +143,8 @@ edited = json.loads(json.dumps(words))
 original = edited[0]["text"]
 edited[0]["text"] = "مُصحح"
 st, r = call("PUT", f"/jobs/{jid}/transcript", {"words": edited})
-check("PUT /transcript accepts a text-only correction", st == 200, f"{st} {json.dumps(r)[:120]}")
+check("PUT /transcript accepts a text-only correction", st == 200,
+      f"{st} {json.dumps(r)[:120]}")
 st, tr2 = call("GET", f"/jobs/{jid}/transcript")
 check("the correction is visible on read",
       (tr2.get("words") or [{}])[0].get("text") == "مُصحح")
@@ -165,7 +167,8 @@ check("plan has clips", len(clips) >= 1, str(len(clips)))
 first = dict(clips[0])
 first["title"] = "hand edited"
 st, r = call("PUT", f"/jobs/{jid}/plan", {"clips": [first]})
-check("PUT /plan replaces the plan", st == 200, f"{st} {json.dumps(r, ensure_ascii=False)[:120]}")
+check("PUT /plan replaces the plan", st == 200,
+      f"{st} {json.dumps(r, ensure_ascii=False)[:120]}")
 st, plan2 = call("GET", f"/jobs/{jid}/plan")
 c2 = plan2.get("clips") if isinstance(plan2, dict) else plan2
 check("the edit landed and re-snapped", len(c2) == 1, str(len(c2)))

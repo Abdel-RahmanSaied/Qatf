@@ -87,7 +87,15 @@ def build_transcript_blocks(words: list[Word],
         if w.start - block_start >= block_seconds and buf:
             lines.append(f"[{ts_human(block_start)}] {' '.join(buf)}")
             buf, block_start = [], w.start
-        buf.append(w.text)
+        # `health.repair` blanks a decoder repetition loop's duplicates rather
+        # than deleting them, so a blanked token is still a real element of
+        # `words` — `w.text == ""`. `captions.group_words` already knows to
+        # skip it; this loop didn't, so a blanked run became a run of double
+        # spaces in the prompt sent to stage 3. Harmless to the model, but a
+        # transcript the operator reads (this string is what gets logged and
+        # sent) should not show damage that was supposedly already repaired.
+        if w.text:
+            buf.append(w.text)
     if buf:
         lines.append(f"[{ts_human(block_start)}] {' '.join(buf)}")
     return "\n".join(lines)

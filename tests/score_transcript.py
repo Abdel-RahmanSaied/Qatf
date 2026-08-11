@@ -14,17 +14,12 @@ speech, which improves every other number on the page.
 Everything is reported whole-file and past 300s separately. See the measurement
 trap in docs/quality.md: a 70s slice starting where a seed was applied once
 reported 14 errors going to 0, and the same audio 6.6 minutes in had them back.
-
-The `--audio`/`--baseline` flags and the argv entry point above are Tasks 5-6
-(an audio-coverage metric, then the CLI). Until those land this module is a
-library — `load_terms`, `load_words`, `score` — called directly, the same
-kind of forward reference `pipeline/health.py`'s own docstring makes to this
-file.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -102,8 +97,19 @@ def _count_expected(text: list[str], expected: str) -> int:
 
 def score(words: list[Word], terms: list[dict], since: float = 0.0) -> dict:
     """Every metric for the words at or after `since`."""
-    sel = [w for w in words if w.start >= since]
-    span = (sel[-1].end - sel[0].start) if sel else 0.0
+    # Finiteness must be checked BEFORE the >= comparison, not after: NaN >= 0.0
+    # is False, so `w.start >= since` alone silently drops every NaN-start word
+    # from every window, whole-file included. That is exactly the trap
+    # `health.find_timing_defects` was fixed for (see its own comment) —
+    # reintroduced one layer up here would mean `nonfinite_timings` could never
+    # be nonzero, and the `words` guard would under-count on the same transcript
+    # it's supposed to be watching.
+    sel = [w for w in words if not math.isfinite(w.start) or w.start >= since]
+    # A non-finite sel[0].start or sel[-1].end must not poison `span` (and
+    # therefore `wpm`) with a NaN/inf result — same rule, one line down.
+    span = 0.0
+    if sel and math.isfinite(sel[0].start) and math.isfinite(sel[-1].end):
+        span = sel[-1].end - sel[0].start
     runs = health.find_repetitions(sel)
     defects = health.find_timing_defects(sel)
     # Strip with health._TRAILING, not a hand-picked ".،": the scorer used to
@@ -254,9 +260,14 @@ def uncovered_speech(words: list[Word], speech: list[tuple[float, float]],
 
 
 def _fmt(s: dict, label: str) -> str:
+    # nonfinite and tiny both gate via _WORSE_IF_UP (zero and long always did,
+    # and got printed); a defect kind that gates but never appears on this
+    # line is invisible to anyone reading a run instead of diffing the dict.
     return (f"  {label:<12} words {s['words']:>5}  wpm {s['wpm']:>5}  "
             f"run {s['longest_run']:>2}  looped {s['looped_tokens']:>3}  "
-            f"zero {s['zero_timings']:>3}  long {s['long_timings']:>3}  "
+            f"nonfinite {s['nonfinite_timings']:>2}  "
+            f"zero {s['zero_timings']:>3}  tiny {s['tiny_timings']:>2}  "
+            f"long {s['long_timings']:>3}  "
             f"maxspan {s['max_word_span']:>6}  "
             f"terms {s['terms_right']}✓/{s['terms_wrong']}✗  "
             f"acc {s['terms_accuracy']:.1f}%"
@@ -272,18 +283,56 @@ def _fmt(s: dict, label: str) -> str:
 #: was built from: a defect class missing from this tuple is one no run can
 #: ever fail the gate on, and NaN/inf timings are exactly the kind of thing a
 #: "quieter" config could introduce unnoticed.
+#: `terms_invented` is deliberately ABSENT, unlike an earlier draft that gated
+#: on it. `invented = max(0, right - baseline_total)` compares two different
+#: units: `right` counts OCCURRENCES of the expected term, `baseline_total`
+#: was populated from WRONG-TOKEN counts on the reference file. Those units
+#: coincide only when a term's wrong spelling happens to be one token per
+#: occurrence; "جونيورز" mangled to "وناشوا نيورز" is 2 wrong tokens for one
+#: occurrence, so a run that fixes it goes from 0 right to 1 right while
+#: baseline_total stayed sized for 2. Worse, the ar-terms.json fixture shipped
+#: with "إكس" at baseline_total 3 when the reference file actually has 5 wrong
+#: occurrences there — so a transcription of that term with 0 errors reported
+#: `terms_invented > 0` and this gate fired on a CORRECT result. A gate that
+#: fires on a correct result is worse than no gate: it teaches its operator to
+#: ignore it. `terms_invented` is still computed and printed (see `_fmt`) as an
+#: advisory figure — worth a look, not worth failing a run over.
 _WORSE_IF_UP = ("longest_run", "looped_tokens", "nonfinite_timings", "zero_timings",
-                "tiny_timings", "long_timings", "max_word_span", "terms_wrong",
-                "terms_invented")
+                "tiny_timings", "long_timings", "max_word_span", "terms_wrong")
+
+def _require_readable(path: Path, what: str) -> Path:
+    """Exit 2 — this file's usage-error code — on a missing or unreadable
+    input path, rather than letting `FileNotFoundError` propagate.
+
+    An uncaught exception here exits 1, the same code `raise SystemExit(1 if
+    regressions else 0)` below uses for an actual scoring regression. A typo'd
+    `--baseline` path and a real regression would then be indistinguishable
+    to a caller checking $? — exactly the ambiguity exit codes exist to
+    prevent. `path.is_file()` before the read: a bare `open()` failure would
+    also raise `FileNotFoundError`, but checking first lets one function
+    cover "missing" and "exists but unreadable" (permissions, a directory
+    passed by mistake) with one message shape."""
+    if not path.is_file():
+        print(f"error: {what} not found: {path}", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"error: {what} not readable: {path} ({exc})", file=sys.stderr)
+        raise SystemExit(2) from exc
+    return path
+
 
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
         print(__doc__)
         raise SystemExit(2)
-    path = Path(args[0])
-    audio = Path(args[args.index("--audio") + 1]) if "--audio" in args else None
-    base = Path(args[args.index("--baseline") + 1]) if "--baseline" in args else None
+    path = _require_readable(Path(args[0]), "input transcript")
+    audio = (_require_readable(Path(args[args.index("--audio") + 1]), "--audio file")
+             if "--audio" in args else None)
+    base = (_require_readable(Path(args[args.index("--baseline") + 1]), "--baseline file")
+            if "--baseline" in args else None)
 
     words = load_words(path)
     terms = load_terms(Path(__file__).resolve().parent / "fixtures" / "ar-terms.json")

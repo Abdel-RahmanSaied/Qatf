@@ -382,13 +382,31 @@ def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
                       decode: dict | None = None) -> tuple[Transcript, bool]:
     """Returns (transcript, was_cached). Delete the cache file to re-transcribe.
 
-    `decode` is deliberately NOT part of `cache_path`'s key. During a decode-
-    parameter sweep each run is written to its own explicitly named output file
-    and compared side by side, so the cache key must stay stable across the
-    sweep or every run after the first would silently reuse the first run's
-    transcript. Whether a decode override should invalidate the cache once the
-    sweep is over and a value gets promoted into DECODE is an open question —
-    left for whoever does that promotion, not decided here."""
+    `decode` is deliberately NOT part of `cache_path`'s key. Stability is what
+    CAUSES reuse, not what prevents it — a key that stayed the same across two
+    different `decode` values would be exactly the bug: run 2 would read run
+    1's cached transcript back and silently report it as run 2's result. It is
+    keying on `decode` (i.e. making the key CHANGE when `decode` changes) that
+    would prevent that, and this function does not do it.
+
+    Nothing is broken by that today, but only because of where the boundary
+    actually is: `tests/sweep_asr.py` calls `asr.transcribe()` directly, not
+    this function, so a decode-parameter sweep never goes through this cache at
+    all — each run is written to its own explicitly named output file instead.
+    That is what "each run compared side by side" actually depends on; it has
+    nothing to do with this function's key being stable.
+
+    The hazard this leaves: `transcribe_cached` still ACCEPTS a `decode`
+    parameter, and on a warm cache it is silently ignored — a caller who does
+    reach this function directly with a `decode` override and an existing
+    cache file gets back whatever `decode` produced the cached transcript, not
+    the one just requested. That is the exact "a knob outside the key is a
+    knob that silently does nothing" pattern CLAUDE.md names for `--language`
+    in `cache_path` and again for the face-detection cache — reproduced here
+    the moment anything other than `sweep_asr.py` calls this function with a
+    non-default `decode`. Not fixed here: whether a decode override should
+    invalidate the cache once a value graduates from the sweep into `DECODE`
+    is an open question, left for whoever does that promotion."""
     cache = cache_path(work, model_size, language, initial_prompt, hotwords)
     if cache.exists():
         return read_cache(cache), True

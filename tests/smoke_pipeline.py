@@ -964,6 +964,23 @@ try:
 finally:
     score_transcript.probe_duration = _saved_probe_duration
 
+# `score()`'s own window filter used to be `w.start >= since`, and NaN >= 0.0
+# is False — so a NaN-start word vanished from `sel` in EVERY window,
+# whole-file included, rather than only being excluded from a later window it
+# genuinely doesn't belong to. That silently under-counted `words` and made
+# `nonfinite_timings` unable to ever be nonzero, defeating the reason that key
+# is in `_WORSE_IF_UP` at all — the identical trap `find_timing_defects` above
+# was fixed for, one layer up. Two of four words below have a non-finite start
+# on purpose: one NaN, one +inf, so the fix is checked against both flavours of
+# "not comparable to a float" that IEEE 754 has.
+_nan_words = [Word("a", 0.0, 1.0), Word("b", float("nan"), 2.0),
+             Word("c", 3.0, 4.0), Word("d", float("inf"), 5.0)]
+_nan_scored = score_transcript.score(_nan_words, [])
+check("score() counts a NaN/inf-start word rather than silently dropping it",
+      _nan_scored["words"] == 4, str(_nan_scored["words"]))
+check("...and both are reported as nonfinite timing defects, not lost",
+      _nan_scored["nonfinite_timings"] == 2, str(_nan_scored["nonfinite_timings"]))
+
 section("decode parameters — stage 2")
 check("DECODE carries the VAD settings so a sweep has one place to change",
       "vad_parameters" in asr.DECODE
@@ -979,5 +996,15 @@ check("a nested override merges rather than replacing the whole dict",
       _nested["vad_parameters"]["min_silence_duration_ms"]
       == asr.DECODE["vad_parameters"]["min_silence_duration_ms"]
       and _nested["vad_parameters"]["speech_pad_ms"] == 200)
+# The two checks above both pass even on a broken `dict(DECODE)` shallow copy:
+# a shared nested dict still equals itself, and the merge still reads back the
+# override it just wrote into the shared object. Neither check can fail on the
+# exact bug merge_decode's own docstring warns about. These two check the thing
+# that actually distinguishes a copy from a shared reference.
+check("the merged nested dict is a COPY, not the module's own object",
+      _nested["vad_parameters"] is not asr.DECODE["vad_parameters"])
+check("a nested override does not leak into DECODE — every later sweep run "
+      "would silently inherit it",
+      "speech_pad_ms" not in asr.DECODE["vad_parameters"])
 
 raise SystemExit(report())

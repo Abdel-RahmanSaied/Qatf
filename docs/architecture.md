@@ -22,6 +22,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | 1 | [`pipeline/audio.py`](../qatf/pipeline/audio.py) | demux to 16 kHz mono wav, optionally denoised | no | yes |
 | 2 | [`pipeline/asr.py`](../qatf/pipeline/asr.py) | transcribe with word-level timings | Whisper | no |
+| 2d | [`pipeline/health.py`](../qatf/pipeline/health.py) | find decoder damage — repetition loops (blanked) and impossible word timings (reported, not corrected) | no | yes |
 | 3 | [`pipeline/select.py`](../qatf/pipeline/select.py) | pick which passages become clips | **your LLM** | no |
 | 4 | [`pipeline/cuts.py`](../qatf/pipeline/cuts.py) | snap cut points onto word boundaries | no | yes |
 | 4b | [`pipeline/detect.py`](../qatf/pipeline/detect.py) | find faces (`--reframe track` only) | YuNet | no |
@@ -162,6 +163,7 @@ qatf/
     asr.py         2.  transcribe + word times  faster-whisper
     fixups.py      2b. substitutions by value   text only, never timestamps
     edits.py       2c. corrections by position  text only, never timestamps
+    health.py      2d. decoder-damage repair    blank a repetition loop, report a bad timing
     select.py      3.  pick clips               LLM
     cuts.py        4.  snap to word bounds      deterministic
     detect.py      4b. find faces               OpenCV, cached against the video
@@ -260,6 +262,14 @@ Both change `Word.text` and neither can touch `Word.start`/`Word.end`.
 | --- | --- | --- | --- |
 | `fixups.py` | value | a term the decoder **always** mishears the same way | a text file you build up across videos |
 | `edits.py` | position | a word misheard **once**, where the same string is correct elsewhere | `<work>/word-edits.json`, per recording |
+| `health.py` | run of identical tokens | a decoder repetition loop — damage, not a mishearing, so there is no "correct" text to substitute; the run is blanked instead | nowhere — applied on read like the other two, but nothing is stored |
+
+`health.py` is not really a third member of "two text layers" — it repairs
+decoder damage rather than correcting a mishearing — but it obeys the same
+rule the other two do (`Word.text` only, `Word.start`/`Word.end` untouched) and
+runs in the same read path, `worker.baseline_words`: fixups first (a global
+rule), then repair, then — for `caption_words` specifically — per-word edits
+on top. It belongs in this table rather than a separate one.
 
 The second exists because the first structurally cannot do it. On Egyptian
 Arabic, Whisper writing `من` for `مين` is unfixable by substitution — `من` is one
