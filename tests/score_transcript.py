@@ -25,11 +25,13 @@ file.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
 
 from qatf.core.types import Word, words_from_dicts
+from qatf.core.utils import binary, probe_duration
 from qatf.pipeline import health
 
 #: Errors before this point can be flattered by a seed that decays. Reported
@@ -103,3 +105,73 @@ def score(words: list[Word], terms: list[dict], since: float = 0.0) -> dict:
         "terms_wrong": sum(r["wrong"] for r in term_rows),
         "terms_invented": sum(r["invented"] for r in term_rows),
     }
+
+
+def speech_intervals(wav: Path, noise_db: float = -30.0,
+                     min_silence: float = 0.5) -> list[tuple[float, float]]:
+    """Speech spans, as the complement of ffmpeg's detected silences.
+
+    ffmpeg rather than a VAD package (webrtcvad, silero, librosa): ffmpeg is
+    already a hard dependency of the pipeline, and this is a measurement tool —
+    the no-new-dependencies rule applies to it as much as to the pipeline
+    itself. `binary("ffmpeg")` resolves QATF_FFMPEG the same way every other
+    caller in this codebase does; a bare "ffmpeg" string (or `shutil.which`)
+    silently does nothing useful on a host where ffmpeg isn't on PATH — that
+    exact mistake previously made a whole test suite exit 0 without running
+    anything.
+
+    This is the metric that catches the headline defect: on the real 12-minute
+    Arabic recording, ~15s of ordinary speech at -17.5 dB (unambiguously
+    talking — a known-speech stretch nearby measured -18.7 dB) collapsed into a
+    single filler token spanning 424.55-439.59s. No text metric can see that;
+    only comparing where there is SPEECH against where there are WORDS can.
+    """
+    out = subprocess.run(
+        [binary("ffmpeg"), "-hide_banner", "-nostats", "-i", str(wav),
+         "-af", f"silencedetect=n={noise_db}dB:d={min_silence}", "-f", "null", "-"],
+        capture_output=True, text=True,
+    ).stderr
+    silences: list[tuple[float, float]] = []
+    start = None
+    for line in out.splitlines():
+        if "silence_start:" in line:
+            start = float(line.split("silence_start:")[1].split()[0])
+        elif "silence_end:" in line and start is not None:
+            silences.append((start, float(line.split("silence_end:")[1].split()[0])))
+            start = None
+    duration = probe_duration(wav) or 0.0
+    speech, cursor = [], 0.0
+    for a, b in silences:
+        if a > cursor:
+            speech.append((cursor, a))
+        cursor = max(cursor, b)
+    if cursor < duration:
+        speech.append((cursor, duration))
+    return speech
+
+
+def uncovered_speech(words: list[Word], speech: list[tuple[float, float]],
+                     min_gap: float = 2.0) -> list[tuple[float, float]]:
+    """Speech spans with no word over them for at least `min_gap` seconds.
+
+    A word that spans 15s counts as covering only where it starts and ends,
+    not the void between — that void is precisely the defect this metric
+    exists to catch. Comparing edges (word boundaries), not word intervals,
+    against the speech spans means one long word can never masquerade as
+    coverage of the seconds inside it.
+    """
+    edges = sorted({w.start for w in words} | {w.end for w in words})
+    gaps: list[tuple[float, float]] = []
+    for a, b in speech:
+        cursor = a
+        for t in edges:
+            if t <= cursor:
+                continue
+            if t >= b:
+                break
+            if t - cursor >= min_gap:
+                gaps.append((cursor, t))
+            cursor = t
+        if b - cursor >= min_gap:
+            gaps.append((cursor, b))
+    return gaps
