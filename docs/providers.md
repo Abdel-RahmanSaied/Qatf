@@ -153,7 +153,7 @@ diff cmp-claude/plan.json cmp-glm/plan.json
 ```
 
 Each output directory keeps its own transcript cache, so the first run of each
-pair transcribes. Copy `cmp-claude/.work/words-*.json` into `cmp-glm/.work/` to
+pair transcribes. Copy `cmp-claude/.work/qatf.db` into `cmp-glm/.work/` to
 skip the second — the comparison is only honest on an identical transcript
 anyway.
 

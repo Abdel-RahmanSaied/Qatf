@@ -119,10 +119,12 @@ def run(args: argparse.Namespace) -> int:
         log(f"      NOTE {note}")
 
     # per-word corrections, if someone has written any. Picked up from the work
-    # directory with no flag: the file is the interface, the same way the
-    # transcript cache is. Fixups first, so a correction wins on the word it
-    # names — see pipeline/edits.py.
-    corrections = pipeline.edits.load(pipeline.edits.path(work))
+    # directory with no flag: word-edits.json is the interface — UNLIKE the
+    # transcript cache's words-*.json, which is imported once and then
+    # ignored, this file is re-imported whenever its mtime moves, so editing
+    # it again after a first run still takes effect (see edits.load/save).
+    # Fixups first, so a correction wins on the word it names.
+    corrections = pipeline.edits.load(work, str(args.out.resolve()))
     if corrections:
         words, applied, stale = pipeline.edits.apply(words, corrections)
         log(f"      applied {applied} word corrections" +

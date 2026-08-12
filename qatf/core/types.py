@@ -27,7 +27,7 @@ class Transcript:
     language: str | None = None
     language_probability: float | None = None
     #: the device transcription actually ran on, which is not always the one
-    #: requested — see `pipeline.asr.load_model`
+    #: requested — see `pipeline.asr.transcribe`'s auto-to-cpu fallback
     device: str | None = None
     compute_type: str | None = None
 

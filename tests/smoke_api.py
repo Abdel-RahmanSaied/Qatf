@@ -30,7 +30,7 @@ from qatf import pipeline
 from qatf.api import create_app
 from qatf.core.config import Settings
 from qatf.core.types import Clip, Keyframe, Track, Transcript, Word
-from qatf.jobs import JobStore, worker
+from qatf.jobs import RUNNING_STATE_VALUES, JobStore, worker
 from qatf.pipeline import asr, audio, encode, select
 
 SCRATCH = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
@@ -104,6 +104,28 @@ def wait(client, job_id, states, timeout=30):
             return job
         time.sleep(0.05)
     raise AssertionError(f"timeout; last state={job.get('state')} error={job.get('error')}")
+
+
+def settle(client, timeout=30):
+    """Block until no job is mid-pipeline.
+
+    A few validation checks fire a job with `auto_render: False` and only
+    assert on the immediate 202/422 — they never wait for it to reach
+    `planned`, so it keeps running on the worker pool in the background. That
+    was harmless when persistence was a plain `write_text` (fast enough that
+    the job settled long before any later section looked at it), but a SQLite
+    transaction per state transition is measurably slower, so the same
+    orphaned job can now still be mid-`selecting` when a later, unrelated
+    check counts model calls — making that check flaky for a reason that has
+    nothing to do with what it is testing. Called right before any check that
+    depends on the total number of model calls so far."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        jobs = client.get("/jobs").json()["jobs"]
+        if not any(j["state"] in RUNNING_STATE_VALUES for j in jobs):
+            return
+        time.sleep(0.05)
+    raise AssertionError("jobs still running after timeout")
 
 
 app = create_app(SETTINGS)
@@ -295,17 +317,72 @@ with TestClient(app) as client:
           "CORRECTED" in corrected_ass and "word30" not in corrected_ass)
     check("still no model call — corrections are stage 5 only",
           len(SEEN_MODELS) == 1, str(SEEN_MODELS))
+    # The overlay now lives in SQLite too (qatf.db in the same .work directory,
+    # word_edits table scoped by job id), not a word-edits.json file — read it
+    # back directly with a fresh connection rather than through qatf.core.db, so
+    # this check does not share a cached thread-local handle with the app under
+    # test (see qatf.core.db.close's docstring for why that matters).
+    import sqlite3 as _sqlite3_edits
+
+    def _overlay_rows(job_id: str) -> int:
+        con = _sqlite3_edits.connect(SETTINGS.data_dir / job_id / ".work" / "qatf.db")
+        try:
+            return con.execute(
+                "SELECT COUNT(*) FROM word_edits WHERE scope=?", (job_id,)).fetchone()[0]
+        finally:
+            con.close()
+
+    # the transcript cache lives in SQLite (qatf.db in the same .work
+    # directory), not a words-*.json file — read it back the same way
+    # transcript_for does, with the key built from this job's own options, and
+    # check the correction never reached the raw row
+    _raw_key = pipeline.cache_key("large-v3", "ar", None, "بايثون فلاتر")
+    _raw_cached = pipeline.read_cache(SETTINGS.data_dir / jid / ".work", _raw_key)
     check("overlay stored beside the cache, not inside it",
-          (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists()
-          and "CORRECTED" not in next(
-              (SETTINGS.data_dir / jid / ".work").glob("words-*.json")
-          ).read_text(encoding="utf-8"))
+          _overlay_rows(jid) == 1
+          and _raw_cached is not None
+          and all(w.text != "CORRECTED" for w in _raw_cached.words))
 
     r = client.put(f"/jobs/{jid}/transcript", json={"words": pristine})
     check("re-submitting the untouched transcript clears corrections",
           r.json()["edits_applied"] == 0 and r.json()["words"][30]["text"] == "word30")
-    check("cleared overlay is removed, not left empty",
-          not (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists())
+    check("cleared overlay is removed, not left empty", _overlay_rows(jid) == 0)
+
+    section("transcript correction — a PUT before any GET marks the scope (finding 2)")
+    # `edits.save` never wrote the `imported` marker before this fix — only the
+    # legacy-import path did — and `put_transcript` never calls `load` first.
+    # A pre-SQLite job whose word-edits.json still exists could take a PUT
+    # with no GET ever having run, leave the marker unset, and have the
+    # documented undo (PUT the pristine transcript back) silently revert
+    # itself on the very next read. Reproduce it with nothing but the public
+    # endpoints: a fresh job, a legacy file dropped into its .work directory
+    # the way an old install would have left one, and PUT twice with no GET
+    # ever in between.
+    nid = client.post("/jobs", json={"path": "talk.mp4", "auto_render": False,
+                                     "device": "cpu"}).json()["id"]
+    wait(client, nid, {"planned", "failed", "done"})
+    nwork = SETTINGS.data_dir / nid / ".work"
+    (nwork / pipeline.edits.FILENAME).write_text(
+        json.dumps({"edits": [{"index": 7, "was": "word7", "text": "LEGACY-GHOST"}]}),
+        encoding="utf-8")
+    # fake_transcribe's output is deterministic (word0..word259 at i*0.5s), so
+    # the baseline is known here without ever reading it back through GET.
+    npristine = [{"text": f"word{i}", "start": i * 0.5, "end": i * 0.5 + 0.45}
+                for i in range(260)]
+    ncorrected = [dict(w) for w in npristine]
+    ncorrected[10]["text"] = "APICORRECT"
+    r1 = client.put(f"/jobs/{nid}/transcript", json={"words": ncorrected})
+    check("PUT with no prior GET is accepted", r1.status_code == 200, r1.text[:200])
+    r2 = client.put(f"/jobs/{nid}/transcript", json={"words": npristine})
+    check("clearing it — still no GET ever run — is accepted", r2.status_code == 200,
+          r2.text[:200])
+    served = client.get(f"/jobs/{nid}/transcript").json()
+    check("THE CLEAR STICKS ON THE FIRST READ — it must not resurrect the "
+          "legacy file's correction just because save() ran with no load() "
+          "before it, and must not resurrect the API correction either",
+          served["words"][7]["text"] == "word7"
+          and served["words"][10]["text"] == "word10",
+          str(served["words"][7:11]))
 
     from qatf.core.types import Word as _W
     from qatf.jobs import worker as _worker
@@ -325,7 +402,28 @@ with TestClient(app) as client:
     section("output sizes come from the record, not the filesystem")
     # to_response used to stat() every output on every read, which measured 75%
     # of GET /jobs and scaled with the job count on the endpoint clients poll.
-    rec = json.loads((SETTINGS.data_dir / jid / "job.json").read_text(encoding="utf-8"))
+    # The record now lives in qatf.db, not job.json, so it is read and rewritten
+    # through the database directly here rather than through the filesystem.
+    import sqlite3 as _sqlite3_rec
+
+    def _read_doc(job_id: str) -> dict:
+        con = _sqlite3_rec.connect(SETTINGS.data_dir / "qatf.db")
+        try:
+            return json.loads(con.execute(
+                "SELECT doc FROM jobs WHERE id=?", (job_id,)).fetchone()[0])
+        finally:
+            con.close()
+
+    def _write_doc(job_id: str, doc: dict) -> None:
+        con = _sqlite3_rec.connect(SETTINGS.data_dir / "qatf.db")
+        try:
+            con.execute("UPDATE jobs SET doc=? WHERE id=?",
+                       (json.dumps(doc, ensure_ascii=False), job_id))
+            con.commit()
+        finally:
+            con.close()
+
+    rec = _read_doc(jid)
     check("worker recorded a size per rendered clip",
           set(rec["output_sizes"]) == set(rec["outputs"]) and rec["outputs"],
           str(rec.get("output_sizes")))
@@ -342,17 +440,17 @@ with TestClient(app) as client:
           f"{after} vs {listed[0]['size_bytes']}")
     victim.write_bytes(kept)
     # a record written before output_sizes existed must still report the truth
-    legacy = store_for_legacy = None
     legacy_id = client.post("/jobs", json={"path": "talk.mp4", "auto_render": False,
                                            "device": "cpu"}).json()["id"]
     wait(client, legacy_id, {"planned", "failed", "done"})
-    lp = SETTINGS.data_dir / legacy_id / "job.json"
-    rec2 = json.loads(lp.read_text(encoding="utf-8"))
     (SETTINGS.data_dir / legacy_id / "clips").mkdir(parents=True, exist_ok=True)
     (SETTINGS.data_dir / legacy_id / "clips" / "99-legacy.mp4").write_bytes(b"x" * 4096)
+    rec2 = _read_doc(legacy_id)
     rec2["outputs"] = ["99-legacy.mp4"]
     rec2.pop("output_sizes", None)
-    lp.write_text(json.dumps(rec2), encoding="utf-8")
+    _write_doc(legacy_id, rec2)
+    # a fresh store reads whatever is in the database now, same as the running
+    # one would — there is no in-memory cache left to go stale between them.
     app2 = create_app(SETTINGS)
     with TestClient(app2) as c2:
         legacy = c2.get(f"/jobs/{legacy_id}").json()["outputs"]
@@ -491,6 +589,7 @@ with TestClient(app) as client:
     check("empty plan rejected",
           client.put(f"/jobs/{jid}/plan", json={"clips": []}).status_code == 422)
 
+    settle(client)  # let any orphaned background job from the checks above finish
     models_before = len(SEEN_MODELS)
     r = client.post(f"/jobs/{jid}/render")
     check("render accepted", r.status_code == 202, str(r.status_code))
@@ -567,5 +666,85 @@ with TestClient(app) as client:
     check("jobs reloaded from disk", store.get(jid) is not None)
     check("reloaded job keeps terminal state", store.get(jid).state == "done")
     store.shutdown()
+
+    section("sqlite persistence")
+    import sqlite3 as _sqlite3
+
+    _dbp = SETTINGS.data_dir / "qatf.db"
+    check("the store keeps its records in one database file", _dbp.exists(),
+          str(_dbp))
+    _con = _sqlite3.connect(_dbp)
+    _rows = _con.execute("SELECT count(*) FROM jobs").fetchone()[0]
+    check("jobs are rows, not files", _rows > 0, str(_rows))
+
+    # The old version of this check only confirmed an index NAMED
+    # ix_jobs_state existed in sqlite_master — true even if `list()` were
+    # rewritten to fetch every row and filter in Python (the exact regression
+    # ix_jobs_state exists to prevent), since nothing there asks whether any
+    # query actually USES the index. Capture the real SQL `JobStore.list()`
+    # runs via a trace callback — not a hand-copied string, the literal query
+    # the store executes — then ask the query planner what it did with it.
+    # That is the only way to prove the index is load-bearing rather than
+    # merely present.
+    from qatf.core import db as _db
+
+    _store = app.state.store
+    _store_con = _db.connect(_store.db_path)
+    _captured: list[str] = []
+    _store_con.set_trace_callback(lambda sql: _captured.append(sql))
+    try:
+        _store.list(state="planned")
+    finally:
+        _store_con.set_trace_callback(None)
+    _state_query = next((s for s in _captured if "FROM jobs" in s and "WHERE" in s), None)
+    _plan = ([tuple(r) for r in
+              _store_con.execute("EXPLAIN QUERY PLAN " + _state_query).fetchall()]
+             if _state_query else [])
+    check("?state= has an index to use, rather than scanning every record",
+          _state_query is not None
+          and any("SEARCH jobs USING INDEX ix_jobs_state" in (r[-1] or "") for r in _plan),
+          f"query={_state_query!r} plan={_plan}")
+
+    # The failure this whole change exists to remove. A record truncated by a
+    # crash used to be dropped SILENTLY by _recover's bare `continue`, so the
+    # job vanished with no error anywhere.
+    #
+    # This check used to be `SELECT count(*) FROM jobs WHERE doc IS NULL`, but
+    # `doc` is declared TEXT NOT NULL in the schema (qatf/core/db.py) — sqlite
+    # rejects a NULL insert into that column outright, so the query could never
+    # return non-zero. The check could not fail, which means it was measuring
+    # nothing (the same reason this project asserts its render control FAILS:
+    # see CLAUDE.md's working agreements). Prove the actual property instead:
+    # open a real transaction, insert a row, blow up before it commits, and
+    # confirm the row never landed — through a connection `qatf.core.db`'s
+    # thread-local cache never touches, so there is no cached-handle shortcut
+    # making a torn write look consistent.
+    import uuid
+
+    from qatf.core import db
+
+    class _SimulatedCrash(Exception):
+        pass
+
+    _torn_id = "torn-" + uuid.uuid4().hex[:12]
+    try:
+        with db.transaction(_dbp) as _tcon:
+            _tcon.execute(
+                "INSERT INTO jobs (id, state, created_at, updated_at, doc) "
+                "VALUES (?,?,?,?,?)",
+                (_torn_id, "queued", "2026-01-01T00:00:00", "2026-01-01T00:00:00",
+                 "{}"),
+            )
+            raise _SimulatedCrash("crash mid-write, before commit")
+    except _SimulatedCrash:
+        pass
+
+    _fresh = _sqlite3.connect(_dbp)  # bypasses db.connect()'s per-thread cache
+    _found = _fresh.execute(
+        "SELECT count(*) FROM jobs WHERE id=?", (_torn_id,)).fetchone()[0]
+    _fresh.close()
+    check("no record is half-written — a transaction either lands or does not",
+          _found == 0, f"found {_found} rows for the row that never committed")
+    _con.close()
 
 raise SystemExit(report())

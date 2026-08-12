@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir -e ".[all]"
 # `resolve_device()` picks cuda and /healthz reports `transcribe_device: cuda`,
 # and then the FIRST ENCODE dies with `Library libcublas.so.12 is not found`.
 # faster-whisper constructs the model lazily, so nothing fails until minutes
-# into a job — the exact two-layer trap `load_model` documents.
+# into a job — the exact two-layer trap `pipeline.asr.transcribe` documents
+# (its try/except wraps construction AND the first encode for this reason).
 #
 # Installed as separate wheels rather than switching to an nvidia/cuda base
 # image: they are the only pieces CTranslate2 links against, and the slim base

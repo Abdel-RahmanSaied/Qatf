@@ -47,8 +47,8 @@ def baseline_words(transcript, opts: dict) -> tuple[list[Word], int]:
     return words, blanked
 
 
-def caption_words(transcript, opts: dict,
-                  work: Path | None = None) -> tuple[list[Word], int, int, int]:
+def caption_words(transcript, opts: dict, work: Path | None = None,
+                  job_id: str | None = None) -> tuple[list[Word], int, int, int]:
     """The text that actually gets burned in: fixups, then per-word corrections.
 
     Returns (words, blanked, corrections applied, corrections gone stale).
@@ -58,12 +58,22 @@ def caption_words(transcript, opts: dict,
     exactly the same text `run_pipeline` did.
 
     Order matters: fixups are a global rule, corrections are a specific override,
-    so a correction wins on the word it names."""
+    so a correction wins on the word it names.
+
+    `job_id` is the overlay's scope (see `pipeline.edits.load`) and is required
+    whenever `work` is — both name the same job, just at different layers.
+    Enforced, not just documented: `edits.load(work, None)` would not raise —
+    SQLite would happily bind NULL and match zero rows, which reads as "no
+    corrections for this job" instead of the caller bug it actually is, and
+    that would stay silent until someone noticed a job's corrections never
+    took effect."""
     words, blanked = baseline_words(transcript, opts)
     if work is None:
         return words, blanked, 0, 0
+    if not job_id:
+        raise ValueError("caption_words: job_id is required whenever work is given")
     words, applied, stale = pipeline.edits.apply(
-        words, pipeline.edits.load(pipeline.edits.path(work)))
+        words, pipeline.edits.load(work, job_id))
     return words, blanked, applied, len(stale)
 
 
@@ -93,7 +103,7 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
     )
     if not transcript:
         raise NoSpeechFound("no speech found — nothing to clip")
-    words, blanked, _, _ = caption_words(transcript, opts, work)
+    words, blanked, _, _ = caption_words(transcript, opts, work, job_id)
     # `cli/runner.py` logs both of these after the same call; `warnings()` had
     # no other caller, so a job run over `POST /jobs` logged neither and a
     # repeated-token repair or a bad timing was invisible on the server side —
@@ -153,7 +163,8 @@ def run_render(store: JobStore, job_id: str) -> None:
     transcript = store.transcript_for(job)
     if transcript is None:
         raise EmptyPlan("job has no transcript to caption from")
-    words, _, _, _ = caption_words(transcript, job.options, job.work_dir(store.root))
+    words, _, _, _ = caption_words(transcript, job.options,
+                                   job.work_dir(store.root), job_id)
     render_plan(store, job_id, words, clips)
 
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -29,7 +30,7 @@ from _harness import ROOT  # noqa: F401  — puts the project root on sys.path
 from qatf.core.errors import CommandFailed
 from qatf.core.types import Word, words_from_dicts
 from qatf.core.utils import binary, probe_duration
-from qatf.pipeline import fixups, health
+from qatf.pipeline import asr, fixups, health
 from qatf.pipeline.health import _TRAILING
 
 #: Errors before this point can be flattered by a seed that decays. Reported
@@ -41,8 +42,67 @@ def load_terms(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))["terms"]
 
 
-def load_words(path: Path) -> list[Word]:
-    return words_from_dicts(json.loads(path.read_text(encoding="utf-8"))["words"])
+def load_words(source: str | Path) -> list[Word]:
+    """A transcript from either store.
+
+    `db:<database path>#<key>` reads a row from that SQLite database (the same
+    database `qatf.pipeline.asr` writes); anything else is treated as a plain
+    words-*.json path, exactly as before. Both forms have to keep working: the
+    stage-2 sweep recorded in docs/quality.md compares runs SIDE BY SIDE as
+    files, and a measurement tool that can only read the live database could
+    never compare today's run against a `sweep-*.json` taken last week — several
+    of which sit in the repo root from a real measurement session.
+
+    The `db:` branch goes through `asr.read_cache` rather than querying
+    `transcripts` directly — a hand-rolled `SELECT` was tried first and
+    dropped two things `read_cache` already handles: it falls back to
+    importing a legacy `words-*.json` sitting next to a not-yet-created
+    `qatf.db` (exactly the shape `run-fixed/.work/` is in — a transcript file
+    with no database beside it, which the plain-path branch below has always
+    read directly), and it closes its own connection when it is done (see
+    `read_cache`'s own docstring on why: an open handle blocks
+    `shutil.rmtree` on Windows). Duplicating the query here would have to
+    duplicate both, and the first one silently regresses exactly the fixture
+    this task verifies against."""
+    text = str(source)
+    if text.startswith("db:"):
+        target, _, key = text[3:].partition("#")
+        db_file = Path(target)
+        # Same legacy filename `read_cache` itself checks for (`work /
+        # f"{key}.json"`, `work` here being `db_file.parent`) — computed here
+        # too so the guard below can tell "nothing to read" apart from "the
+        # database doesn't exist YET, but importing it is about to create it
+        # correctly", which are different situations with the same
+        # `db_file.is_file()` answer.
+        legacy = db_file.parent / f"{key}.json"
+        if not db_file.is_file() and not legacy.is_file():
+            # Checked BEFORE calling read_cache, not left to it: `db.connect`
+            # creates the database file (and its parent directory) on first
+            # use, as a side effect of opening a connection, regardless of
+            # whether anything is actually there to read. A scoring run given
+            # a bad path is a usage error, not licence to create a stray,
+            # empty qatf.db on disk — a read-only tool must leave no trace
+            # behind it. Same message shape as _require_readable below, for
+            # the same reason: a typo here should read as exit 2 (usage
+            # error), not exit 1 (a real scoring regression).
+            #
+            # A database that does not exist YET but has a legacy transcript
+            # sitting next to it is NOT rejected here — that is exactly the
+            # shape `run-fixed/.work/` is in (a `words-*.json` with no
+            # `qatf.db` beside it, which the plain-path branch below has
+            # always read directly), and `read_cache` creating the database
+            # while importing that file is the correct, intended write, not
+            # the stray one this check exists to prevent.
+            print(f"error: database not found: {db_file}", file=sys.stderr)
+            raise SystemExit(2)
+        transcript = asr.read_cache(db_file.parent, key)
+        if transcript is None:
+            print(f"error: no transcript {key!r} in {db_file}", file=sys.stderr)
+            raise SystemExit(2)
+        return transcript.words
+    return words_from_dicts(
+        json.loads(_require_readable(Path(text), "input transcript")
+                   .read_text(encoding="utf-8"))["words"])
 
 
 def delivered_words(words: list[Word], fixups_path: Path | None = None) -> list[Word]:
@@ -200,11 +260,21 @@ def speech_intervals(wav: Path, noise_db: float = -30.0,
             f"which reads as a clean result rather than a failed measurement."
         )
 
-    out = subprocess.run(
-        [binary("ffmpeg"), "-hide_banner", "-nostats", "-i", str(wav),
-         "-af", f"silencedetect=n={noise_db}dB:d={min_silence}", "-f", "null", "-"],
-        capture_output=True, text=True,
-    ).stderr
+    cmd = [binary("ffmpeg"), "-hide_banner", "-nostats", "-i", str(wav),
+           "-af", f"silencedetect=n={noise_db}dB:d={min_silence}", "-f", "null", "-"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        # The bug this guards against: a bad path, an unsupported codec, or a
+        # missing binary all mean ffmpeg emits no silence_start/silence_end
+        # lines at all — indistinguishable from "the file is one long speech
+        # span" to the parser below. That reads as a clean measurement, on the
+        # one metric whose entire job is to be the guard on every other
+        # number this module reports. `probe_duration`'s own handling just
+        # above already refuses to guess for the same reason; this closes the
+        # other half of the same function. Shape matches `qatf.core.utils.run`.
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-15:])
+        raise CommandFailed(f"command failed: {shlex.join(cmd)}\n{tail}")
+    out = proc.stderr
 
     silences: list[tuple[float, float]] = []
     start = None
@@ -341,18 +411,26 @@ if __name__ == "__main__":
     if not args:
         print(__doc__)
         raise SystemExit(2)
-    path = _require_readable(Path(args[0]), "input transcript")
+    # Not validated with `_require_readable` here, unlike --audio/--baseline
+    # below: args[0] may be a `db:<database>#<key>` string rather than a
+    # filesystem path, and `load_words` does its own validation for both
+    # forms (a real `_require_readable` call for the plain-file case, an
+    # explicit exit-2 for a missing DB key).
+    source = args[0]
     audio = (_require_readable(Path(args[args.index("--audio") + 1]), "--audio file")
              if "--audio" in args else None)
     base = (_require_readable(Path(args[args.index("--baseline") + 1]), "--baseline file")
             if "--baseline" in args else None)
 
-    words = load_words(path)
+    words = load_words(source)
     terms = load_terms(Path(__file__).resolve().parent / "fixtures" / "ar-terms.json")
     whole = score(words, terms)
     late = score(words, terms, since=DECAY_SECONDS)
 
-    print(f"\n{path.name}")
+    # `Path(...).name` on a `db:` string would just be its own tail, not a
+    # useful label — print the source as given for that form.
+    label = source if source.startswith("db:") else Path(source).name
+    print(f"\n{label}")
     print(_fmt(whole, "whole file"))
     print(_fmt(late, f"past {DECAY_SECONDS:.0f}s"))
 

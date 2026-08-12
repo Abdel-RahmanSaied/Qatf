@@ -210,8 +210,8 @@ Use both. Fixups run first, so a correction wins on the word it names.
 
 ### Corrections are an overlay
 
-Stored at `<work>/word-edits.json`, beside the transcript cache and never inside
-it, for two reasons:
+Stored in the `word_edits` table, in the same `<work>/qatf.db` as the transcript
+cache but never inside the cached row itself, for two reasons:
 
 - re-transcribing must not silently discard them
 - the cache has to keep saying what Whisper *actually* produced, or the
@@ -439,36 +439,70 @@ a half-truth.
 
 ```text
 $QATF_DATA_DIR/
+  qatf.db                        job records (`jobs`) and cancel flags (`cancels`)
   <job-id>/
-    job.json                       the record — reloaded at startup
     source/                        uploads only
     .work/
       audio.wav                    or audio-denoised.wav
-      words-<model>-<lang>.json    the transcript cache — what Whisper produced
-      word-edits.json              per-word corrections, applied on read
+      qatf.db                      this job's own database — transcripts,
+                                    word_edits, detections
       *.ass                        generated subtitles
     clips/
       01-slug.mp4
 ```
 
-Deleting a job removes the whole directory, cached transcript included.
+Job records and cancel flags are rows in the root `qatf.db`, not a JSON file per
+job. `GET /jobs` and `GET /jobs/{id}` query it on every call — there is no
+in-memory job dict — which is what keeps them correct with more than one writer.
+The transcript cache, the per-word correction overlay and the face-detection
+cache are rows in a *separate* `qatf.db` inside each job's own `.work/`
+directory, so a job stays self-contained and deleting it does not touch any
+other job's data. See
+[quality.md](quality.md#the-sqlite-move-read-cost-roughly-doubled-and-stayed-inside-budget)
+for what the move cost and [`core/db.py`](../qatf/core/db.py) for the schema.
+
+Rendered MP4s stay on the filesystem under `clips/` — SQLite is for records, not
+video. A pre-SQLite `job.json`, `words-<model>-<lang>.json`, `word-edits.json` or
+`faces-*.json` is imported into the relevant database the first time it is read
+and then **left on disk, never deleted** — an upgrade stays reversible by
+checking out the previous commit.
+
+`plan.json` stays a real file, but only on the CLI side (`--plan out/plan.json`,
+`--plan-only`): the API never writes one, because a job's plan is just the
+`clips` field on its own record. `--plan` is the documented hand-edit round trip
+for a human editing a file in `$EDITOR`, which is exactly the case a database row
+does not help — see [the hand-edit round trip](#the-hand-edit-round-trip) above
+for the same round trip over HTTP.
+
+Deleting a job removes the whole directory — including its `.work/qatf.db` and
+everything cached in it — plus the job's row and cancel flag from the root
+`qatf.db`.
 
 ---
 
 ## Limits to know before deploying
 
-1. **Jobs do not survive a restart.** State is a JSON file per job, but the
+1. **Jobs do not survive a restart.** The record is a row in `qatf.db`, but the
    worker is an in-process thread pool. On startup anything left running is
-   marked `failed: interrupted by a server restart`.
+   marked `failed: interrupted by a server restart` — the row survives, nothing
+   is left holding it.
 2. **Cancellation is cooperative.** The flag is checked between stages and
    between clips. A cancel during stage 2 on a long file lands whenever
    transcription finishes — not straight away. Poll for `state: cancelled` to
    know it actually stopped.
 3. **`QATF_WORKERS` defaults to 1.** Two concurrent `large-v3` loads fight over
    the same GPU. Raise it only for render-only work.
+4. **WAL makes concurrent writes safe. It does not make `QATF_WORKERS` safe
+   across processes.** Two server processes pointed at the same
+   `QATF_DATA_DIR` would each pull queued jobs onto their own pool and run the
+   same job twice — SQLite stops a write from tearing, it does not stop two
+   workers from claiming the same row. Job claiming — an atomic
+   `UPDATE ... WHERE state='queued'` that hands exactly one worker the job — is
+   **not implemented**. Run one server process per `QATF_DATA_DIR` until it is;
+   scaling beyond one process needs that first.
 
 **The API has never run against a real video, a real GPU or a real API key.**
-Every stage boundary is exercised by `tests/smoke_api.py` (91 checks), which
+Every stage boundary is exercised by `tests/smoke_api.py` (131 checks), which
 fakes `pipeline.audio.run`, `pipeline.encode.run`, `pipeline.asr.transcribe` and
 `pipeline.select.pick_clips` — so it proves nothing about those four. The CLI has
 run the whole thing end to end; the server has not.

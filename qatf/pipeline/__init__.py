@@ -27,9 +27,11 @@ from ..core.types import Clip, Detection, Track, Transcript, Word, track_to_dict
 from . import asr, audio, captions, cuts, detect, edits, encode, fixups, framing, health, select
 from .asr import (
     DEVICES,
+    cache_key,
     cache_path,
     compute_type_for,
     cuda_device_count,
+    db_path,
     read_cache,
     resolve_device,
     transcribe,
@@ -47,7 +49,8 @@ from .select import build_transcript_blocks, parse_response, pick_clips
 __all__ = [
     "asr", "audio", "captions", "cuts", "detect", "encode", "framing", "select",
     "extract_audio", "audio_path", "DENOISE_FILTER", "fixups", "edits", "health",
-    "transcribe", "transcribe_cached", "cache_path", "read_cache", "write_cache",
+    "transcribe", "transcribe_cached", "cache_key", "cache_path", "db_path",
+    "read_cache", "write_cache",
     "DEVICES", "resolve_device", "cuda_device_count", "compute_type_for",
     "pick_clips", "build_transcript_blocks", "parse_response",
     "snap", "words_in", "within_duration", "plan_clips",

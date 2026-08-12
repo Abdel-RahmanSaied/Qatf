@@ -39,6 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import score_transcript
 from _harness import check, report, section
 
 from qatf.core.errors import CommandFailed, FFmpegNotFound
@@ -237,6 +238,34 @@ finally:
         os.environ["QATF_FFMPEG"] = _saved
 check("a missing ffmpeg is FFmpegNotFound, not a raw FileNotFoundError", _typed)
 
+# ------------------------------------------------------- score_transcript.py
+section("score_transcript.speech_intervals — a failed ffmpeg must raise")
+# speech_intervals used to trust silencedetect's stderr unconditionally: no
+# silence_start/silence_end lines parses as ZERO silences, so a failed ffmpeg
+# call (bad path, unsupported codec, missing binary) read as the WHOLE file
+# being speech — a failed measurement rendering as a clean result, on exactly
+# the metric that exists to catch that shape of bug (uncovered_speech leans on
+# this being honest). Lives here, not in smoke_pipeline.py, because it needs a
+# real ffmpeg to actually fail against.
+_bad_audio = WORK / "not-audio.wav"
+_bad_audio.write_bytes(b"not a real wav file, just plain bytes" * 200)
+# probe_duration is checked first in speech_intervals and already raises on
+# its own failure — a garbage file usually fails there too, which would make
+# this check pass for the WRONG reason (the pre-existing duration guard, not
+# the silencedetect-returncode check this is actually verifying). Fake a
+# valid duration so the run reaches the real ffmpeg silencedetect call, which
+# then genuinely fails on non-audio bytes.
+_real_probe_duration = score_transcript.probe_duration
+score_transcript.probe_duration = lambda *a, **k: 5.0
+try:
+    score_transcript.speech_intervals(_bad_audio)
+    check("speech_intervals raises rather than reporting a full-file speech span",
+          False, "returned a speech list instead of raising")
+except CommandFailed:
+    check("speech_intervals raises rather than reporting a full-file speech span", True)
+finally:
+    score_transcript.probe_duration = _real_probe_duration
+
 # ---------------------------------------------------------------- fixture B
 section("fixture B — real face, full stage 4b chain")
 try:
@@ -320,8 +349,8 @@ else:
         ff("-f", "lavfi", "-i", f"color=c=0x101010:s={SRC_W}x{SRC_H}:d=2:r=30",
            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(other))
         check("a second video in the same work directory gets its own cache",
-              detect.cache_path(WORK / "b", other, detector, "balanced")
-              != detect.cache_path(WORK / "b", face_vid, detector, "balanced"))
+              detect.cache_key(other, detector, "balanced")
+              != detect.cache_key(face_vid, detector, "balanced"))
 
         track_b = framing.solve(dets_b, clip_b, crop_w, detector=detector,
                                 tier="balanced")
