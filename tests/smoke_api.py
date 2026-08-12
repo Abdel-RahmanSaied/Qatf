@@ -190,9 +190,24 @@ with TestClient(app) as client:
               ("/jobs/{job_id}", "delete"), ("/jobs/{job_id}/cancel", "post"),
               ("/jobs/{job_id}/plan", "put"), ("/jobs/{job_id}/render", "post")]))
     err_ref = "#/components/schemas/ErrorResponse"
-    check("errors are typed, not untyped bodies",
-          spec["paths"]["/jobs"]["post"]["responses"]["403"]
-              ["content"]["application/json"]["schema"]["$ref"] == err_ref)
+
+    def typed_as_error(response: dict) -> bool:
+        schema = (response.get("content", {})
+                  .get("application/json", {}).get("schema", {}))
+        return schema.get("$ref") == err_ref
+
+    # EVERY declared failure, not one spot-check. This assertion used to look at
+    # exactly one response — POST /jobs 403 — and passed while POST
+    # /jobs/{id}/cancel declared its 409 inline as a bare description with no
+    # `model`, so that code reached the schema with no ErrorResponse $ref and a
+    # generated client had no error type for it. A single sample cannot see a
+    # route that hand-rolls its own declaration; the sweep can, and it is the
+    # sweep that makes `qatf/api/openapi.py` the only way to declare a failure.
+    untyped = sorted(f"{m.upper()} {p} -> {code}"
+                     for p, m, op in ops
+                     for code, response in op.get("responses", {}).items()
+                     if code[:1] in ("4", "5") and not typed_as_error(response))
+    check("every declared failure is typed as ErrorResponse", not untyped, str(untyped))
     # merge() joins descriptions rather than letting the last group win — two
     # different 409s on PUT /plan must both survive
     plan_409 = spec["paths"]["/jobs/{job_id}/plan"]["put"]["responses"]["409"]["description"]
@@ -746,5 +761,138 @@ with TestClient(app) as client:
     check("no record is half-written — a transaction either lands or does not",
           _found == 0, f"found {_found} rows for the row that never committed")
     _con.close()
+
+section("url sources — stage 0 and the caption path")
+# `fetch.download` is faked at the same depth as ffmpeg and Whisper: the network
+# is the only thing stubbed, so the URL boundary, the job state machine, the
+# caption parse, the cache key split and the bounded snap tail all run for real.
+from qatf.pipeline import fetch as _fetch  # noqa: E402
+
+
+def _caption_doc(tokens: int = 260, step_ms: int = 500, word_level: bool = True) -> dict:
+    """A json3 document shaped like YouTube's: 4 tokens per event, the first
+    segment carrying no offset (which means zero, not missing)."""
+    events: list[dict] = [{"tStartMs": 0, "dDurationMs": tokens * step_ms, "id": 1}]
+    for start in range(0, tokens, 4):
+        chunk = range(start, min(start + 4, tokens))
+        segs = []
+        for position, index in enumerate(chunk):
+            seg: dict = {"utf8": f"word{index}"}
+            if position and word_level:
+                seg["tOffsetMs"] = position * step_ms
+            segs.append(seg)
+        events.append({"tStartMs": start * step_ms, "dDurationMs": 4 * step_ms,
+                       "segs": segs})
+    return {"events": events}
+
+
+NEXT_CAPTIONS: list = [_caption_doc()]
+
+
+def fake_download(url, dest, *, language=None, want_captions=True):
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    video = dest / "source.mp4"
+    video.write_bytes(b"\0" * 1024)
+    captions = None
+    if want_captions and NEXT_CAPTIONS[0] is not None:
+        captions = dest / "source.ar-orig.json3"
+        captions.write_text(json.dumps(NEXT_CAPTIONS[0]), encoding="utf-8")
+    return _fetch.Fetched(video=video, captions=captions, title="a title",
+                          duration=130.0, video_id="vid", language=language)
+
+
+_fetch.download = fake_download
+URL = "https://youtu.be/j5HVqFaa2Ts"
+
+with TestClient(create_app(settings=SETTINGS)) as client:
+    # -- the boundary, over HTTP -------------------------------------------
+    for bad, why in [("file:///etc/passwd", "file scheme"),
+                     ("https://evil.example/x", "host off the allowlist"),
+                     ("https://youtube.com@evil.example/x", "userinfo")]:
+        r = client.post("/jobs/url", json={"url": bad})
+        check(f"POST /jobs/url refuses {why} with 403", r.status_code == 403,
+              f"{r.status_code} {r.text[:90]}")
+        check(f"the {why} refusal does not echo the url back",
+              "evil" not in r.text and "passwd" not in r.text, r.text[:90])
+
+    # -- the happy path: captions replace stage 2 --------------------------
+    NEXT_CAPTIONS[0] = _caption_doc()
+    r = client.post("/jobs/url", json={
+        "url": URL, "language": "ar", "auto_render": False,
+        "transcript_source": "captions"})
+    check("POST /jobs/url accepts a youtube url", r.status_code == 202, r.text[:120])
+    job_id = r.json()["id"]
+    check("the job records its source and url", r.json()["source"] == "youtube"
+          and r.json()["url"] == URL, json.dumps(r.json())[:140])
+
+    job = wait(client, job_id, {"planned", "failed"})
+    check("a url job reaches planned", job["state"] == "planned",
+          f"{job['state']} {job.get('error')}")
+
+    body = client.get(f"/jobs/{job_id}/transcript").json()
+    check("the transcript came from the caption track",
+          body["timing_source"] == "captions", json.dumps(body)[:140])
+    check("and carries every token", body["word_count"] == 260,
+          str(body["word_count"]))
+    check("a caption job reports no transcription device",
+          client.get(f"/jobs/{job_id}").json()["device"] is None)
+
+    # The property the design turns on, end to end: with bounded ends the cut
+    # closes exactly ON a word boundary rather than SNAP_TAIL past it.
+    plan = client.get(f"/jobs/{job_id}/plan").json()
+    starts = {round(w["start"], 6) for w in body["words"]}
+    check("every clip ends exactly on a word onset — no tail past the bound",
+          all(round(c["end"], 6) in starts for c in plan),
+          str([c["end"] for c in plan]))
+
+    # ...and the round trip re-snaps with the SAME tail, so it cannot drift.
+    again = client.put(f"/jobs/{job_id}/plan",
+                       json={"clips": plan, "snap": True}).json()
+    check("re-snapping a caption plan is a fixed point",
+          [(c["start"], c["end"]) for c in again] ==
+          [(c["start"], c["end"]) for c in plan],
+          str([(c["start"], c["end"]) for c in again][:2]))
+
+    # -- transcript_source=whisper ignores the captions entirely -----------
+    r = client.post("/jobs/url", json={
+        "url": URL, "language": "ar", "auto_render": False,
+        "transcript_source": "whisper"})
+    whisper_id = r.json()["id"]
+    job = wait(client, whisper_id, {"planned", "failed"})
+    check("transcript_source=whisper reaches planned", job["state"] == "planned",
+          f"{job['state']} {job.get('error')}")
+    check("transcript_source=whisper never reads the caption track",
+          client.get(f"/jobs/{whisper_id}/transcript").json()["timing_source"] == "asr")
+
+    # -- a line-level track falls back to Whisper, loudly, without failing --
+    NEXT_CAPTIONS[0] = _caption_doc(word_level=False)
+    r = client.post("/jobs/url", json={
+        "url": URL, "language": "ar", "auto_render": False,
+        "transcript_source": "captions"})
+    fallback_id = r.json()["id"]
+    job = wait(client, fallback_id, {"planned", "failed"})
+    check("a line-level caption track does not fail the job",
+          job["state"] == "planned", f"{job['state']} {job.get('error')}")
+    check("it falls back to Whisper rather than importing unusable timings",
+          client.get(f"/jobs/{fallback_id}/transcript").json()["timing_source"] == "asr")
+
+    # -- no captions at all -------------------------------------------------
+    NEXT_CAPTIONS[0] = None
+    r = client.post("/jobs/url", json={
+        "url": URL, "language": "ar", "auto_render": False,
+        "transcript_source": "auto"})
+    none_id = r.json()["id"]
+    job = wait(client, none_id, {"planned", "failed"})
+    check("a video with no captions still completes via Whisper",
+          job["state"] == "planned"
+          and client.get(f"/jobs/{none_id}/transcript").json()["timing_source"] == "asr",
+          f"{job['state']} {job.get('error')}")
+
+    # -- the two cache key shapes cannot collide ---------------------------
+    check("a caption transcript and a whisper transcript live in different rows",
+          pipeline.asr.subs_cache_key("ar") != pipeline.cache_key("large-v3", "ar")
+          and pipeline.asr.subs_cache_key("ar").startswith("subs-"),
+          pipeline.asr.subs_cache_key("ar"))
 
 raise SystemExit(report())

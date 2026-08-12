@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 
+from ... import pipeline
 from ...core.config import Settings
 from ...core.constants import VIDEO_SUFFIXES
 from ...core.errors import UnsupportedSource, UploadTooLarge
@@ -29,8 +30,12 @@ from ..deps import (
     to_response,
 )
 from ..openapi import (
+    ALREADY_FINISHED,
     BAD_MEDIA,
     BAD_OPTIONS,
+    BAD_URL,
+    NO_FETCHER,
+    NOT_FETCHABLE,
     NOT_FOUND,
     OUTSIDE_ROOT,
     RUNNING,
@@ -38,7 +43,7 @@ from ..openapi import (
     TOO_LARGE,
     merge,
 )
-from ..schemas import JobCreate, JobList, JobOptions, JobResponse
+from ..schemas import JobCreate, JobFromUrl, JobList, JobOptions, JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -144,6 +149,54 @@ async def create_from_upload(
     return to_response(store, job)
 
 
+@router.post(
+    "/url",
+    response_model=JobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="createJobFromUrl",
+    summary="Start a job from a video URL",
+    response_description="The job, in state `queued`. Poll `GET /jobs/{job_id}`.",
+    responses=merge(BAD_URL, NOT_FETCHABLE, NO_FETCHER),
+)
+def create_from_url(body: JobFromUrl,
+                    store: JobStore = Depends(get_store)) -> JobResponse:
+    """Start a job from a URL the server downloads.
+
+    **Only YouTube hosts are accepted, and that is a security boundary rather
+    than a product limit.** The fetcher behind this endpoint reads `file://` and
+    carries extractors for a thousand sites, so an open URL field would let a
+    caller make the server read local files and issue arbitrary outbound
+    requests. Anything off the allowlist is `403`, exactly as a path escaping
+    `QATF_MEDIA_ROOT` is.
+
+    Fetching is stage 0 and gets its own state (`fetching`), because it is the
+    one stage whose duration depends on somebody else's network.
+
+    **Captions.** With `transcript_source: auto` (the default) or `captions`,
+    the video's caption track is used instead of transcribing when it carries
+    per-word timings — seconds instead of minutes, and no GPU. Read what that
+    costs before relying on it: a caption track gives one instant per token and
+    **no word ends**, so the transcript comes back with `timing_source:
+    captions` and stage 4 stops extending cuts past a bound. A hand-uploaded
+    caption track is line-level and is refused for this purpose; the job falls
+    back to Whisper and says so rather than failing.
+
+    You only get what the platform has. If the video has captions disabled, this
+    behaves exactly like `POST /jobs`.
+    """
+    # Validate BEFORE creating the job, so a refused URL is a synchronous 403
+    # rather than a 202 and a job that fails on a worker thread minutes later.
+    # `fetch.download` validates again — it has to, because the CLI reaches it
+    # without passing through here — but a boundary that only refuses
+    # asynchronously still hands the caller an id, creates a directory, and
+    # turns a refusal into something you have to poll for.
+    pipeline.validate_url(body.url)
+    job = store.create(Path("<pending fetch>"), source="youtube",
+                       options=body.model_dump(exclude={"url"}), url=body.url)
+    store.submit_pipeline(job.id)
+    return to_response(store, job)
+
+
 @router.get(
     "",
     response_model=JobList,
@@ -216,7 +269,7 @@ def delete_job(job_id: str, store: JobStore = Depends(get_store)) -> None:
     summary="Request cancellation",
     response_description="The job, with the cancel flag set. State changes to "
                          "`cancelled` when the worker next reaches a checkpoint.",
-    responses=merge(NOT_FOUND, {409: {"description": "the job already finished"}}),
+    responses=merge(NOT_FOUND, ALREADY_FINISHED),
 )
 def cancel_job(job_id: str, store: JobStore = Depends(get_store)) -> JobResponse:
     """Cooperative cancel.

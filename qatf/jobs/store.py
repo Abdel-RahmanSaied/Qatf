@@ -153,9 +153,10 @@ class JobStore:
             self._persist(job)
             return job
 
-    def create(self, video: Path, source: str, options: dict) -> Job:
+    def create(self, video: Path, source: str, options: dict, url: str = "") -> Job:
         job_id = uuid.uuid4().hex[:12]
-        job = Job(id=job_id, video=str(video), source=source, options=options)
+        job = Job(id=job_id, video=str(video), source=source, options=options,
+                  url=url)
         job.work_dir(self.root).mkdir(parents=True, exist_ok=True)
         job.out_dir(self.root).mkdir(parents=True, exist_ok=True)
         self._persist(job)
@@ -168,13 +169,19 @@ class JobStore:
         shutil.rmtree(self.root / job_id, ignore_errors=True)
 
     def transcript_for(self, job: Job) -> Transcript | None:
-        """The cached transcript, or None if this job has not got that far."""
+        """The cached transcript, or None if this job has not got that far.
+
+        Prefers the key the job RECORDED over one derived from its options —
+        see `Job.transcript_key`. A job whose captions were unusable fell back
+        to Whisper at runtime, and no reading of `options` can tell you that
+        happened."""
         # fixups are deliberately NOT part of the key — they are applied on read
         # (see worker.caption_words), so editing them must not orphan the cache
-        key = pipeline.cache_key(job.options["whisper"],
-                                 job.options.get("language"),
-                                 job.options.get("initial_prompt"),
-                                 job.options.get("hotwords"))
+        key = job.transcript_key or pipeline.cache_key(
+            job.options["whisper"],
+            job.options.get("language"),
+            job.options.get("initial_prompt"),
+            job.options.get("hotwords"))
         return pipeline.read_cache(job.work_dir(self.root), key)
 
     # -- cancellation -----------------------------------------------------

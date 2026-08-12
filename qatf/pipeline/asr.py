@@ -333,6 +333,25 @@ def cache_key(model_size: str, language: str | None,
     return stem
 
 
+def subs_cache_key(language: str | None, track: str = "orig") -> str:
+    """The cache key for a transcript that came from a CAPTION track.
+
+    A different shape from `cache_key`, not a variant of it, and that is the
+    safety property: `subs-…` can never equal `words-…`, so a caption transcript
+    and a Whisper transcript of the same video cannot land on the same row no
+    matter what the other parameters are. They must not, because their word ENDS
+    mean different things — one is measured, one is an upper bound — and a
+    collision would hand stage 4 a bound while `timing_source` said it was a
+    measurement.
+
+    Deliberately carries no Whisper model: a caption transcript does not depend
+    on one, and putting a model in the key would re-transcribe (re-download,
+    really) every time `--whisper` changed, for a result that cannot differ.
+    `language` is slugified for the same reason it is in `cache_key` — it is
+    caller-supplied and this string reaches a filename on the legacy path."""
+    return f"subs-{slugify(language) if language else 'auto'}-{slugify(track)}"
+
+
 def db_path(work: Path) -> Path:
     """One database per work directory — `<out>/.work/qatf.db` for the CLI,
     `$QATF_DATA_DIR/<job>/.work/qatf.db` for a job."""
@@ -395,8 +414,8 @@ def read_cache(work: Path, key: str) -> Transcript | None:
     try:
         con = db.connect(db_path(work))
         row = con.execute(
-            "SELECT language, language_probability, device, compute_type, words "
-            "FROM transcripts WHERE key=?", (key,)).fetchone()
+            "SELECT language, language_probability, device, compute_type, words, "
+            "timing_source FROM transcripts WHERE key=?", (key,)).fetchone()
         if row is None:
             legacy = Path(work) / f"{key}.json"
             if legacy.is_file():
@@ -410,6 +429,12 @@ def read_cache(work: Path, key: str) -> Transcript | None:
             language_probability=row["language_probability"],
             device=row["device"],
             compute_type=row["compute_type"],
+            # NULL on any row written before the column existed, and every one
+            # of those came from Whisper. Defaulting to "asr" is therefore the
+            # true answer for old rows and the safe one for a corrupt value —
+            # it keeps the full SNAP_TAIL, which is only ever wrong in the
+            # direction of a slightly late cut, never a clipped word.
+            timing_source=row["timing_source"] or "asr",
         )
     finally:
         db.close(db_path(work))
@@ -421,15 +446,17 @@ def write_cache(work: Path, key: str, transcript: Transcript) -> None:
         with db.transaction(db_path(work)) as con:
             con.execute(
                 "INSERT INTO transcripts "
-                "(key, language, language_probability, device, compute_type, words) "
-                "VALUES (?,?,?,?,?,?) "
+                "(key, language, language_probability, device, compute_type, words, "
+                "timing_source) "
+                "VALUES (?,?,?,?,?,?,?) "
                 "ON CONFLICT(key) DO UPDATE SET language=excluded.language, "
                 "language_probability=excluded.language_probability, "
                 "device=excluded.device, compute_type=excluded.compute_type, "
-                "words=excluded.words",
+                "words=excluded.words, timing_source=excluded.timing_source",
                 (key, transcript.language, transcript.language_probability,
                  transcript.device, transcript.compute_type,
-                 json.dumps(words_to_dicts(transcript.words), ensure_ascii=False)),
+                 json.dumps(words_to_dicts(transcript.words), ensure_ascii=False),
+                 transcript.timing_source),
             )
     finally:
         db.close(db_path(work))

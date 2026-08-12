@@ -19,6 +19,8 @@ LTR is unaffected and keeps word-by-word highlighting.
 
 from __future__ import annotations
 
+import functools
+import subprocess
 from pathlib import Path
 
 from ..core.constants import CAPTION_MAX_CHARS, CAPTION_MAX_WORDS, TARGET_H, TARGET_W
@@ -108,6 +110,82 @@ def safe_font(name: str) -> str:
     cleaned = " ".join(name.translate(_STRUCTURAL).replace(",", " ").split())
     cleaned = cleaned.replace("{", "(").replace("}", ")")
     return cleaned[:64] or "Arial"
+
+
+#: Seconds to wait for fontconfig. A host with thousands of fonts takes a moment
+#: on a cold cache, and this sits in preflight where a hang is worse than a
+#: skipped warning.
+FC_LIST_TIMEOUT = 5.0
+
+
+@functools.lru_cache(maxsize=1)
+def installed_fonts() -> frozenset[str] | None:
+    """Every font family fontconfig can see, casefolded — or None.
+
+    **None means "cannot tell", never "missing".** fontconfig is not installed on
+    a stock macOS host, and a warning that fires because the *checker* is absent
+    is a warning people learn to ignore. The rendering host that matters is the
+    Docker image, where fontconfig is present and the installed set is fixed at
+    build time.
+
+    `fc-list` rather than `fc-match`: fc-match always returns something — that IS
+    the fallback behaviour being warned about — so it can never answer whether a
+    family is present. Nor a render probe: that costs an ffmpeg spawn in
+    preflight, and this only has to be good enough to warn.
+
+    Cached for the life of the process. A font installed while a long-running
+    server is up will not be noticed, which is the opposite of the deliberately
+    self-healing `utils.ffmpeg_available` — the difference is what a stale answer
+    costs. A stale ffmpeg probe reports the server unable to work at all; a stale
+    font answer costs one spurious or missing log line, and under Docker the font
+    set cannot change without a new image anyway."""
+    try:
+        out = subprocess.run(["fc-list", ":", "family"], capture_output=True,
+                             text=True, timeout=FC_LIST_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None                      # not installed, or it hung
+    if out.returncode != 0:
+        return None
+    families: set[str] = set()
+    for line in out.stdout.splitlines():
+        # one line per font file; aliases and localised names are comma-separated
+        for alias in line.split(","):
+            alias = alias.strip()
+            if alias:
+                families.add(alias.casefold())
+    return frozenset(families)
+
+
+def font_available(name: str) -> bool | None:
+    """Whether libass will find this family. None when fontconfig cannot say.
+
+    Asks about `safe_font(name)`, not `name`: that is the string that reaches the
+    `Style:` line, so it is the only one libass is ever asked to resolve."""
+    fonts = installed_fonts()
+    if fonts is None:
+        return None
+    return safe_font(name).casefold() in fonts
+
+
+def font_warning(name: str) -> str | None:
+    """A line to log when the requested font is missing, else None.
+
+    A warning and not a refusal, deliberately — unlike `--device cuda` or
+    `--reframe track`, which raise rather than degrade. Those two have a correct
+    alternative the caller can be handed; a missing font does not, and refusing
+    would mean a host with any unusual font name cannot render at all. The cost
+    of being wrong is also asymmetric: libass substituting a face is ugly, not
+    incorrect, whereas refusing an hour-long job over a font name is.
+
+    `is not False` covers True and None together — a host with no fontconfig
+    warns about nothing."""
+    if font_available(name) is not False:
+        return None
+    return (f"font {safe_font(name)!r} is not installed on this host — libass "
+            f"will silently substitute a fallback face rather than fail, and on "
+            f"Arabic that usually renders as tofu. Install the font on the "
+            f"RENDERING host (under the API that is the server, not your "
+            f"machine), or pass a family `fc-list : family` reports.")
 
 
 #: Codepoint ranges whose script is written right-to-left. Arabic and Hebrew are

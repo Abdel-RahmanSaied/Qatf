@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 #: Bumped whenever `_MIGRATIONS` grows. Stored in `PRAGMA user_version`.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Milliseconds a writer waits for a competing writer before raising. Without
 #: it, two threads writing at once surface as `database is locked` rather than
@@ -100,8 +100,21 @@ _SCHEMA_V3 = """
 ALTER TABLE imported ADD COLUMN mtime REAL;
 """
 
+# Do not edit _SCHEMA_V3 either. `transcripts` shipped assuming every row came
+# from Whisper, so it had nowhere to record that a row's word ENDS are upper
+# bounds rather than measurements (a caption track gives one instant per token
+# and no end at all). Without the column a cached caption transcript is
+# indistinguishable from an ASR one on read, and `cuts.tail_for` would extend
+# a cut 0.35s past a bound it must stop at — silently, and only on a warm
+# cache, which is the worst shape a bug can take. ADD COLUMN rewrites nothing
+# already stored; existing rows read back NULL and are treated as "asr", which
+# is exactly what they are.
+_SCHEMA_V4 = """
+ALTER TABLE transcripts ADD COLUMN timing_source TEXT;
+"""
+
 #: index -> the SQL that takes the schema from that version to the next.
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]
 
 _local = threading.local()
 

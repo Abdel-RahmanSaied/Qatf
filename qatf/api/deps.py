@@ -91,6 +91,7 @@ def to_response(store: JobStore, job: Job) -> JobResponse:
         error=job.error,
         video=job.video,
         source=job.source,
+        url=job.url,
         options=JobOptions(**job.options),
         created_at=job.created_at,
         updated_at=job.updated_at,

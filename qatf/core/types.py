@@ -30,6 +30,23 @@ class Transcript:
     #: requested — see `pipeline.asr.transcribe`'s auto-to-cpu fallback
     device: str | None = None
     compute_type: str | None = None
+    #: where the WORD TIMINGS came from, which decides how stage 4 may use them.
+    #:
+    #: `"asr"` — Whisper measured both edges of every word against the audio.
+    #: Both `start` and `end` are observations, and `SNAP_TAIL` may extend past
+    #: an end because there is real silence there to extend into.
+    #:
+    #: `"captions"` — a caption track gave a START per token and no end at all
+    #: (YouTube's `json3` carries `tOffsetMs` and nothing else). `end` is then
+    #: the NEXT token's start: an upper bound on the true end, not a measurement
+    #: of it. Adding `SNAP_TAIL` to an upper bound overshoots into the next
+    #: word's first phoneme, which is the exact mid-syllable cut the core
+    #: invariant exists to prevent — so `cuts.tail_for` returns 0.0 here.
+    #:
+    #: This field is why that distinction survives the cache, the job record and
+    #: the hand-edit round trip. A transcript that forgot where its timings came
+    #: from would be re-snapped with the wrong tail on the first `PUT /plan`.
+    timing_source: str = "asr"
 
     def __len__(self) -> int:
         return len(self.words)

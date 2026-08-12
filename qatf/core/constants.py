@@ -22,6 +22,36 @@ CAPTION_MAX_CHARS = 22
 SNAP_LEAD = 0.15
 SNAP_TAIL = 0.35
 
+#: The tail to use when a word's `end` is an upper bound rather than a
+#: measurement — see `Transcript.timing_source`.
+#:
+#: Zero, and the zero is the whole point. A caption track gives one instant per
+#: token, so the only honest end for word N is "no later than the start of word
+#: N+1". Extending past that does not run into silence, it runs into the next
+#: word: `SNAP_TAIL` would put the cut 0.35s after the following word has
+#: already begun, slicing its first phoneme off. Cutting AT the bound lands in
+#: the gap, which is exactly where a cut belongs.
+#:
+#: Keeping it a named constant rather than writing `0.0` at the call site is
+#: deliberate: it is a product decision about what a bounded timing means, and
+#: the next person to see a bare 0.0 would "fix" it back to SNAP_TAIL.
+SNAP_TAIL_BOUNDED = 0.0
+
+#: Hosts a caller-supplied URL may name. A SECURITY BOUNDARY, not a
+#: convenience list — see `pipeline.fetch.validate_url`.
+#:
+#: yt-dlp accepts `file://` and ships extractors for a thousand sites, so an
+#: unvalidated URL out of a `POST` body is a local-file read and an
+#: outbound-request primitive in one field. This is the URL twin of
+#: `media_root`: name what is allowed, refuse the rest.
+#:
+#: Deliberately only YouTube. Widening it is a decision someone should have to
+#: make on purpose, in a diff, with this comment in front of them.
+YOUTUBE_HOSTS = frozenset({
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "music.youtube.com", "youtu.be", "www.youtu.be",
+})
+
 #: How far outside [min_len, max_len] a clip may still land, in SECONDS.
 #:
 #: Absolute rather than proportional, because what stage 4 adds is absolute:

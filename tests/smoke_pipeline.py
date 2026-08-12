@@ -27,14 +27,29 @@ from qatf.core.errors import (
     ModelResponseError,
     SeedTooLong,
     TranscriptStructureChanged,
+    UnsupportedSourceUrl,
 )
 from qatf.core.types import Clip, Transcript, Word, clips_from_dicts, clips_to_dicts
 from qatf.core.utils import mmss_to_seconds, slugify, ts_ass, ts_human
-from qatf.pipeline import asr, captions, cuts, edits, fixups, select
+from qatf.pipeline import asr, captions, cuts, edits, fetch, fixups, select, subs
 
 
 def words(n: int = 100, step: float = 0.5) -> list[Word]:
     return [Word(f"w{i}", i * step, i * step + step * 0.9) for i in range(n)]
+
+
+def _capture(kind, fn, *args):
+    """The exception `fn` raises, for asserting on its MESSAGE.
+
+    `raises` in the harness asserts the type and discards the instance, which is
+    the right default — but "the message must not echo the caller's url back" is
+    an assertion about the text, and it is the one a live server had to teach
+    this project once already."""
+    try:
+        fn(*args)
+    except kind as exc:
+        return exc
+    raise AssertionError(f"{fn.__name__} did not raise {kind.__name__}")
 
 
 section("timestamps")
@@ -80,6 +95,192 @@ check("cue never zero-length",
           for line in events.splitlines() if line.startswith("Dialogue")))
 for tmp in (path, braced):
     tmp.unlink(missing_ok=True)
+
+section("font availability — the fc-list preflight warning")
+# The rendering host is usually the Docker image, so a font the CALLER has and
+# the server does not is the failure mode. libass substitutes silently, which is
+# how fifty clips ship in the wrong typeface. None must mean "cannot tell".
+_real_run = captions.subprocess.run
+
+
+def _fake_fc(stdout: str = "", returncode: int = 0, boom: Exception | None = None):
+    """Swap in a fake fc-list and clear the cache. Returns the recorded calls."""
+    calls: list = []
+
+    def fake(cmd, **kwargs):
+        calls.append(cmd)
+        if boom is not None:
+            raise boom
+        return types.SimpleNamespace(stdout=stdout, returncode=returncode)
+
+    captions.subprocess.run = fake
+    captions.installed_fonts.cache_clear()
+    return calls
+
+
+FAMILIES = "Geeza Pro,آل بيان\nDejaVu Sans\nNoto Naskh Arabic,نوتو نسخ\n"
+
+_calls = _fake_fc(FAMILIES)
+check("fc-list output is parsed into families",
+      captions.installed_fonts() == frozenset({
+          "geeza pro", "آل بيان", "dejavu sans", "noto naskh arabic", "نوتو نسخ"}),
+      str(captions.installed_fonts()))
+check("an installed family is found", captions.font_available("Geeza Pro") is True)
+check("lookup ignores case", captions.font_available("geeza PRO") is True)
+check("a comma-separated alias counts as installed",
+      captions.font_available("نوتو نسخ") is True)
+check("a missing family is reported missing",
+      captions.font_available("Traditional Arabic") is False)
+check("fc-list is spawned once per process, not once per lookup",
+      len(_calls) == 1, str(_calls))
+
+_fake_fc(FAMILIES)
+check("an installed font produces no warning",
+      captions.font_warning("Geeza Pro") is None)
+_note = captions.font_warning("Traditional Arabic")
+check("a missing font warns, names the face, and says libass will substitute",
+      _note is not None and "Traditional Arabic" in _note and "fallback" in _note,
+      str(_note))
+
+# The lookup must ask about safe_font(name) — the string that actually reaches
+# the Style: line — not the raw argument.
+_fake_fc("Geeza Pro\n")
+check("the sanitised name is what gets looked up, not the raw one",
+      captions.font_available("Geeza Pro\nStyle: evil") is False
+      and captions.font_available("  Geeza   Pro  ") is True)
+
+# No fontconfig is NOT a missing font. Warning because the *checker* is absent
+# is how a warning gets trained out of people.
+_fake_fc(boom=FileNotFoundError("fc-list"))
+check("no fontconfig means cannot tell", captions.installed_fonts() is None)
+check("no fontconfig leaves availability unknown",
+      captions.font_available("Traditional Arabic") is None)
+check("no fontconfig emits NO warning — the check is skipped",
+      captions.font_warning("Traditional Arabic") is None)
+
+_fake_fc(returncode=1)
+check("fc-list failing is cannot tell, not missing",
+      captions.installed_fonts() is None
+      and captions.font_warning("Traditional Arabic") is None)
+
+_fake_fc(boom=captions.subprocess.TimeoutExpired("fc-list", captions.FC_LIST_TIMEOUT))
+check("fc-list hanging is cannot tell, not missing",
+      captions.installed_fonts() is None
+      and captions.font_warning("Traditional Arabic") is None)
+
+captions.subprocess.run = _real_run
+captions.installed_fonts.cache_clear()
+
+section("caption tracks — stage 2' parsing")
+# A caption track gives ONE INSTANT PER TOKEN and no word ends. Everything here
+# pins that distinction, because the whole safety of the feature rests on it:
+# a bounded end treated as a measured one puts the cut 0.35s past the point the
+# next word already started.
+_CAP = (Path(__file__).parent / "fixtures" / "captions-ar.json3").read_text(encoding="utf-8")
+
+_cap_words = subs.parse_json3(_CAP)          # parsed from TEXT, not a dict
+check("blank segments and aAppend padding are dropped",
+      [w.text for w in _cap_words] ==
+      ["السلام", "عليكم", "يا", "أصدقاء", "واحد", "اثنين", "خلاص"],
+      str([w.text for w in _cap_words]))
+check("a first segment with no tOffsetMs means offset zero, not missing data",
+      _cap_words[0].start == 1.0, str(_cap_words[0]))
+check("offsets are relative to their event's start",
+      _cap_words[1].start == 1.4 and _cap_words[2].start == 1.9,
+      str([w.start for w in _cap_words[:3]]))
+check("the window-definition event (no segs) contributes nothing",
+      len(_cap_words) == 7, str(len(_cap_words)))
+
+# The property the whole design turns on.
+check("every word END is the NEXT word's start — a bound, never a measurement",
+      all(_cap_words[i].end == _cap_words[i + 1].start
+          for i in range(len(_cap_words) - 1)),
+      str([(w.start, w.end) for w in _cap_words[:4]]))
+check("the final token is the only guess, and it is bounded by LAST_TOKEN_SPAN",
+      _cap_words[-1].end - _cap_words[-1].start == subs.LAST_TOKEN_SPAN
+      and subs.LAST_TOKEN_SPAN <= 2.0)
+check("no word has a zero or inverted span",
+      all(w.end > w.start for w in _cap_words))
+
+check("to_transcript brands the timings as captions",
+      subs.to_transcript(_CAP, "ar").timing_source == "captions")
+check("a caption transcript claims no device — it ran on none",
+      subs.to_transcript(_CAP, "ar").device is None)
+
+# A HAND-UPLOADED track is one segment per line with no offsets anywhere. It
+# gives line-level timing, which stage 4 cannot cut on, and must be refused
+# rather than imported as a transcript whose every word shares one instant.
+_LINE_LEVEL = {"events": [
+    {"tStartMs": 0, "dDurationMs": 2000, "segs": [{"utf8": "كلام كتير في سطر واحد"}]},
+    {"tStartMs": 2000, "dDurationMs": 2000, "segs": [{"utf8": "وسطر تاني كمان"}]},
+]}
+check("an auto-generated track is recognised as word-level",
+      subs.has_word_timings(_CAP) is True)
+check("a hand-uploaded line-level track is refused",
+      subs.has_word_timings(_LINE_LEVEL) is False)
+check("an empty document parses to no words rather than raising",
+      subs.parse_json3({"events": []}) == [])
+check("a non-finite event start is skipped, not propagated",
+      subs.parse_json3({"events": [
+          {"tStartMs": float("nan"), "segs": [{"utf8": "x"}]},
+          {"tStartMs": 500, "segs": [{"utf8": "y"}]}]}) ==
+      [Word("y", 0.5, 0.5 + subs.LAST_TOKEN_SPAN)])
+
+section("the snap tail depends on where the timings came from")
+# The single rule that keeps option C honest.
+check("measured ends keep the full tail", cuts.tail_for("asr") == 0.35)
+check("bounded ends get no tail at all", cuts.tail_for("captions") == 0.0)
+check("an unknown or missing source is treated as measured — old cache rows "
+      "predate the field and every one of them came from Whisper",
+      cuts.tail_for(None) == 0.35 and cuts.tail_for("") == 0.35
+      and cuts.tail_for("something-new") == 0.35)
+
+_cw = [Word("a", 1.0, 2.0), Word("b", 2.0, 3.0), Word("c", 3.0, 4.0)]
+_bounded = cuts.snap(Clip(1.2, 2.9, "t"), _cw, tail=cuts.tail_for("captions"))
+_measured = cuts.snap(Clip(1.2, 2.9, "t"), _cw, tail=cuts.tail_for("asr"))
+check("a bounded cut closes exactly on the boundary, not past it",
+      _bounded.end == 3.0, str(_bounded))
+check("a measured cut is allowed to run into the silence after the word",
+      _measured.end == 3.35, str(_measured))
+check("snap stays idempotent with a zero tail — the plan round trip re-snaps "
+      "its own output and must not drift",
+      cuts.snap(_bounded, _cw, tail=0.0) == _bounded
+      and cuts.snap(cuts.snap(_bounded, _cw, tail=0.0), _cw, tail=0.0) == _bounded,
+      str(cuts.snap(_bounded, _cw, tail=0.0)))
+
+section("url sources — the fetch trust boundary")
+# yt-dlp reads file:// and carries a thousand extractors, so an unvalidated URL
+# out of a POST body is a local-file read AND an outbound-request primitive.
+for _ok in ("https://youtu.be/j5HVqFaa2Ts",
+            "https://www.youtube.com/watch?v=j5HVqFaa2Ts",
+            "https://m.youtube.com/watch?v=x",
+            "https://music.youtube.com/watch?v=x"):
+    check(f"accepted: {_ok[:46]}", fetch.validate_url(_ok) == _ok)
+
+for _bad, _why in [
+    ("file:///etc/passwd", "file scheme"),
+    ("http://youtube.com/watch?v=x", "plain http"),
+    ("https://evil.example/x", "host not on the allowlist"),
+    ("https://youtube.com@evil.example/x", "userinfo disguising the real host"),
+    ("https://notyoutube.com/x", "prefix that merely looks like the allowlist"),
+    ("https://youtube.com.evil.net/x", "suffix attack a .endswith check would pass"),
+    ("https://youtube.com:8080/x", "a port aims the request elsewhere"),
+    ("https://youtube.com/x\nHost: evil", "control character"),
+    ("", "empty"),
+]:
+    raises(f"refused ({_why})", UnsupportedSourceUrl, fetch.validate_url, _bad)
+
+check("a refusal never echoes the rejected url back",
+      all("evil" not in str(exc) for exc in [
+          _capture(UnsupportedSourceUrl, fetch.validate_url,
+                   "https://youtube.com@evil.example/x"),
+          _capture(UnsupportedSourceUrl, fetch.validate_url,
+                   "https://evil.example/x")]))
+
+check("is_url tells a URL from a path", fetch.is_url("https://youtu.be/x") is True)
+check("a Windows drive letter is a PATH, not a scheme",
+      fetch.is_url(r"C:\videos\talk.mov") is False)
+check("a bare relative path is not a url", fetch.is_url("talks/keynote.mov") is False)
 
 section("ffmpeg binary resolution")
 # For hosts where ffmpeg exists but is not on PATH. Overriding the binary is

@@ -1,0 +1,1559 @@
+- generic [ref=e5]:
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - heading "qatf 0.4.0 OAS 3.1" [level=1] [ref=e10]:
+        - text: qatf
+        - generic [ref=e11]:
+          - generic [ref=e12]: 0.4.0
+          - generic [ref=e14]: OAS 3.1
+      - link "/openapi.json" [ref=e16] [cursor=pointer]:
+        - /url: /openapi.json
+    - paragraph [ref=e18]: Harvest the parts of a long video worth watching.
+    - generic [ref=e20]:
+      - paragraph [ref=e21]: Turn a long video into vertical short-form clips.
+      - paragraph [ref=e22]:
+        - text: A model picks the moments. Everything about
+        - strong [ref=e23]: where the cuts land
+        - text: is deterministic — and that split is the whole design.
+      - separator [ref=e24]
+      - heading "The five stages" [level=2] [ref=e25]
+      - table [ref=e26]:
+        - rowgroup [ref=e27]:
+          - row [ref=e28]:
+            - columnheader "#" [ref=e29]
+            - columnheader "Stage" [ref=e30]
+            - columnheader "Engine" [ref=e31]
+            - columnheader "Model?" [ref=e32]
+        - rowgroup [ref=e33]:
+          - row [ref=e34]:
+            - cell "1" [ref=e35]
+            - cell "demux to 16 kHz mono wav" [ref=e36]
+            - cell "ffmpeg" [ref=e37]
+            - cell "no" [ref=e38]
+          - row [ref=e39]:
+            - cell "2" [ref=e40]
+            - cell "transcribe with word timings" [ref=e41]
+            - cell "faster-whisper" [ref=e42]
+            - cell "no" [ref=e43]
+          - row [ref=e44]:
+            - cell "3" [ref=e45]
+            - cell "pick the clips" [ref=e46]
+            - cell "your chosen LLM" [ref=e47]
+            - cell [ref=e48]:
+              - strong [ref=e49]: "yes"
+          - row [ref=e50]:
+            - cell "4" [ref=e51]
+            - cell "snap cuts to word boundaries" [ref=e52]
+            - cell "deterministic" [ref=e53]
+            - cell "no" [ref=e54]
+          - row [ref=e55]:
+            - cell "5" [ref=e56]
+            - cell "reframe, caption, encode" [ref=e57]
+            - cell "ffmpeg" [ref=e58]
+            - cell "no" [ref=e59]
+      - paragraph [ref=e60]:
+        - text: Only stage 3 is a model call. Because stages 1, 4 and 5 are model-free,
+        - strong [ref=e61]: changing provider cannot affect cut accuracy or rendering
+        - text: — it changes only
+        - emphasis [ref=e62]: which passages
+        - text: get picked.
+      - heading "The core invariant" [level=2] [ref=e63]
+      - paragraph [ref=e64]:
+        - text: The model never emits precise timing. It reads the transcript in ~12-second blocks and returns
+        - code [ref=e65]: MM:SS
+        - text: . Stage 4 then moves those onto real word start/end times from Whisper.
+      - blockquote [ref=e66]:
+        - paragraph [ref=e67]:
+          - text: Semantic boundaries come from the model. Acoustic boundaries come from the audio.
+          - strong [ref=e68]: They are never mixed.
+      - paragraph [ref=e69]:
+        - text: This applies to hand-edited plans too, which is why
+        - code [ref=e70]: "PUT /jobs/{id}/plan"
+        - text: re-snaps by default. A human typing
+        - code [ref=e71]: "\"start\": 20.0"
+        - text: is making the same kind of semantic guess the model makes — and skipping the snap is how a clip ends up opening mid-syllable.
+      - heading "Working with jobs" [level=2] [ref=e72]
+      - paragraph [ref=e73]:
+        - text: Nothing here is synchronous. Every start returns
+        - strong [ref=e74]: "202"
+        - text: and a job id; poll
+        - code [ref=e75]: "GET /jobs/{id}"
+        - text: and read
+        - code [ref=e76]: state
+        - text: .
+      - code [ref=e78]: queued → extracting → transcribing → selecting → planned → rendering → done ↑ │ PUT /plan ──┘ ↓ failed · cancelled
+      - paragraph [ref=e79]:
+        - text: Set
+        - code [ref=e80]: "auto_render: false"
+        - text: to stop at
+        - code [ref=e81]: planned
+        - text: ", review the plan,"
+        - code [ref=e82]: PUT
+        - text: an edited one, then
+        - code [ref=e83]: "POST /jobs/{id}/render"
+        - text: . Re-rendering needs no model call and no re-transcription, which is what makes the round trip cheap.
+      - heading "Before you submit an hour of audio" [level=2] [ref=e84]
+      - paragraph [ref=e85]:
+        - text: Call
+        - code [ref=e86]: GET /healthz
+        - text: . It reports whether ffmpeg is genuinely on
+        - code [ref=e87]: PATH
+        - text: ", whether the stage-3 provider has a usable credential, and"
+        - strong [ref=e88]: which device stage 2 will actually use
+        - text: . A missing API key otherwise surfaces only after transcription has already run.
+      - heading "Three things this job model does not do" [level=2] [ref=e89]
+      - list [ref=e90]:
+        - listitem [ref=e91]:
+          - strong [ref=e92]: Jobs do not survive a restart.
+          - text: State is a JSON file per job, but the worker is an in-process thread pool. On startup anything left running is marked
+          - code [ref=e93]: "failed: interrupted by a server restart"
+          - text: .
+        - listitem [ref=e94]:
+          - strong [ref=e95]: Cancellation is cooperative.
+          - text: The flag is checked between stages and between clips. It cannot interrupt an ffmpeg or Whisper call already in flight.
+        - listitem [ref=e96]:
+          - strong [ref=e97]:
+            - code [ref=e98]: QATF_WORKERS
+            - text: defaults to 1.
+          - text: Two concurrent
+          - code [ref=e99]: large-v3
+          - text: loads fight over the same GPU. Raise it only for render-only work.
+      - heading "Errors" [level=2] [ref=e100]
+      - paragraph [ref=e101]:
+        - text: Domain failures carry their own status code and always come back as
+        - code [ref=e102]: "{\"detail\": \"...\"}"
+        - text: . There is no per-case mapping in the routers — one handler translates the whole
+        - code [ref=e103]: QatfError
+        - text: hierarchy, which is why HTTP concerns stay out of the pipeline entirely.
+      - table [ref=e104]:
+        - rowgroup [ref=e105]:
+          - row [ref=e106]:
+            - columnheader "Status" [ref=e107]
+            - columnheader "Means" [ref=e108]
+        - rowgroup [ref=e109]:
+          - row [ref=e110]:
+            - cell [ref=e111]:
+              - code [ref=e112]: "403"
+            - cell [ref=e113]:
+              - text: the path escaped
+              - code [ref=e114]: QATF_MEDIA_ROOT
+              - text: — a security boundary, not a typo check
+          - row [ref=e115]:
+            - cell [ref=e116]:
+              - code [ref=e117]: "404"
+            - cell "no such job, no plan yet, no such clip" [ref=e118]
+          - row [ref=e119]:
+            - cell [ref=e120]:
+              - code [ref=e121]: "409"
+            - cell "the job is running, or you asked for something that needs a transcript first" [ref=e122]
+          - row [ref=e123]:
+            - cell [ref=e124]:
+              - code [ref=e125]: "413"
+            - cell [ref=e126]:
+              - text: upload exceeds
+              - code [ref=e127]: QATF_MAX_UPLOAD_MB
+              - text: ", or the transcript exceeds the context"
+          - row [ref=e128]:
+            - cell [ref=e129]:
+              - code [ref=e130]: "415"
+            - cell "unsupported video extension" [ref=e131]
+          - row [ref=e132]:
+            - cell [ref=e133]:
+              - code [ref=e134]: "422"
+            - cell "validation failed, no speech was found, or the vocabulary seed is too long" [ref=e135]
+          - row [ref=e136]:
+            - cell [ref=e137]:
+              - code [ref=e138]: "502"
+            - cell "stage 3 returned something that was not the requested JSON, or refused" [ref=e139]
+          - row [ref=e140]:
+            - cell [ref=e141]:
+              - code [ref=e142]: "503"
+            - cell "ffmpeg is missing, or the stage-3 provider has no credential" [ref=e143]
+      - paragraph [ref=e144]:
+        - text: A
+        - code [ref=e145]: "500"
+        - text: "means a bug: every deliberate failure in this project is a"
+        - code [ref=e146]: QatfError
+        - text: subclass, so anything else escaping the pipeline was not thought through.
+    - link "MIT" [ref=e149] [cursor=pointer]:
+      - /url: https://spdx.org/licenses/MIT.html
+  - textbox "Filter by tag" [ref=e153]
+  - main [ref=e154]:
+    - generic [ref=e157]:
+      - generic [ref=e159]:
+        - heading [level=3] [ref=e160] [cursor=pointer]:
+          - link "meta" [ref=e161]:
+            - /url: "#/meta"
+          - paragraph [ref=e164]:
+            - text: Readiness and capability reporting. Call
+            - code [ref=e165]: /healthz
+            - strong [ref=e166]: before
+            - text: submitting work — it is the only place that tells you which device stage 2 will pick and whether stage 3 has a credential.
+          - button "Collapse operation" [expanded] [ref=e167]
+        - generic [ref=e174] [cursor=pointer]:
+          - button "GET /healthz Readiness, provider roster and transcription device" [ref=e175]:
+            - generic [ref=e176]: GET
+            - generic [ref=e177]:
+              - link "/healthz" [ref=e179]:
+                - /url: "#/meta/health"
+              - generic [ref=e180]: Readiness, provider roster and transcription device
+          - generic "Copy to clipboard"
+          - button "get /healthz" [ref=e183]
+      - generic [ref=e187]:
+        - heading [level=3] [ref=e188] [cursor=pointer]:
+          - link "jobs" [ref=e189]:
+            - /url: "#/jobs"
+          - paragraph [ref=e192]:
+            - text: Create, list, inspect, cancel and delete jobs. Creation returns
+            - code [ref=e193]: "202"
+            - text: and a job id; the pipeline takes minutes, so poll
+            - code [ref=e194]: "GET /jobs/{job_id}"
+            - text: .
+          - button "Collapse operation" [expanded] [ref=e195]
+        - generic [ref=e199]:
+          - generic [ref=e201]:
+            - generic [ref=e202] [cursor=pointer]:
+              - button "POST /jobs Start a job from a server-side path" [expanded] [ref=e203]:
+                - generic [ref=e204]: POST
+                - generic [ref=e205]:
+                  - link "/jobs" [ref=e207]:
+                    - /url: "#/jobs/createJob"
+                  - generic [ref=e208]: Start a job from a server-side path
+              - generic "Copy to clipboard"
+              - button "post /jobs" [expanded] [ref=e211]
+            - generic [ref=e215]:
+              - generic [ref=e218]:
+                - paragraph [ref=e219]: Start a job from a video already on the server.
+                - paragraph [ref=e220]:
+                  - code [ref=e221]: path
+                  - text: resolves under
+                  - code [ref=e222]: QATF_MEDIA_ROOT
+                  - text: . That is a
+                  - strong [ref=e223]: security boundary
+                  - text: ", not a convenience: without it a body naming"
+                  - code [ref=e224]: ../../etc/passwd
+                  - text: would have the server transcribe any file the process can read. Absolute paths are allowed but must still land inside the root.
+                - paragraph [ref=e225]:
+                  - text: Returns immediately with
+                  - code [ref=e226]: "202"
+                  - text: . The work happens on a background thread — read
+                  - code [ref=e227]: state
+                  - text: and
+                  - code [ref=e228]: message
+                  - text: from
+                  - code [ref=e229]: "GET /jobs/{job_id}"
+                  - text: to follow it.
+                - paragraph [ref=e230]:
+                  - text: Set
+                  - code [ref=e231]: "auto_render: false"
+                  - text: to stop at
+                  - code [ref=e232]: planned
+                  - text: and review the plan before spending render time.
+              - generic [ref=e233]:
+                - generic [ref=e234]:
+                  - heading "Parameters" [level=4] [ref=e237] [cursor=pointer]
+                  - button "Cancel" [ref=e239] [cursor=pointer]
+                - paragraph [ref=e242]: No parameters
+                - generic [ref=e243]:
+                  - generic [ref=e244]:
+                    - heading "Request bodyrequired" [level=4] [ref=e245]
+                    - combobox "Request content type" [ref=e248]:
+                      - option "application/json" [selected]
+                  - generic [ref=e251]:
+                    - tablist [ref=e252]:
+                      - tab "Edit Value" [selected] [ref=e253] [cursor=pointer]
+                      - tab "Schema" [ref=e254] [cursor=pointer]
+                    - tabpanel "Edit Value" [ref=e255]:
+                      - textbox [ref=e257]: "{ \"clips\": 8, \"denoise\": true, \"font\": \"Traditional Arabic\", \"language\": \"ar\", \"max_len\": 52, \"min_len\": 28, \"path\": \"talks/متسلمش دماغك.mov\" }"
+              - button "Execute" [ref=e259] [cursor=pointer]
+              - generic [ref=e260]:
+                - heading "Responses" [level=4] [ref=e262]
+                - region [ref=e264]:
+                  - rowgroup [ref=e265]:
+                    - row [ref=e266]:
+                      - cell "Code" [ref=e267]
+                      - cell "Description" [ref=e268]
+                      - cell "Links" [ref=e269]
+                  - rowgroup [ref=e270]:
+                    - row [ref=e271]:
+                      - cell "202" [ref=e272]
+                      - 'cell "The job, in state queued. Poll GET /jobs/{job_id}. Media type application/json Controls Accept header. Example Value" [ref=e273]':
+                        - paragraph [ref=e276]:
+                          - text: The job, in state
+                          - code [ref=e277]: queued
+                          - text: . Poll
+                          - code [ref=e278]: "GET /jobs/{job_id}"
+                          - text: .
+                        - generic [ref=e280]:
+                          - generic [ref=e281]: Media type
+                          - combobox "Media Type" [ref=e283]:
+                            - option "application/json" [selected]
+                          - generic [ref=e284]:
+                            - text: Controls
+                            - code [ref=e285]: Accept
+                            - text: header.
+                        - generic [ref=e286]:
+                          - tablist [ref=e287]:
+                            - tab "Example Value" [selected] [ref=e288] [cursor=pointer]
+                            - tab "Schema" [ref=e289] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e290]:
+                            - code [ref=e294]: "{ \"created_at\": \"2026-08-06T09:14:02Z\", \"device\": \"cuda\", \"id\": \"a1b2c3d4e5f6\", \"language\": \"ar\", \"message\": \"[5/5] rendered 3/8: 03-php-lsh-ayshh.mp4\", \"source\": \"path\", \"state\": \"rendering\", \"transcript_cached\": false, \"updated_at\": \"2026-08-06T09:31:44Z\", \"video\": \"/srv/media/talks/keynote.mov\", \"word_count\": 2841 }"
+                      - cell "No links" [ref=e295]
+                    - row [ref=e296]:
+                      - cell "403" [ref=e297]
+                      - cell "path escaped QATF_MEDIA_ROOT Media type application/json Example Value" [ref=e298]:
+                        - paragraph [ref=e301]: path escaped QATF_MEDIA_ROOT
+                        - generic [ref=e303]:
+                          - generic [ref=e304]: Media type
+                          - combobox "Media Type" [ref=e306]:
+                            - option "application/json" [selected]
+                        - generic [ref=e307]:
+                          - tablist [ref=e308]:
+                            - tab "Example Value" [selected] [ref=e309] [cursor=pointer]
+                            - tab "Schema" [ref=e310] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e311]:
+                            - code [ref=e315]: "{ \"detail\": \"path must be inside QATF_MEDIA_ROOT (/srv/media)\" }"
+                      - cell "No links" [ref=e316]
+                    - row [ref=e317]:
+                      - cell "404" [ref=e318]
+                      - cell "no such file under the media root Media type application/json Example Value" [ref=e319]:
+                        - paragraph [ref=e322]: no such file under the media root
+                        - generic [ref=e324]:
+                          - generic [ref=e325]: Media type
+                          - combobox "Media Type" [ref=e327]:
+                            - option "application/json" [selected]
+                        - generic [ref=e328]:
+                          - tablist [ref=e329]:
+                            - tab "Example Value" [selected] [ref=e330] [cursor=pointer]
+                            - tab "Schema" [ref=e331] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e332]:
+                            - code [ref=e336]: "{ \"detail\": \"no such file: talks/keynote.mov\" }"
+                      - cell "No links" [ref=e337]
+                    - row [ref=e338]:
+                      - cell "422" [ref=e339]
+                      - cell "the request failed validation Media type application/json Example Value" [ref=e340]:
+                        - paragraph [ref=e343]: the request failed validation
+                        - generic [ref=e345]:
+                          - generic [ref=e346]: Media type
+                          - combobox "Media Type" [ref=e348]:
+                            - option "application/json" [selected]
+                        - generic [ref=e349]:
+                          - tablist [ref=e350]:
+                            - tab "Example Value" [selected] [ref=e351] [cursor=pointer]
+                            - tab "Schema" [ref=e352] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e353]:
+                            - code [ref=e357]: "{ \"detail\": \"path must be inside QATF_MEDIA_ROOT (/srv/media)\" }"
+                      - cell "No links" [ref=e358]
+          - generic [ref=e361] [cursor=pointer]:
+            - button "GET /jobs List jobs" [ref=e362]:
+              - generic [ref=e363]: GET
+              - generic [ref=e364]:
+                - link "/jobs" [ref=e366]:
+                  - /url: "#/jobs/listJobs"
+                - generic [ref=e367]: List jobs
+            - generic "Copy to clipboard"
+            - button "get /jobs" [ref=e370]
+          - generic [ref=e374]:
+            - generic [ref=e375] [cursor=pointer]:
+              - button "POST /jobs/upload Start a job from an uploaded file" [expanded] [active] [ref=e376]:
+                - generic [ref=e377]: POST
+                - generic [ref=e378]:
+                  - link "/jobs/upload" [ref=e380]:
+                    - /url: "#/jobs/createJobFromUpload"
+                  - generic [ref=e382]: Start a job from an uploaded file
+              - generic "Copy to clipboard" [ref=e383]
+              - button "post /jobs/upload" [expanded] [ref=e387]
+            - generic [ref=e391]:
+              - generic [ref=e394]:
+                - paragraph [ref=e395]: Start a job from an uploaded video.
+                - paragraph [ref=e396]:
+                  - text: Streamed to disk in 1 MB chunks and checked against
+                  - code [ref=e397]: QATF_MAX_UPLOAD_MB
+                  - text: as it arrives, so an oversized upload is refused mid-stream rather than after the whole file has landed. A failed upload takes its job record with it — there is no half-written source left behind.
+              - generic [ref=e398]:
+                - generic [ref=e399]:
+                  - heading "Parameters" [level=4] [ref=e402] [cursor=pointer]
+                  - generic [ref=e403]:
+                    - button "Cancel" [ref=e404] [cursor=pointer]
+                    - button "Reset" [ref=e405] [cursor=pointer]
+                - paragraph [ref=e408]: No parameters
+                - generic [ref=e409]:
+                  - generic [ref=e410]:
+                    - heading "Request bodyrequired" [level=4] [ref=e411]
+                    - combobox "Request content type" [ref=e414]:
+                      - option "multipart/form-data" [selected]
+                  - table [ref=e417]:
+                    - rowgroup [ref=e418]:
+                      - row [ref=e419]:
+                        - cell "file *required string" [ref=e420]:
+                          - generic [ref=e421]: file *required
+                          - generic [ref=e422]: string
+                        - cell [ref=e423]:
+                          - paragraph [ref=e425]: source video
+                          - button "Choose File" [ref=e427]
+                      - row [ref=e428]:
+                        - cell "options string" [ref=e429]:
+                          - generic [ref=e430]: options
+                          - generic [ref=e431]: string
+                        - cell [ref=e432]:
+                          - paragraph [ref=e434]:
+                            - text: JobOptions as a
+                            - strong [ref=e435]: JSON string
+                            - text: ", e.g."
+                            - code [ref=e436]: "{\"clips\": 8, \"language\": \"ar\", \"denoise\": true}"
+                            - text: . A multipart body cannot carry a nested JSON object, so this is a string field rather than the object it parses into.
+                          - generic [ref=e437]:
+                            - textbox "options" [ref=e438]: "{\"clips\": 8, \"language\": \"ar\", \"denoise\": true, \"max_len\": 52}"
+                            - generic [ref=e440]:
+                              - checkbox "Send empty value" [disabled] [ref=e441]
+                              - text: Send empty value
+              - button "Execute" [ref=e443] [cursor=pointer]
+              - generic [ref=e444]:
+                - heading "Responses" [level=4] [ref=e446]
+                - region [ref=e448]:
+                  - rowgroup [ref=e449]:
+                    - row [ref=e450]:
+                      - cell "Code" [ref=e451]
+                      - cell "Description" [ref=e452]
+                      - cell "Links" [ref=e453]
+                  - rowgroup [ref=e454]:
+                    - row [ref=e455]:
+                      - cell "202" [ref=e456]
+                      - 'cell "The job, in state queued. Poll GET /jobs/{job_id}. Media type application/json Controls Accept header. Example Value" [ref=e457]':
+                        - paragraph [ref=e460]:
+                          - text: The job, in state
+                          - code [ref=e461]: queued
+                          - text: . Poll
+                          - code [ref=e462]: "GET /jobs/{job_id}"
+                          - text: .
+                        - generic [ref=e464]:
+                          - generic [ref=e465]: Media type
+                          - combobox "Media Type" [ref=e467]:
+                            - option "application/json" [selected]
+                          - generic [ref=e468]:
+                            - text: Controls
+                            - code [ref=e469]: Accept
+                            - text: header.
+                        - generic [ref=e470]:
+                          - tablist [ref=e471]:
+                            - tab "Example Value" [selected] [ref=e472] [cursor=pointer]
+                            - tab "Schema" [ref=e473] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e474]:
+                            - code [ref=e478]: "{ \"created_at\": \"2026-08-06T09:14:02Z\", \"device\": \"cuda\", \"id\": \"a1b2c3d4e5f6\", \"language\": \"ar\", \"message\": \"[5/5] rendered 3/8: 03-php-lsh-ayshh.mp4\", \"source\": \"path\", \"state\": \"rendering\", \"transcript_cached\": false, \"updated_at\": \"2026-08-06T09:31:44Z\", \"video\": \"/srv/media/talks/keynote.mov\", \"word_count\": 2841 }"
+                      - cell "No links" [ref=e479]
+                    - row [ref=e480]:
+                      - cell "413" [ref=e481]
+                      - cell "upload exceeds QATF_MAX_UPLOAD_MB Media type application/json Example Value" [ref=e482]:
+                        - paragraph [ref=e485]: upload exceeds QATF_MAX_UPLOAD_MB
+                        - generic [ref=e487]:
+                          - generic [ref=e488]: Media type
+                          - combobox "Media Type" [ref=e490]:
+                            - option "application/json" [selected]
+                        - generic [ref=e491]:
+                          - tablist [ref=e492]:
+                            - tab "Example Value" [selected] [ref=e493] [cursor=pointer]
+                            - tab "Schema" [ref=e494] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e495]:
+                            - code [ref=e499]: "{ \"detail\": \"upload exceeds QATF_MAX_UPLOAD_MB (2048 MB)\" }"
+                      - cell "No links" [ref=e500]
+                    - row [ref=e501]:
+                      - cell "415" [ref=e502]
+                      - cell "unsupported video extension Media type application/json Example Value" [ref=e503]:
+                        - paragraph [ref=e506]: unsupported video extension
+                        - generic [ref=e508]:
+                          - generic [ref=e509]: Media type
+                          - combobox "Media Type" [ref=e511]:
+                            - option "application/json" [selected]
+                        - generic [ref=e512]:
+                          - tablist [ref=e513]:
+                            - tab "Example Value" [selected] [ref=e514] [cursor=pointer]
+                            - tab "Schema" [ref=e515] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e516]:
+                            - code [ref=e520]: "{ \"detail\": \"unsupported extension: .txt\" }"
+                      - cell "No links" [ref=e521]
+                    - row [ref=e522]:
+                      - cell "422" [ref=e523]
+                      - cell "options is not valid JSON Media type application/json Example Value" [ref=e524]:
+                        - paragraph [ref=e527]: options is not valid JSON
+                        - generic [ref=e529]:
+                          - generic [ref=e530]: Media type
+                          - combobox "Media Type" [ref=e532]:
+                            - option "application/json" [selected]
+                        - generic [ref=e533]:
+                          - tablist [ref=e534]:
+                            - tab "Example Value" [selected] [ref=e535] [cursor=pointer]
+                            - tab "Schema" [ref=e536] [cursor=pointer]
+                          - tabpanel "Example Value" [ref=e537]:
+                            - code [ref=e541]: "{ \"detail\": \"options is not valid JSON: Expecting value: line 1 column 1\" }"
+                      - cell "No links" [ref=e542]
+          - generic [ref=e545] [cursor=pointer]:
+            - 'button "GET /jobs/{job_id} Poll one job" [ref=e546]':
+              - generic [ref=e547]: GET
+              - generic [ref=e548]:
+                - 'link "/jobs/{job_id}" [ref=e550]':
+                  - /url: "#/jobs/getJob"
+                - generic [ref=e552]: Poll one job
+            - generic "Copy to clipboard"
+            - 'button "get /jobs/{job_id}" [ref=e555]'
+          - generic [ref=e560] [cursor=pointer]:
+            - 'button "DELETE /jobs/{job_id} Delete a job and its files" [ref=e561]':
+              - generic [ref=e562]: DELETE
+              - generic [ref=e563]:
+                - 'link "/jobs/{job_id}" [ref=e565]':
+                  - /url: "#/jobs/deleteJob"
+                - generic [ref=e567]: Delete a job and its files
+            - generic "Copy to clipboard"
+            - 'button "delete /jobs/{job_id}" [ref=e570]'
+          - generic [ref=e575] [cursor=pointer]:
+            - 'button "POST /jobs/{job_id}/cancel Request cancellation" [ref=e576]':
+              - generic [ref=e577]: POST
+              - generic [ref=e578]:
+                - 'link "/jobs/{job_id}/cancel" [ref=e580]':
+                  - /url: "#/jobs/cancelJob"
+                - generic [ref=e582]: Request cancellation
+            - generic "Copy to clipboard"
+            - 'button "post /jobs/{job_id}/cancel" [ref=e585]'
+      - generic [ref=e589]:
+        - heading [level=3] [ref=e590] [cursor=pointer]:
+          - link "plan" [ref=e591]:
+            - /url: "#/plan"
+          - paragraph [ref=e594]:
+            - text: The transcript and the hand-edit round trip. Review the plan, replace it, re-render — no model call, no re-transcription.
+            - code [ref=e595]: PUT /plan
+            - text: re-snaps by default and you should leave it that way.
+          - button "Collapse operation" [expanded] [ref=e596]
+        - generic [ref=e600]:
+          - generic [ref=e603] [cursor=pointer]:
+            - 'button "GET /jobs/{job_id}/transcript Word-level transcript, as it will be captioned" [ref=e604]':
+              - generic [ref=e605]: GET
+              - generic [ref=e606]:
+                - 'link "/jobs/{job_id}/transcript" [ref=e608]':
+                  - /url: "#/plan/getTranscript"
+                - generic [ref=e610]: Word-level transcript, as it will be captioned
+            - generic "Copy to clipboard"
+            - 'button "get /jobs/{job_id}/transcript" [ref=e613]'
+          - generic [ref=e618] [cursor=pointer]:
+            - 'button "PUT /jobs/{job_id}/transcript Correct misheard words" [ref=e619]':
+              - generic [ref=e620]: PUT
+              - generic [ref=e621]:
+                - 'link "/jobs/{job_id}/transcript" [ref=e623]':
+                  - /url: "#/plan/correctTranscript"
+                - generic [ref=e625]: Correct misheard words
+            - generic "Copy to clipboard"
+            - 'button "put /jobs/{job_id}/transcript" [ref=e628]'
+          - generic [ref=e633] [cursor=pointer]:
+            - 'button "GET /jobs/{job_id}/plan The current plan" [ref=e634]':
+              - generic [ref=e635]: GET
+              - generic [ref=e636]:
+                - 'link "/jobs/{job_id}/plan" [ref=e638]':
+                  - /url: "#/plan/getPlan"
+                - generic [ref=e640]: The current plan
+            - generic "Copy to clipboard"
+            - 'button "get /jobs/{job_id}/plan" [ref=e643]'
+          - generic [ref=e648] [cursor=pointer]:
+            - 'button "PUT /jobs/{job_id}/plan Replace the plan with a hand-edited one" [ref=e649]':
+              - generic [ref=e650]: PUT
+              - generic [ref=e651]:
+                - 'link "/jobs/{job_id}/plan" [ref=e653]':
+                  - /url: "#/plan/replacePlan"
+                - generic [ref=e655]: Replace the plan with a hand-edited one
+            - generic "Copy to clipboard"
+            - 'button "put /jobs/{job_id}/plan" [ref=e658]'
+          - generic [ref=e663] [cursor=pointer]:
+            - 'button "POST /jobs/{job_id}/render Encode the current plan" [ref=e664]':
+              - generic [ref=e665]: POST
+              - generic [ref=e666]:
+                - 'link "/jobs/{job_id}/render" [ref=e668]':
+                  - /url: "#/plan/renderPlan"
+                - generic [ref=e670]: Encode the current plan
+            - generic "Copy to clipboard"
+            - 'button "post /jobs/{job_id}/render" [ref=e673]'
+      - generic [ref=e677]:
+        - heading [level=3] [ref=e678] [cursor=pointer]:
+          - link "outputs" [ref=e679]:
+            - /url: "#/outputs"
+          - paragraph [ref=e682]: List and download rendered clips. Download names are resolved inside the job's own output directory, so traversal is rejected.
+          - button "Collapse operation" [expanded] [ref=e683]
+        - generic [ref=e687]:
+          - generic [ref=e690] [cursor=pointer]:
+            - 'button "GET /jobs/{job_id}/clips List rendered clips" [ref=e691]':
+              - generic [ref=e692]: GET
+              - generic [ref=e693]:
+                - 'link "/jobs/{job_id}/clips" [ref=e695]':
+                  - /url: "#/outputs/listClips"
+                - generic [ref=e697]: List rendered clips
+            - generic "Copy to clipboard"
+            - 'button "get /jobs/{job_id}/clips" [ref=e700]'
+          - generic [ref=e705] [cursor=pointer]:
+            - 'button "GET /jobs/{job_id}/clips/{name} Download one clip" [ref=e706]':
+              - generic [ref=e707]: GET
+              - generic [ref=e708]:
+                - 'link "/jobs/{job_id}/clips/{name}" [ref=e710]':
+                  - /url: "#/outputs/downloadClip"
+                - generic [ref=e712]: Download one clip
+            - generic "Copy to clipboard"
+            - 'button "get /jobs/{job_id}/clips/{name}" [ref=e715]'
+    - generic [ref=e720]:
+      - heading [level=4] [ref=e721] [cursor=pointer]:
+        - button "Schemas" [expanded] [ref=e722]
+      - generic [ref=e726]:
+        - article [ref=e727]:
+          - generic [ref=e728]:
+            - button [ref=e729] [cursor=pointer]:
+              - strong [ref=e731]: Body_createJobFromUpload
+            - button "Collapse all" [ref=e735] [cursor=pointer]
+            - strong [ref=e736]: object
+          - list [ref=e739]:
+            - listitem [ref=e740]:
+              - article [ref=e741]:
+                - generic [ref=e742]:
+                  - button [ref=e743] [cursor=pointer]:
+                    - strong [ref=e745]: file*
+                  - button "Expand all" [ref=e749] [cursor=pointer]
+                  - strong [ref=e750]: string
+                  - text: "media type: application/octet-stream"
+            - listitem [ref=e751]:
+              - article [ref=e752]:
+                - generic [ref=e753]:
+                  - button [ref=e754] [cursor=pointer]:
+                    - strong [ref=e756]: options
+                  - button "Expand all" [ref=e760] [cursor=pointer]
+                  - strong [ref=e761]: string
+        - article [ref=e762]:
+          - generic [ref=e763]:
+            - button [ref=e764] [cursor=pointer]:
+              - strong [ref=e766]: ClipModel
+            - button "Collapse all" [ref=e770] [cursor=pointer]
+            - strong [ref=e771]: object
+          - generic [ref=e772]:
+            - generic [ref=e775]:
+              - paragraph [ref=e776]:
+                - text: One planned clip.
+                - code [ref=e777]: start
+                - text: /
+                - code [ref=e778]: end
+                - text: are seconds into the SOURCE video.
+              - paragraph [ref=e779]:
+                - text: After stage 4 these sit exactly on Whisper word boundaries. If you edit them by hand, leave
+                - code [ref=e780]: snap
+                - text: on in
+                - code [ref=e781]: PUT /plan
+                - text: — a typed second is a semantic guess and skipping the snap is how clips open mid-syllable.
+            - list [ref=e783]:
+              - listitem [ref=e784]:
+                - article [ref=e785]:
+                  - generic [ref=e786]:
+                    - button [ref=e787] [cursor=pointer]:
+                      - strong [ref=e789]: start*
+                    - button "Expand all" [ref=e793] [cursor=pointer]
+                    - strong [ref=e794]: number
+                    - text: "[0, 86400]"
+              - listitem [ref=e795]:
+                - article [ref=e796]:
+                  - generic [ref=e797]:
+                    - button [ref=e798] [cursor=pointer]:
+                      - strong [ref=e800]: end*
+                    - button "Expand all" [ref=e804] [cursor=pointer]
+                    - strong [ref=e805]: number
+                    - text: (0, 86400]
+              - listitem [ref=e806]:
+                - article [ref=e807]:
+                  - generic [ref=e808]:
+                    - button [ref=e809] [cursor=pointer]:
+                      - strong [ref=e811]: title
+                    - button "Expand all" [ref=e815] [cursor=pointer]
+                    - strong [ref=e816]: string
+                    - text: ≤ 300 characters
+              - listitem [ref=e817]:
+                - article [ref=e818]:
+                  - generic [ref=e819]:
+                    - button [ref=e820] [cursor=pointer]:
+                      - strong [ref=e822]: hook
+                    - button "Expand all" [ref=e826] [cursor=pointer]
+                    - strong [ref=e827]: string
+                    - text: ≤ 2000 characters
+              - listitem [ref=e828]:
+                - article [ref=e829]:
+                  - generic [ref=e830]:
+                    - button [ref=e831] [cursor=pointer]:
+                      - strong [ref=e833]: why
+                    - button "Expand all" [ref=e837] [cursor=pointer]
+                    - strong [ref=e838]: string
+                    - text: ≤ 2000 characters
+              - listitem [ref=e839]:
+                - article [ref=e840]:
+                  - generic [ref=e841]:
+                    - button [ref=e842] [cursor=pointer]:
+                      - strong [ref=e844]: score
+                    - button "Expand all" [ref=e848] [cursor=pointer]
+                    - strong [ref=e849]: number
+                    - text: "[0, 1]"
+            - generic [ref=e850]:
+              - button "Examples" [ref=e851] [cursor=pointer]
+              - button "Expand all" [ref=e856] [cursor=pointer]
+              - strong [ref=e857]: array
+        - article [ref=e858]:
+          - generic [ref=e859]:
+            - button [ref=e860] [cursor=pointer]:
+              - strong [ref=e862]: ClipOutput
+            - button "Collapse all" [ref=e866] [cursor=pointer]
+            - strong [ref=e867]: object
+          - generic [ref=e868]:
+            - paragraph [ref=e872]:
+              - text: A rendered file.
+              - code [ref=e873]: url
+              - text: is relative to this API's root and needs no auth beyond whatever fronts the server.
+            - list [ref=e875]:
+              - listitem [ref=e876]:
+                - article [ref=e877]:
+                  - generic [ref=e878]:
+                    - strong [ref=e879]: name*
+                    - strong [ref=e880]: string
+              - listitem [ref=e881]:
+                - article [ref=e882]:
+                  - generic [ref=e883]:
+                    - strong [ref=e884]: size_bytes*
+                    - strong [ref=e885]: integer
+              - listitem [ref=e886]:
+                - article [ref=e887]:
+                  - generic [ref=e888]:
+                    - button [ref=e889] [cursor=pointer]:
+                      - strong [ref=e891]: url*
+                    - button "Expand all" [ref=e895] [cursor=pointer]
+                    - strong [ref=e896]: string
+            - generic [ref=e897]:
+              - button "Examples" [ref=e898] [cursor=pointer]
+              - button "Expand all" [ref=e903] [cursor=pointer]
+              - strong [ref=e904]: array
+        - article [ref=e905]:
+          - generic [ref=e906]:
+            - button [ref=e907] [cursor=pointer]:
+              - strong [ref=e909]: ErrorResponse
+            - button "Collapse all" [ref=e913] [cursor=pointer]
+            - strong [ref=e914]: object
+          - generic [ref=e915]:
+            - paragraph [ref=e919]:
+              - text: Every failure on this API — domain error, validation error or 404 — comes back in this shape.
+              - code [ref=e920]: QatfError
+              - text: subclasses carry their own status code and are mapped by a single exception handler, so routers never hand-build one.
+            - list [ref=e922]:
+              - listitem [ref=e923]:
+                - article [ref=e924]:
+                  - generic [ref=e925]:
+                    - button [ref=e926] [cursor=pointer]:
+                      - strong [ref=e928]: detail*
+                    - button "Expand all" [ref=e932] [cursor=pointer]
+                    - strong [ref=e933]: string
+            - generic [ref=e934]:
+              - button "Examples" [ref=e935] [cursor=pointer]
+              - button "Expand all" [ref=e940] [cursor=pointer]
+              - strong [ref=e941]: array
+        - article [ref=e942]:
+          - generic [ref=e943]:
+            - button [ref=e944] [cursor=pointer]:
+              - strong [ref=e946]: Health
+            - button "Collapse all" [ref=e950] [cursor=pointer]
+            - strong [ref=e951]: object
+          - generic [ref=e952]:
+            - generic [ref=e955]:
+              - paragraph [ref=e956]: Everything worth knowing BEFORE submitting an hour of audio.
+              - paragraph [ref=e957]:
+                - code [ref=e958]: degraded
+                - text: is not fatal — the server still accepts jobs — but a job that reaches stage 3 without a credential fails after transcription has already run, which is minutes wasted.
+            - list [ref=e960]:
+              - listitem [ref=e961]:
+                - article [ref=e962]:
+                  - generic [ref=e963]:
+                    - button [ref=e964] [cursor=pointer]:
+                      - strong [ref=e966]: status*
+                    - button "Expand all" [ref=e970] [cursor=pointer]
+                    - strong [ref=e971]: string
+              - listitem [ref=e972]:
+                - article [ref=e973]:
+                  - generic [ref=e974]:
+                    - strong [ref=e975]: version*
+                    - strong [ref=e976]: string
+              - listitem [ref=e977]:
+                - article [ref=e978]:
+                  - generic [ref=e979]:
+                    - button [ref=e980] [cursor=pointer]:
+                      - strong [ref=e982]: model*
+                    - button "Expand all" [ref=e986] [cursor=pointer]
+                    - strong [ref=e987]: string
+              - listitem [ref=e988]:
+                - article [ref=e989]:
+                  - generic [ref=e990]:
+                    - button [ref=e991] [cursor=pointer]:
+                      - strong [ref=e993]: ffmpeg*
+                    - button "Expand all" [ref=e997] [cursor=pointer]
+                    - strong [ref=e998]: boolean
+              - listitem [ref=e999]:
+                - article [ref=e1000]:
+                  - generic [ref=e1001]:
+                    - button [ref=e1002] [cursor=pointer]:
+                      - strong [ref=e1004]: media_root*
+                    - button "Expand all" [ref=e1008] [cursor=pointer]
+                    - strong [ref=e1009]: string
+              - listitem [ref=e1010]:
+                - article [ref=e1011]:
+                  - generic [ref=e1012]:
+                    - button [ref=e1013] [cursor=pointer]:
+                      - strong [ref=e1015]: max_workers*
+                    - button "Expand all" [ref=e1019] [cursor=pointer]
+                    - strong [ref=e1020]: integer
+              - listitem [ref=e1021]:
+                - article [ref=e1022]:
+                  - generic [ref=e1023]:
+                    - strong [ref=e1024]: llm_provider*
+                    - strong [ref=e1025]: string
+              - listitem [ref=e1026]:
+                - article [ref=e1027]:
+                  - generic [ref=e1028]:
+                    - button [ref=e1029] [cursor=pointer]:
+                      - strong [ref=e1031]: llm_ready*
+                    - button "Expand all" [ref=e1035] [cursor=pointer]
+                    - strong [ref=e1036]: boolean
+              - listitem [ref=e1037]:
+                - article [ref=e1038]:
+                  - generic [ref=e1039]:
+                    - button [ref=e1040] [cursor=pointer]:
+                      - strong [ref=e1042]: llm_error
+                    - button "Expand all" [ref=e1046] [cursor=pointer]
+                    - strong [ref=e1047]: (string | null)
+              - listitem [ref=e1048]:
+                - article [ref=e1049]:
+                  - generic [ref=e1050]:
+                    - button [ref=e1051] [cursor=pointer]:
+                      - strong [ref=e1053]: providers
+                    - button "Expand all" [ref=e1057] [cursor=pointer]
+                    - strong [ref=e1058]: array<object>
+              - listitem [ref=e1059]:
+                - article [ref=e1060]:
+                  - generic [ref=e1061]:
+                    - button [ref=e1062] [cursor=pointer]:
+                      - strong [ref=e1064]: cuda_devices
+                    - button "Expand all" [ref=e1068] [cursor=pointer]
+                    - strong [ref=e1069]: integer
+              - listitem [ref=e1070]:
+                - article [ref=e1071]:
+                  - generic [ref=e1072]:
+                    - button [ref=e1073] [cursor=pointer]:
+                      - strong [ref=e1075]: transcribe_device
+                    - button "Expand all" [ref=e1079] [cursor=pointer]
+                    - strong [ref=e1080]: string
+            - generic [ref=e1081]:
+              - button "Examples" [ref=e1082] [cursor=pointer]
+              - button "Expand all" [ref=e1087] [cursor=pointer]
+              - strong [ref=e1088]: array
+        - article [ref=e1089]:
+          - generic [ref=e1090]:
+            - button [ref=e1091] [cursor=pointer]:
+              - strong [ref=e1093]: JobCreate
+            - button "Collapse all" [ref=e1097] [cursor=pointer]
+            - strong [ref=e1098]: object
+          - generic [ref=e1099]:
+            - paragraph [ref=e1103]: Job from a video already on the server's filesystem.
+            - list [ref=e1105]:
+              - listitem [ref=e1106]:
+                - article [ref=e1107]:
+                  - generic [ref=e1108]:
+                    - button [ref=e1109] [cursor=pointer]:
+                      - strong [ref=e1111]: clips
+                    - button "Expand all" [ref=e1115] [cursor=pointer]
+                    - strong [ref=e1116]: integer
+                    - text: "[1, 50]"
+              - listitem [ref=e1117]:
+                - article [ref=e1118]:
+                  - generic [ref=e1119]:
+                    - button [ref=e1120] [cursor=pointer]:
+                      - strong [ref=e1122]: min_len
+                    - button "Expand all" [ref=e1126] [cursor=pointer]
+                    - strong [ref=e1127]: integer
+                    - text: "[1, 600]"
+              - listitem [ref=e1128]:
+                - article [ref=e1129]:
+                  - generic [ref=e1130]:
+                    - button [ref=e1131] [cursor=pointer]:
+                      - strong [ref=e1133]: max_len
+                    - button "Expand all" [ref=e1137] [cursor=pointer]
+                    - strong [ref=e1138]: integer
+                    - text: "[1, 600]"
+              - listitem [ref=e1139]:
+                - article [ref=e1140]:
+                  - generic [ref=e1141]:
+                    - button [ref=e1142] [cursor=pointer]:
+                      - strong [ref=e1144]: reframe
+                    - button "Expand all" [ref=e1148] [cursor=pointer]
+                    - strong [ref=e1149]: string
+              - listitem [ref=e1150]:
+                - article [ref=e1151]:
+                  - generic [ref=e1152]:
+                    - button [ref=e1153] [cursor=pointer]:
+                      - strong [ref=e1155]: track_tier
+                    - button "Expand all" [ref=e1159] [cursor=pointer]
+                    - strong [ref=e1160]: string
+              - listitem [ref=e1161]:
+                - article [ref=e1162]:
+                  - generic [ref=e1163]:
+                    - button [ref=e1164] [cursor=pointer]:
+                      - strong [ref=e1166]: codec
+                    - button "Expand all" [ref=e1170] [cursor=pointer]
+                    - strong [ref=e1171]: string
+              - listitem [ref=e1172]:
+                - article [ref=e1173]:
+                  - generic [ref=e1174]:
+                    - button [ref=e1175] [cursor=pointer]:
+                      - strong [ref=e1177]: preset
+                    - button "Expand all" [ref=e1181] [cursor=pointer]
+                    - strong [ref=e1182]: string
+              - listitem [ref=e1183]:
+                - article [ref=e1184]:
+                  - generic [ref=e1185]:
+                    - button [ref=e1186] [cursor=pointer]:
+                      - strong [ref=e1188]: resolution
+                    - button "Expand all" [ref=e1192] [cursor=pointer]
+                    - strong [ref=e1193]: string
+              - listitem [ref=e1194]:
+                - article [ref=e1195]:
+                  - generic [ref=e1196]:
+                    - button [ref=e1197] [cursor=pointer]:
+                      - strong [ref=e1199]: ten_bit
+                    - button "Expand all" [ref=e1203] [cursor=pointer]
+                    - strong [ref=e1204]: boolean
+              - listitem [ref=e1205]:
+                - article [ref=e1206]:
+                  - generic [ref=e1207]:
+                    - button [ref=e1208] [cursor=pointer]:
+                      - strong [ref=e1210]: crf
+                    - button "Expand all" [ref=e1214] [cursor=pointer]
+                    - strong [ref=e1215]: integer
+                    - text: "[0, 51]"
+              - listitem [ref=e1216]:
+                - article [ref=e1217]:
+                  - generic [ref=e1218]:
+                    - button [ref=e1219] [cursor=pointer]:
+                      - strong [ref=e1221]: whisper
+                    - button "Expand all" [ref=e1225] [cursor=pointer]
+                    - strong [ref=e1226]: string
+              - listitem [ref=e1227]:
+                - article [ref=e1228]:
+                  - generic [ref=e1229]:
+                    - button [ref=e1230] [cursor=pointer]:
+                      - strong [ref=e1232]: device
+                    - button "Expand all" [ref=e1236] [cursor=pointer]
+                    - strong [ref=e1237]: string
+              - listitem [ref=e1238]:
+                - article [ref=e1239]:
+                  - generic [ref=e1240]:
+                    - button [ref=e1241] [cursor=pointer]:
+                      - strong [ref=e1243]: language
+                    - button "Expand all" [ref=e1247] [cursor=pointer]
+                    - strong [ref=e1248]: (string | null)
+              - listitem [ref=e1249]:
+                - article [ref=e1250]:
+                  - generic [ref=e1251]:
+                    - button [ref=e1252] [cursor=pointer]:
+                      - strong [ref=e1254]: denoise
+                    - button "Expand all" [ref=e1258] [cursor=pointer]
+                    - strong [ref=e1259]: boolean
+              - listitem [ref=e1260]:
+                - article [ref=e1261]:
+                  - generic [ref=e1262]:
+                    - button [ref=e1263] [cursor=pointer]:
+                      - strong [ref=e1265]: fixups
+                    - button "Expand all" [ref=e1269] [cursor=pointer]
+                    - strong [ref=e1270]: (object | null)
+              - listitem [ref=e1271]:
+                - article [ref=e1272]:
+                  - generic [ref=e1273]:
+                    - button [ref=e1274] [cursor=pointer]:
+                      - strong [ref=e1276]: hotwords
+                    - button "Expand all" [ref=e1280] [cursor=pointer]
+                    - strong [ref=e1281]: (string | null)
+              - listitem [ref=e1282]:
+                - article [ref=e1283]:
+                  - generic [ref=e1284]:
+                    - button [ref=e1285] [cursor=pointer]:
+                      - strong [ref=e1287]: initial_prompt
+                    - button "Expand all" [ref=e1291] [cursor=pointer]
+                    - strong [ref=e1292]: (string | null)
+              - listitem [ref=e1293]:
+                - article [ref=e1294]:
+                  - generic [ref=e1295]:
+                    - button [ref=e1296] [cursor=pointer]:
+                      - strong [ref=e1298]: font
+                    - button "Expand all" [ref=e1302] [cursor=pointer]
+                    - strong [ref=e1303]: string
+              - listitem [ref=e1304]:
+                - article [ref=e1305]:
+                  - generic [ref=e1306]:
+                    - button [ref=e1307] [cursor=pointer]:
+                      - strong [ref=e1309]: captions
+                    - button "Expand all" [ref=e1313] [cursor=pointer]
+                    - strong [ref=e1314]: boolean
+              - listitem [ref=e1315]:
+                - article [ref=e1316]:
+                  - generic [ref=e1317]:
+                    - button [ref=e1318] [cursor=pointer]:
+                      - strong [ref=e1320]: per_line
+                    - button "Expand all" [ref=e1324] [cursor=pointer]
+                    - strong [ref=e1325]: integer
+                    - text: "[1, 8]"
+              - listitem [ref=e1326]:
+                - article [ref=e1327]:
+                  - generic [ref=e1328]:
+                    - button [ref=e1329] [cursor=pointer]:
+                      - strong [ref=e1331]: auto_render
+                    - button "Expand all" [ref=e1335] [cursor=pointer]
+                    - strong [ref=e1336]: boolean
+              - listitem [ref=e1337]:
+                - article [ref=e1338]:
+                  - generic [ref=e1339]:
+                    - button [ref=e1340] [cursor=pointer]:
+                      - strong [ref=e1342]: path*
+                    - button "Expand all" [ref=e1346] [cursor=pointer]
+                    - strong [ref=e1347]: string
+            - generic [ref=e1348]:
+              - button "Examples" [ref=e1349] [cursor=pointer]
+              - button "Expand all" [ref=e1354] [cursor=pointer]
+              - strong [ref=e1355]: array
+        - article [ref=e1356]:
+          - generic [ref=e1357]:
+            - button [ref=e1358] [cursor=pointer]:
+              - strong [ref=e1360]: JobList
+            - button "Collapse all" [ref=e1364] [cursor=pointer]
+            - strong [ref=e1365]: object
+          - list [ref=e1368]:
+            - listitem [ref=e1369]:
+              - article [ref=e1370]:
+                - generic [ref=e1371]:
+                  - button [ref=e1372] [cursor=pointer]:
+                    - strong [ref=e1374]: jobs*
+                  - button "Expand all" [ref=e1378] [cursor=pointer]
+                  - strong [ref=e1379]: array<object>
+        - article [ref=e1380]:
+          - generic [ref=e1381]:
+            - button [ref=e1382] [cursor=pointer]:
+              - strong [ref=e1384]: JobOptions
+            - button "Collapse all" [ref=e1388] [cursor=pointer]
+            - strong [ref=e1389]: object
+          - generic [ref=e1390]:
+            - generic [ref=e1393]:
+              - paragraph [ref=e1394]:
+                - text: Everything that controls a run. Every field has a working default, so
+                - code [ref=e1395]: "{\"path\": \"talk.mov\"}"
+                - text: is a complete request.
+              - paragraph [ref=e1396]: "Grouped by stage: selection (clips, min_len, max_len), transcription (whisper, device, language, denoise, hotwords, initial_prompt, fixups), captions (font, captions, per_line) and encode (reframe, codec, resolution, ten_bit, crf)."
+            - list [ref=e1398]:
+              - listitem [ref=e1399]:
+                - article [ref=e1400]:
+                  - generic [ref=e1401]:
+                    - button [ref=e1402] [cursor=pointer]:
+                      - strong [ref=e1404]: clips
+                    - button "Expand all" [ref=e1408] [cursor=pointer]
+                    - strong [ref=e1409]: integer
+                    - text: "[1, 50]"
+              - listitem [ref=e1410]:
+                - article [ref=e1411]:
+                  - generic [ref=e1412]:
+                    - button [ref=e1413] [cursor=pointer]:
+                      - strong [ref=e1415]: min_len
+                    - button "Expand all" [ref=e1419] [cursor=pointer]
+                    - strong [ref=e1420]: integer
+                    - text: "[1, 600]"
+              - listitem [ref=e1421]:
+                - article [ref=e1422]:
+                  - generic [ref=e1423]:
+                    - button [ref=e1424] [cursor=pointer]:
+                      - strong [ref=e1426]: max_len
+                    - button "Expand all" [ref=e1430] [cursor=pointer]
+                    - strong [ref=e1431]: integer
+                    - text: "[1, 600]"
+              - listitem [ref=e1432]:
+                - article [ref=e1433]:
+                  - generic [ref=e1434]:
+                    - button [ref=e1435] [cursor=pointer]:
+                      - strong [ref=e1437]: reframe
+                    - button "Expand all" [ref=e1441] [cursor=pointer]
+                    - strong [ref=e1442]: string
+              - listitem [ref=e1443]:
+                - article [ref=e1444]:
+                  - generic [ref=e1445]:
+                    - button [ref=e1446] [cursor=pointer]:
+                      - strong [ref=e1448]: track_tier
+                    - button "Expand all" [ref=e1452] [cursor=pointer]
+                    - strong [ref=e1453]: string
+              - listitem [ref=e1454]:
+                - article [ref=e1455]:
+                  - generic [ref=e1456]:
+                    - button [ref=e1457] [cursor=pointer]:
+                      - strong [ref=e1459]: codec
+                    - button "Expand all" [ref=e1463] [cursor=pointer]
+                    - strong [ref=e1464]: string
+              - listitem [ref=e1465]:
+                - article [ref=e1466]:
+                  - generic [ref=e1467]:
+                    - button [ref=e1468] [cursor=pointer]:
+                      - strong [ref=e1470]: preset
+                    - button "Expand all" [ref=e1474] [cursor=pointer]
+                    - strong [ref=e1475]: string
+              - listitem [ref=e1476]:
+                - article [ref=e1477]:
+                  - generic [ref=e1478]:
+                    - button [ref=e1479] [cursor=pointer]:
+                      - strong [ref=e1481]: resolution
+                    - button "Expand all" [ref=e1485] [cursor=pointer]
+                    - strong [ref=e1486]: string
+              - listitem [ref=e1487]:
+                - article [ref=e1488]:
+                  - generic [ref=e1489]:
+                    - button [ref=e1490] [cursor=pointer]:
+                      - strong [ref=e1492]: ten_bit
+                    - button "Expand all" [ref=e1496] [cursor=pointer]
+                    - strong [ref=e1497]: boolean
+              - listitem [ref=e1498]:
+                - article [ref=e1499]:
+                  - generic [ref=e1500]:
+                    - button [ref=e1501] [cursor=pointer]:
+                      - strong [ref=e1503]: crf
+                    - button "Expand all" [ref=e1507] [cursor=pointer]
+                    - strong [ref=e1508]: integer
+                    - text: "[0, 51]"
+              - listitem [ref=e1509]:
+                - article [ref=e1510]:
+                  - generic [ref=e1511]:
+                    - button [ref=e1512] [cursor=pointer]:
+                      - strong [ref=e1514]: whisper
+                    - button "Expand all" [ref=e1518] [cursor=pointer]
+                    - strong [ref=e1519]: string
+              - listitem [ref=e1520]:
+                - article [ref=e1521]:
+                  - generic [ref=e1522]:
+                    - button [ref=e1523] [cursor=pointer]:
+                      - strong [ref=e1525]: device
+                    - button "Expand all" [ref=e1529] [cursor=pointer]
+                    - strong [ref=e1530]: string
+              - listitem [ref=e1531]:
+                - article [ref=e1532]:
+                  - generic [ref=e1533]:
+                    - button [ref=e1534] [cursor=pointer]:
+                      - strong [ref=e1536]: language
+                    - button "Expand all" [ref=e1540] [cursor=pointer]
+                    - strong [ref=e1541]: (string | null)
+              - listitem [ref=e1542]:
+                - article [ref=e1543]:
+                  - generic [ref=e1544]:
+                    - button [ref=e1545] [cursor=pointer]:
+                      - strong [ref=e1547]: denoise
+                    - button "Expand all" [ref=e1551] [cursor=pointer]
+                    - strong [ref=e1552]: boolean
+              - listitem [ref=e1553]:
+                - article [ref=e1554]:
+                  - generic [ref=e1555]:
+                    - button [ref=e1556] [cursor=pointer]:
+                      - strong [ref=e1558]: fixups
+                    - button "Expand all" [ref=e1562] [cursor=pointer]
+                    - strong [ref=e1563]: (object | null)
+              - listitem [ref=e1564]:
+                - article [ref=e1565]:
+                  - generic [ref=e1566]:
+                    - button [ref=e1567] [cursor=pointer]:
+                      - strong [ref=e1569]: hotwords
+                    - button "Expand all" [ref=e1573] [cursor=pointer]
+                    - strong [ref=e1574]: (string | null)
+              - listitem [ref=e1575]:
+                - article [ref=e1576]:
+                  - generic [ref=e1577]:
+                    - button [ref=e1578] [cursor=pointer]:
+                      - strong [ref=e1580]: initial_prompt
+                    - button "Expand all" [ref=e1584] [cursor=pointer]
+                    - strong [ref=e1585]: (string | null)
+              - listitem [ref=e1586]:
+                - article [ref=e1587]:
+                  - generic [ref=e1588]:
+                    - button [ref=e1589] [cursor=pointer]:
+                      - strong [ref=e1591]: font
+                    - button "Expand all" [ref=e1595] [cursor=pointer]
+                    - strong [ref=e1596]: string
+              - listitem [ref=e1597]:
+                - article [ref=e1598]:
+                  - generic [ref=e1599]:
+                    - button [ref=e1600] [cursor=pointer]:
+                      - strong [ref=e1602]: captions
+                    - button "Expand all" [ref=e1606] [cursor=pointer]
+                    - strong [ref=e1607]: boolean
+              - listitem [ref=e1608]:
+                - article [ref=e1609]:
+                  - generic [ref=e1610]:
+                    - button [ref=e1611] [cursor=pointer]:
+                      - strong [ref=e1613]: per_line
+                    - button "Expand all" [ref=e1617] [cursor=pointer]
+                    - strong [ref=e1618]: integer
+                    - text: "[1, 8]"
+              - listitem [ref=e1619]:
+                - article [ref=e1620]:
+                  - generic [ref=e1621]:
+                    - button [ref=e1622] [cursor=pointer]:
+                      - strong [ref=e1624]: auto_render
+                    - button "Expand all" [ref=e1628] [cursor=pointer]
+                    - strong [ref=e1629]: boolean
+            - generic [ref=e1630]:
+              - button "Examples" [ref=e1631] [cursor=pointer]
+              - button "Expand all" [ref=e1636] [cursor=pointer]
+              - strong [ref=e1637]: array
+        - article [ref=e1638]:
+          - generic [ref=e1639]:
+            - button [ref=e1640] [cursor=pointer]:
+              - strong [ref=e1642]: JobResponse
+            - button "Collapse all" [ref=e1646] [cursor=pointer]
+            - strong [ref=e1647]: object
+          - generic [ref=e1648]:
+            - generic [ref=e1651]:
+              - paragraph [ref=e1652]: The whole job. This is what you poll.
+              - paragraph [ref=e1653]:
+                - code [ref=e1654]: state
+                - text: "drives everything:"
+                - code [ref=e1655]: done
+                - text: means
+                - code [ref=e1656]: outputs
+                - text: is final,
+                - code [ref=e1657]: planned
+                - text: means
+                - code [ref=e1658]: clips
+                - text: is ready for review,
+                - code [ref=e1659]: failed
+                - text: means read
+                - code [ref=e1660]: error
+                - text: .
+            - list [ref=e1662]:
+              - listitem [ref=e1663]:
+                - article [ref=e1664]:
+                  - generic [ref=e1665]:
+                    - strong [ref=e1666]: id*
+                    - strong [ref=e1667]: string
+              - listitem [ref=e1668]:
+                - article [ref=e1669]:
+                  - generic [ref=e1670]:
+                    - button [ref=e1671] [cursor=pointer]:
+                      - strong [ref=e1673]: state*
+                    - button "Expand all" [ref=e1677] [cursor=pointer]
+                    - strong [ref=e1678]: string
+              - listitem [ref=e1679]:
+                - article [ref=e1680]:
+                  - generic [ref=e1681]:
+                    - button [ref=e1682] [cursor=pointer]:
+                      - strong [ref=e1684]: message
+                    - button "Expand all" [ref=e1688] [cursor=pointer]
+                    - strong [ref=e1689]: string
+              - listitem [ref=e1690]:
+                - article [ref=e1691]:
+                  - generic [ref=e1692]:
+                    - button [ref=e1693] [cursor=pointer]:
+                      - strong [ref=e1695]: error
+                    - button "Expand all" [ref=e1699] [cursor=pointer]
+                    - strong [ref=e1700]: (string | null)
+              - listitem [ref=e1701]:
+                - article [ref=e1702]:
+                  - generic [ref=e1703]:
+                    - strong [ref=e1704]: video*
+                    - strong [ref=e1705]: string
+              - listitem [ref=e1706]:
+                - article [ref=e1707]:
+                  - generic [ref=e1708]:
+                    - button [ref=e1709] [cursor=pointer]:
+                      - strong [ref=e1711]: source*
+                    - button "Expand all" [ref=e1715] [cursor=pointer]
+                    - strong [ref=e1716]: string
+              - listitem [ref=e1717]:
+                - article [ref=e1718]:
+                  - generic [ref=e1719]:
+                    - button [ref=e1720] [cursor=pointer]:
+                      - strong [ref=e1722]: options*
+                    - button "Expand all" [ref=e1726] [cursor=pointer]
+                    - strong [ref=e1727]: object
+              - listitem [ref=e1728]:
+                - article [ref=e1729]:
+                  - generic [ref=e1730]:
+                    - strong [ref=e1731]: created_at*
+                    - strong [ref=e1732]: string
+              - listitem [ref=e1733]:
+                - article [ref=e1734]:
+                  - generic [ref=e1735]:
+                    - strong [ref=e1736]: updated_at*
+                    - strong [ref=e1737]: string
+              - listitem [ref=e1738]:
+                - article [ref=e1739]:
+                  - generic [ref=e1740]:
+                    - button [ref=e1741] [cursor=pointer]:
+                      - strong [ref=e1743]: language
+                    - button "Expand all" [ref=e1747] [cursor=pointer]
+                    - strong [ref=e1748]: (string | null)
+              - listitem [ref=e1749]:
+                - article [ref=e1750]:
+                  - generic [ref=e1751]:
+                    - button [ref=e1752] [cursor=pointer]:
+                      - strong [ref=e1754]: device
+                    - button "Expand all" [ref=e1758] [cursor=pointer]
+                    - strong [ref=e1759]: (string | null)
+              - listitem [ref=e1760]:
+                - article [ref=e1761]:
+                  - generic [ref=e1762]:
+                    - button [ref=e1763] [cursor=pointer]:
+                      - strong [ref=e1765]: word_count
+                    - button "Expand all" [ref=e1769] [cursor=pointer]
+                    - strong [ref=e1770]: integer
+              - listitem [ref=e1771]:
+                - article [ref=e1772]:
+                  - generic [ref=e1773]:
+                    - button [ref=e1774] [cursor=pointer]:
+                      - strong [ref=e1776]: transcript_cached
+                    - button "Expand all" [ref=e1780] [cursor=pointer]
+                    - strong [ref=e1781]: boolean
+              - listitem [ref=e1782]:
+                - article [ref=e1783]:
+                  - generic [ref=e1784]:
+                    - button [ref=e1785] [cursor=pointer]:
+                      - strong [ref=e1787]: clips
+                    - button "Expand all" [ref=e1791] [cursor=pointer]
+                    - strong [ref=e1792]: array<object>
+              - listitem [ref=e1793]:
+                - article [ref=e1794]:
+                  - generic [ref=e1795]:
+                    - button [ref=e1796] [cursor=pointer]:
+                      - strong [ref=e1798]: outputs
+                    - button "Expand all" [ref=e1802] [cursor=pointer]
+                    - strong [ref=e1803]: array<object>
+            - generic [ref=e1804]:
+              - button "Examples" [ref=e1805] [cursor=pointer]
+              - button "Expand all" [ref=e1810] [cursor=pointer]
+              - strong [ref=e1811]: array
+        - article [ref=e1812]:
+          - generic [ref=e1813]:
+            - button [ref=e1814] [cursor=pointer]:
+              - strong [ref=e1816]: JobState
+            - button "Collapse all" [ref=e1820] [cursor=pointer]
+            - strong [ref=e1821]: string
+          - generic [ref=e1823]:
+            - button "Enum" [ref=e1824] [cursor=pointer]
+            - button "Expand all" [ref=e1829] [cursor=pointer]
+            - strong [ref=e1830]: array
+        - article [ref=e1831]:
+          - generic [ref=e1832]:
+            - button [ref=e1833] [cursor=pointer]:
+              - strong [ref=e1835]: PlanUpdate
+            - button "Collapse all" [ref=e1839] [cursor=pointer]
+            - strong [ref=e1840]: object
+          - generic [ref=e1841]:
+            - paragraph [ref=e1845]: Replace a job's whole plan. There is no partial update — send the clips you want, in the order you want them numbered.
+            - list [ref=e1847]:
+              - listitem [ref=e1848]:
+                - article [ref=e1849]:
+                  - generic [ref=e1850]:
+                    - button [ref=e1851] [cursor=pointer]:
+                      - strong [ref=e1853]: clips*
+                    - button "Expand all" [ref=e1857] [cursor=pointer]
+                    - strong [ref=e1858]: array<object>
+                    - text: "[1, 100] items"
+              - listitem [ref=e1859]:
+                - article [ref=e1860]:
+                  - generic [ref=e1861]:
+                    - button [ref=e1862] [cursor=pointer]:
+                      - strong [ref=e1864]: snap
+                    - button "Expand all" [ref=e1868] [cursor=pointer]
+                    - strong [ref=e1869]: boolean
+            - generic [ref=e1870]:
+              - button "Examples" [ref=e1871] [cursor=pointer]
+              - button "Expand all" [ref=e1876] [cursor=pointer]
+              - strong [ref=e1877]: array
+        - article [ref=e1878]:
+          - generic [ref=e1879]:
+            - button [ref=e1880] [cursor=pointer]:
+              - strong [ref=e1882]: ProviderInfo
+            - button "Collapse all" [ref=e1886] [cursor=pointer]
+            - strong [ref=e1887]: object
+          - generic [ref=e1888]:
+            - paragraph [ref=e1892]: One row of the stage-3 provider roster, as reported by /healthz.
+            - list [ref=e1894]:
+              - listitem [ref=e1895]:
+                - article [ref=e1896]:
+                  - generic [ref=e1897]:
+                    - button [ref=e1898] [cursor=pointer]:
+                      - strong [ref=e1900]: key*
+                    - button "Expand all" [ref=e1904] [cursor=pointer]
+                    - strong [ref=e1905]: string
+              - listitem [ref=e1906]:
+                - article [ref=e1907]:
+                  - generic [ref=e1908]:
+                    - strong [ref=e1909]: default_model*
+                    - strong [ref=e1910]: string
+              - listitem [ref=e1911]:
+                - article [ref=e1912]:
+                  - generic [ref=e1913]:
+                    - button [ref=e1914] [cursor=pointer]:
+                      - strong [ref=e1916]: base_url
+                    - button "Expand all" [ref=e1920] [cursor=pointer]
+                    - strong [ref=e1921]: (string | null)
+              - listitem [ref=e1922]:
+                - article [ref=e1923]:
+                  - generic [ref=e1924]:
+                    - button [ref=e1925] [cursor=pointer]:
+                      - strong [ref=e1927]: key_env
+                    - button "Expand all" [ref=e1931] [cursor=pointer]
+                    - strong [ref=e1932]: (string | null)
+              - listitem [ref=e1933]:
+                - article [ref=e1934]:
+                  - generic [ref=e1935]:
+                    - button [ref=e1936] [cursor=pointer]:
+                      - strong [ref=e1938]: structured_output*
+                    - button "Expand all" [ref=e1942] [cursor=pointer]
+                    - strong [ref=e1943]: string
+              - listitem [ref=e1944]:
+                - article [ref=e1945]:
+                  - generic [ref=e1946]:
+                    - button [ref=e1947] [cursor=pointer]:
+                      - strong [ref=e1949]: context_tokens
+                    - button "Expand all" [ref=e1953] [cursor=pointer]
+                    - strong [ref=e1954]: (integer | null)
+              - listitem [ref=e1955]:
+                - article [ref=e1956]:
+                  - generic [ref=e1957]:
+                    - button [ref=e1958] [cursor=pointer]:
+                      - strong [ref=e1960]: note
+                    - button "Expand all" [ref=e1964] [cursor=pointer]
+                    - strong [ref=e1965]: string
+            - generic [ref=e1966]:
+              - button "Examples" [ref=e1967] [cursor=pointer]
+              - button "Expand all" [ref=e1972] [cursor=pointer]
+              - strong [ref=e1973]: array
+        - article [ref=e1974]:
+          - generic [ref=e1975]:
+            - button [ref=e1976] [cursor=pointer]:
+              - strong [ref=e1978]: TranscriptResponse
+            - button "Collapse all" [ref=e1982] [cursor=pointer]
+            - strong [ref=e1983]: object
+          - generic [ref=e1984]:
+            - generic [ref=e1987]:
+              - paragraph [ref=e1988]: The transcript as it will be captioned — fixups and per-word corrections already applied, so what you read here is what gets burned in.
+              - paragraph [ref=e1989]: Word timings are the ONLY acoustic truth in the system; everything stage 4 does is snap to these. They are reported, never accepted back.
+            - list [ref=e1991]:
+              - listitem [ref=e1992]:
+                - article [ref=e1993]:
+                  - generic [ref=e1994]:
+                    - button [ref=e1995] [cursor=pointer]:
+                      - strong [ref=e1997]: language
+                    - button "Expand all" [ref=e2001] [cursor=pointer]
+                    - strong [ref=e2002]: (string | null)
+              - listitem [ref=e2003]:
+                - article [ref=e2004]:
+                  - generic [ref=e2005]:
+                    - button [ref=e2006] [cursor=pointer]:
+                      - strong [ref=e2008]: language_probability
+                    - button "Expand all" [ref=e2012] [cursor=pointer]
+                    - strong [ref=e2013]: (number | null)
+              - listitem [ref=e2014]:
+                - article [ref=e2015]:
+                  - generic [ref=e2016]:
+                    - strong [ref=e2017]: word_count*
+                    - strong [ref=e2018]: integer
+              - listitem [ref=e2019]:
+                - article [ref=e2020]:
+                  - generic [ref=e2021]:
+                    - button [ref=e2022] [cursor=pointer]:
+                      - strong [ref=e2024]: edits_applied
+                    - button "Expand all" [ref=e2028] [cursor=pointer]
+                    - strong [ref=e2029]: integer
+              - listitem [ref=e2030]:
+                - article [ref=e2031]:
+                  - generic [ref=e2032]:
+                    - button [ref=e2033] [cursor=pointer]:
+                      - strong [ref=e2035]: edits_stale
+                    - button "Expand all" [ref=e2039] [cursor=pointer]
+                    - strong [ref=e2040]: integer
+              - listitem [ref=e2041]:
+                - article [ref=e2042]:
+                  - generic [ref=e2043]:
+                    - button [ref=e2044] [cursor=pointer]:
+                      - strong [ref=e2046]: words*
+                    - button "Expand all" [ref=e2050] [cursor=pointer]
+                    - strong [ref=e2051]: array<object>
+            - generic [ref=e2052]:
+              - button "Examples" [ref=e2053] [cursor=pointer]
+              - button "Expand all" [ref=e2058] [cursor=pointer]
+              - strong [ref=e2059]: array
+        - article [ref=e2060]:
+          - generic [ref=e2061]:
+            - button [ref=e2062] [cursor=pointer]:
+              - strong [ref=e2064]: TranscriptUpdate
+            - button "Collapse all" [ref=e2068] [cursor=pointer]
+            - strong [ref=e2069]: object
+          - generic [ref=e2070]:
+            - generic [ref=e2073]:
+              - paragraph [ref=e2074]: Correct misheard words.
+              - paragraph [ref=e2075]:
+                - text: Send the whole word list back with
+                - code [ref=e2076]: text
+                - text: "changed where it is wrong. The submission is diffed against the transcript and stored as an overlay, so this is a wholesale replace: re-submitting the untouched transcript clears every correction."
+              - paragraph [ref=e2077]:
+                - strong [ref=e2078]:
+                  - text: Only
+                  - code [ref=e2079]: text
+                  - text: may differ.
+                - text: The word count and every
+                - code [ref=e2080]: start
+                - text: /
+                - code [ref=e2081]: end
+                - text: must match exactly, and a submission that changes either is refused with
+                - code [ref=e2082]: "422"
+                - text: "rather than accepted quietly. Timings come from the audio and are what every cut point is snapped to — a correction can change what a caption reads and can never move a cut. That is also what makes this safe to do after rendering: the cut points are provably identical, so only stage 5 has to run again."
+              - paragraph [ref=e2083]:
+                - text: To split one word into two, put both words in that word's
+                - code [ref=e2084]: text
+                - text: . There is no honest timing to give a word Whisper never heard.
+            - list [ref=e2086]:
+              - listitem [ref=e2087]:
+                - article [ref=e2088]:
+                  - generic [ref=e2089]:
+                    - button [ref=e2090] [cursor=pointer]:
+                      - strong [ref=e2092]: words*
+                    - button "Expand all" [ref=e2096] [cursor=pointer]
+                    - strong [ref=e2097]: array<object>
+                    - text: "[1, 200000] items"
+            - generic [ref=e2098]:
+              - button "Examples" [ref=e2099] [cursor=pointer]
+              - button "Expand all" [ref=e2104] [cursor=pointer]
+              - strong [ref=e2105]: array
+        - article [ref=e2106]:
+          - generic [ref=e2107]:
+            - button [ref=e2108] [cursor=pointer]:
+              - strong [ref=e2110]: WordModel
+            - button "Collapse all" [ref=e2114] [cursor=pointer]
+            - strong [ref=e2115]: object
+          - generic [ref=e2116]:
+            - paragraph [ref=e2120]: One word with the timings stage 4 cuts on.
+            - list [ref=e2122]:
+              - listitem [ref=e2123]:
+                - article [ref=e2124]:
+                  - generic [ref=e2125]:
+                    - strong [ref=e2126]: text*
+                    - strong [ref=e2127]: string
+                    - text: ≤ 500 characters
+              - listitem [ref=e2128]:
+                - article [ref=e2129]:
+                  - generic [ref=e2130]:
+                    - button [ref=e2131] [cursor=pointer]:
+                      - strong [ref=e2133]: start*
+                    - button "Expand all" [ref=e2137] [cursor=pointer]
+                    - strong [ref=e2138]: number
+                    - text: "[0, 86400]"
+              - listitem [ref=e2139]:
+                - article [ref=e2140]:
+                  - generic [ref=e2141]:
+                    - button [ref=e2142] [cursor=pointer]:
+                      - strong [ref=e2144]: end*
+                    - button "Expand all" [ref=e2148] [cursor=pointer]
+                    - strong [ref=e2149]: number
+                    - text: "[0, 86400]"
+            - generic [ref=e2150]:
+              - button "Examples" [ref=e2151] [cursor=pointer]
+              - button "Expand all" [ref=e2156] [cursor=pointer]
+              - strong [ref=e2157]: array

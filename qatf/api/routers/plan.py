@@ -32,6 +32,7 @@ def _payload(transcript, words: list[Word], applied: int,
     return TranscriptResponse(
         language=transcript.language,
         language_probability=transcript.language_probability,
+        timing_source=transcript.timing_source,
         word_count=len(words),
         edits_applied=applied,
         edits_stale=stale,
@@ -208,7 +209,13 @@ def put_plan(job_id: str, body: PlanUpdate,
         transcript = store.transcript_for(job)
         if transcript is None:
             raise NoTranscript("cannot snap: no transcript for this job yet")
-        clips = [pipeline.snap(c, transcript.words) for c in clips]
+        # The tail comes from the transcript's own provenance, exactly as it did
+        # on the first pass — see `cuts.tail_for`. Re-snapping with a different
+        # tail than the run that produced the plan would move every boundary a
+        # little on each edit, which is the drift that `snap`'s idempotence
+        # exists to prevent, reintroduced through the back door.
+        tail = pipeline.tail_for(transcript.timing_source)
+        clips = [pipeline.snap(c, transcript.words, tail=tail) for c in clips]
 
     updated = store.update(job_id, clips=clips_to_dicts(clips),
                            state=JobState.planned.value, error=None,

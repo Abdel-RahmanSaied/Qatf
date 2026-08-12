@@ -15,7 +15,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="qatf",
         description="qatf — harvest the parts of a long video worth watching.",
     )
-    ap.add_argument("video", type=Path)
+    # str, NOT Path. `Path("https://youtu.be/x")` silently collapses the double
+    # slash to `https:/youtu.be/x`, so converting back to a string hands the
+    # fetcher a URL that no longer parses. `runner` decides which of the two
+    # this is via `pipeline.is_url`.
+    ap.add_argument("video", type=str,
+                    help="path to a video file, or an https URL to fetch "
+                         "(YouTube only — see --transcript-source)")
     ap.add_argument("-o", "--out", type=Path, default=Path("shorts"))
     ap.add_argument("--clips", type=int, default=5)
     ap.add_argument("--min-len", type=int, default=30)
@@ -58,6 +64,16 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--10bit", dest="ten_bit", action="store_true",
                     help="keep 10-bit precision (needs a 10-bit source such as "
                          "ProRes). Suppresses banding in skies and skin.")
+    ap.add_argument("--transcript-source", choices=["auto", "captions", "whisper"],
+                    default="auto",
+                    help="where stage 2's words come from. auto uses the "
+                         "caption track when the source is a URL and the track "
+                         "has per-word timings, else transcribes. captions asks "
+                         "for the track and still falls back to Whisper if it is "
+                         "unusable. whisper never reads captions. NOTE a caption "
+                         "track carries word STARTS and no ends, so cut points "
+                         "close at the next word's onset rather than a measured "
+                         "boundary.")
     ap.add_argument("--whisper", default="large-v3")
     ap.add_argument("--device", choices=list(DEVICES), default="auto",
                     help="auto tries the GPU and falls back to CPU; naming a "

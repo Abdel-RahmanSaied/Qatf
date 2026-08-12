@@ -15,8 +15,25 @@ which is how you ship 50 clips in the wrong typeface without noticing.
 under the API that is the server, not the caller's machine.
 
 ```bash
---font "Traditional Arabic"
+--font "Traditional Arabic"      # only if the RENDERING host has it
 ```
+
+`Traditional Arabic` is a Windows face and is **not** present on a stock macOS
+host or in the Docker image. `Geeza Pro` works on macOS; the image carries
+`Noto Naskh Arabic`. Ask the host, do not guess:
+
+```bash
+fc-list : family | tr ',' '\n' | sort -u | grep -i naskh
+```
+
+**A missing family is now warned about.** Preflight (CLI) and the worker (API)
+log `WARNING font '...' is not installed on this host` before stage 5 runs. Two
+things it deliberately does not do: it never refuses the run, and where
+`fc-list` is absent it skips silently rather than warning — so **no warning is
+not proof the font is present.**
+
+It also only checks that the *family* exists. An installed Latin font passes the
+check and still renders tofu, because nothing here inspects glyph coverage.
 
 Verify by rendering one clip and extracting a frame. Do not trust the .ass file.
 

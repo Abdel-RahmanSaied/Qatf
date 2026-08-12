@@ -243,10 +243,10 @@ interface.
 Seconds to run. No ffmpeg, GPU, API key or network needed.
 
 ```bash
-python tests/smoke_db.py          #  14 checks
-python tests/smoke_pipeline.py    # 297 checks
+python tests/smoke_db.py          #  23 checks
+python tests/smoke_pipeline.py    # 354 checks
 python tests/smoke_llm.py         #  38 checks
-python tests/smoke_api.py         # 131 checks
+python tests/smoke_api.py         # 154 checks
 python tests/load_api.py          #  23 checks, ~20s
 ruff check .
 ```

@@ -12,12 +12,31 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..core.constants import DURATION_SLACK, SNAP_LEAD, SNAP_TAIL
+from ..core.constants import DURATION_SLACK, SNAP_LEAD, SNAP_TAIL, SNAP_TAIL_BOUNDED
 from ..core.types import Clip, Word
 from ..core.utils import log
 
 #: Float tolerance for recognising a boundary this function itself produced.
 _EPS = 1e-6
+
+
+def tail_for(timing_source: str | None) -> float:
+    """How far past a word's end a cut may close, given where the end came from.
+
+    The one place stage 4 is allowed to care about the transcript's provenance,
+    and it cares about exactly one thing: whether `Word.end` was MEASURED or
+    merely BOUNDED.
+
+    Whisper measures both edges against the audio, so there is real silence
+    after a word's end and `SNAP_TAIL` extends into it. A caption track gives
+    one instant per token and no end at all, so `end` is the next token's start
+    — an upper bound. Extending past an upper bound does not reach silence, it
+    reaches the next word, and the cut lands 0.35s after that word has begun.
+
+    Defaulting to `SNAP_TAIL` for an unknown source is the safe direction: rows
+    written before `timing_source` existed came from Whisper, and read back
+    NULL."""
+    return SNAP_TAIL_BOUNDED if timing_source == "captions" else SNAP_TAIL
 
 
 def snap(clip: Clip, words: list[Word],

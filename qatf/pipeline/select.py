@@ -4,7 +4,10 @@ The ONLY thing the model is asked for is *which passages*, at MM:SS resolution.
 It is never asked for precise timing, because it has no way to know it and will
 confabulate sub-second values. Stage 4 fixes the boundaries.
 
-UNVERIFIED: never executed against the real API.
+Executed against a real endpoint: OpenRouter, at the `json_object` tier, on real
+Arabic material. Every other provider in the roster is still documentation-only —
+`smoke_llm.py` pins what we *send* them, and none of those endpoints has ever
+replied. See "Verification status" in CLAUDE.md before claiming otherwise.
 """
 
 from __future__ import annotations
