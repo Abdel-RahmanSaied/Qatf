@@ -22,6 +22,16 @@ CAPTION_MAX_CHARS = 22
 SNAP_LEAD = 0.15
 SNAP_TAIL = 0.35
 
+#: How far outside [min_len, max_len] a clip may still land, in SECONDS.
+#:
+#: Absolute rather than proportional, because what stage 4 adds is absolute:
+#: SNAP_LEAD + SNAP_TAIL (0.5s) plus at most a word of boundary movement. The
+#: old `hi * 1.4` admitted a 72.8s clip for `--max-len 52`, which defeats the
+#: only reason anyone passes 52 — landing under the 60s Shorts ceiling once
+#: snapping has had its say. Anything beyond this is the model overrunning its
+#: instruction, not snapping drifting.
+DURATION_SLACK = 2.0
+
 # --- Subject tracking (stages 4b/4c) ---------------------------------------
 #
 # EVERY NUMBER BELOW IS AN UNMEASURED STARTING VALUE. They are here because they
@@ -63,10 +73,28 @@ TRACK_MAX_PAN = 0.5
 #: a real camera operator holds still, and so should this.
 TRACK_DEADZONE = 0.08
 
-#: A jump larger than this between adjacent samples is read as a shot change,
-#: not as motion. Smoothing across a hard cut invents a pan that is not in the
-#: source, so the path re-anchors instead.
-TRACK_SHOT_JUMP = 0.25
+#: Shot-change detection, in two parts because one number cannot do it.
+#:
+#: A jump is read as a cut when it clears BOTH of these. The distance floor
+#: alone was the original rule, and it is wrong the moment the sample interval
+#: moves: the tiers sample 8x apart, so 0.25-of-frame-width between adjacent
+#: samples is a plausible cut at `balanced` (0.33s apart), ordinary walking
+#: speed at `fast` (1s apart) and hypersensitive at `best` (0.125s apart). A
+#: presenter crossing the frame would have been re-anchored on every sample at
+#: `fast` — a step-per-second stutter, which is precisely what TRACK_MAX_PAN
+#: and the deadzone exist to prevent, and the re-anchor path consults neither.
+#:
+#: So the speed term carries the tier dependence and the floor stops jitter at a
+#: short interval reading as a cut. At `balanced` the two agree at 0.25, which
+#: is why this is a generalisation of the old rule rather than a new one.
+#:
+#: The `fast` tier consequently cannot see a cut that moves the subject less
+#: than 0.75 of frame width, because at one sample per second that is
+#: indistinguishable from someone running. It smooths across those instead. That
+#: is the deliberate direction to be wrong in: a missed cut costs one bounded
+#: pan, a false one costs a whip on every walking step.
+TRACK_SHOT_JUMP = 0.25          # floor: never a cut below this, whatever the gap
+TRACK_SHOT_SPEED = 0.75         # frame widths per second no subject moves at
 
 #: Above this, the active-speaker model decides who to frame; below it, `framing`
 #: falls back to picking the largest face. The `fast` tier reports 0.0 for every

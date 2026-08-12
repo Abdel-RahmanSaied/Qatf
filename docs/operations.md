@@ -117,7 +117,7 @@ The cheapest iteration loop, in order of cost:
 
 | Change | Re-runs |
 | --- | --- |
-| `--crf`, `--font`, `--reframe`, `--codec`, `--resolution` | stage 5 only |
+| `--crf`, `--font`, `--reframe`, `--track-tier`, `--codec`, `--resolution` | stage 5 only (`--reframe track` also re-runs stage 4b/4c, itself cached per video) |
 | plan edits (`--plan`, `PUT /plan`) | stages 4–5 |
 | `--clips`, `--min-len`, `--max-len`, provider | stages 3–5 |
 | `--language`, `--whisper`, `--vocab`, `--denoise` | everything |

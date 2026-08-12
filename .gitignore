@@ -104,3 +104,6 @@ memory/
 # the repository. The YuNet weights under qatf/pipeline/assets/ DO belong there
 # and are deliberately not excluded here.
 tests/.render-check/
+
+# stage-2 sweep transcripts — regenerate with tests/sweep_asr.py
+sweep-*.json

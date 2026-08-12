@@ -31,6 +31,7 @@ what byte-for-byte frame diffs did to a caption test.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -40,7 +41,9 @@ from pathlib import Path
 
 from _harness import check, report, section
 
+from qatf.core.errors import CommandFailed, FFmpegNotFound
 from qatf.core.types import Clip, Detection
+from qatf.core.utils import binary, check_ffmpeg
 from qatf.pipeline import detect, encode, framing
 
 WORK = Path(__file__).resolve().parent / ".render-check"
@@ -58,13 +61,16 @@ FACE_CACHE = Path.home() / ".cache" / "qatf" / "face-test.jpg"
 
 
 def ff(*args: str) -> None:
-    subprocess.run(["ffmpeg", "-y", "-v", "error", *args], check=True)
+    # binary(), not the bare name: QATF_FFMPEG exists for hosts where ffmpeg is
+    # installed and not on PATH, and the pipeline honours it. A suite that does
+    # not resolve it the same way skips itself on exactly those hosts.
+    subprocess.run([binary("ffmpeg"), "-y", "-v", "error", *args], check=True)
 
 
 def raw_frame(video: Path, t: float) -> bytes | None:
     out = subprocess.run(
-        ["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", str(video), "-frames:v", "1",
-         "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+        [binary("ffmpeg"), "-v", "error", "-ss", f"{t}", "-i", str(video),
+         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
         capture_output=True, check=True).stdout
     return out if len(out) >= OUT_W * OUT_H * 3 else None
 
@@ -138,9 +144,15 @@ def score(label: str, tracked: list, control: list) -> None:
           len(ctrl) < len(control), f"crop held it in {len(ctrl)}/{len(control)}")
 
 
-if shutil.which("ffmpeg") is None:
-    print("ffmpeg not on PATH — this suite renders, so there is nothing to do")
-    raise SystemExit(0)
+try:
+    # check_ffmpeg, not shutil.which: it honours QATF_FFMPEG and it actually
+    # RUNS the binary. `which` reported nothing on a host where ffmpeg was
+    # configured by env, and this suite — the only one that catches what a
+    # dimension check misses — exited 0 without rendering anything.
+    check_ffmpeg()
+except FFmpegNotFound as exc:
+    print(f"{exc}\nthis suite renders, so there is nothing to do")
+    raise SystemExit(0) from None
 
 if WORK.exists():
     shutil.rmtree(WORK)
@@ -169,6 +181,62 @@ t_a, c_a = render_pair(bar, clip_a, track_a, "a")
 score("synthetic", [red_centre(t_a, t) for t in PROBES],
       [red_centre(c_a, t) for t in PROBES])
 
+# --------------------------------------------------------------- the decoder
+section("stage 4b decode — ffmpeg only, no detector")
+# Between fixture A (no ffmpeg subprocess of its own) and fixture B (needs
+# OpenCV) sat the one function with neither: `_frames` drives ffmpeg directly
+# rather than through `core.utils.run`, so it re-implements the failure handling
+# that module owns. On a host without OpenCV — which is most of them until
+# someone installs the extra — none of this was exercised at all.
+_span, _fps = (2.37, 5.0), 3.0
+_got = [t for t, _ in detect._frames(bar, _span, _fps, 160, 90)]
+check("decode lands on the zero-anchored grid, not on the span edge",
+      _got and _got[0] == 2.667, f"first instant {_got[0] if _got else None}")
+# The bug this catches is invisible in one run: labelling by accumulation from a
+# rounded start gave 3.334 here and 3.333 for the same instant in the span
+# below, so `framing._observations` saw one moment as two.
+_wider = [t for t, _ in detect._frames(bar, (2.0, 5.0), _fps, 160, 90)]
+check("a re-sampled span reproduces the same instants exactly",
+      all(t in _wider for t in _got if t >= 2.0),
+      f"{sorted(set(_got) - set(_wider))} drifted")
+check("every decoded frame is the size the detector was configured for",
+      all(len(b) == 160 * 90 * 3
+          for _, b in detect._frames(bar, (0.0, 1.0), _fps, 160, 90)))
+
+# A failed decode must RAISE. Returning [] reads as "no faces here", and
+# `detections_for` writes that span to the cache as covered — so one bad decode
+# permanently convinces every later run that the footage holds no subject.
+_corrupt = WORK / "not-a-video.mp4"
+_corrupt.write_bytes(b"this is not a video" * 100)
+try:
+    list(detect._frames(_corrupt, (0.0, 2.0), _fps, 160, 90))
+    check("a failed decode raises rather than reading as 'no faces'", False,
+          "returned empty")
+except CommandFailed:
+    check("a failed decode raises rather than reading as 'no faces'", True)
+
+# No timeout and no kill() in here means a hang, not a failure.
+_gen = detect._frames(bar, (0.0, DUR), 8.0, 160, 90)
+next(_gen)
+_gen.close()
+check("abandoning the decode mid-span does not deadlock on wait()", True)
+
+_saved = os.environ.get("QATF_FFMPEG")
+os.environ["QATF_FFMPEG"] = str(WORK / "no-such-ffmpeg.exe")
+try:
+    list(detect._frames(bar, (0.0, 1.0), _fps, 160, 90))
+    _typed = False
+except FFmpegNotFound:
+    _typed = True
+except FileNotFoundError:
+    _typed = False          # raw OSError escaping the pipeline is the bug
+finally:
+    if _saved is None:
+        os.environ.pop("QATF_FFMPEG", None)
+    else:
+        os.environ["QATF_FFMPEG"] = _saved
+check("a missing ffmpeg is FFmpegNotFound, not a raw FileNotFoundError", _typed)
+
 # ---------------------------------------------------------------- fixture B
 section("fixture B — real face, full stage 4b chain")
 try:
@@ -188,7 +256,18 @@ else:
             req = urllib.request.Request(FACE_URL, headers={
                 "User-Agent": "qatf-tests/0.1 (render verification; +https://example.invalid)"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                FACE_CACHE.write_bytes(resp.read())
+                body = resp.read()
+            # Validate BEFORE it reaches the permanent cache. A 200 carrying a
+            # rate-limit page or a captive-portal interception is still a 200,
+            # and writing it here poisons ~/.cache/qatf for good: every later
+            # run takes the exists() fast path, ffmpeg rejects the HTML, and the
+            # suite dies with a traceback instead of the SKIP below. Nothing
+            # re-fetches.
+            if len(body) < 4096 or not body.startswith(b"\xff\xd8\xff"):
+                print(f"  SKIP  the fetched test face is not a JPEG "
+                      f"({len(body)} bytes, starts {body[:8]!r})")
+            else:
+                FACE_CACHE.write_bytes(body)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"  SKIP  could not fetch the test face ({exc})")
 
@@ -216,10 +295,33 @@ else:
             check("detected position matches ground truth", worst < 0.02,
                   f"worst error {worst:.4f} of frame width")
 
-        # the cache is keyed to the video, so a second call must not re-detect
-        again, _ = detect.detections_for(face_vid, [clip_b], WORK / "b", tier="balanced")
+        # The cache is keyed to the video, so a second call must not re-detect.
+        # Counting detections cannot show that — detection is deterministic, so
+        # the counts match whether the cache was consulted or ignored. Count the
+        # calls instead: this check has to be able to fail, which is the same
+        # rule the crop control in `score` is held to.
+        _real_detect_span = detect.detect_span
+        _calls = []
+        detect.detect_span = lambda *a, **k: (_calls.append(1)
+                                              or _real_detect_span(*a, **k))
+        try:
+            again, _ = detect.detections_for(face_vid, [clip_b], WORK / "b",
+                                             tier="balanced")
+        finally:
+            detect.detect_span = _real_detect_span
         check("the face cache is reused rather than recomputed",
-              len(again) == len(dets_b))
+              not _calls and len(again) == len(dets_b),
+              f"{len(_calls)} detector runs on the second call")
+
+        # A different video must NOT inherit these detections. Same work dir,
+        # same tier — only the footage differs, which is exactly the collision
+        # the cache key was missing.
+        other = WORK / "b-other.mp4"
+        ff("-f", "lavfi", "-i", f"color=c=0x101010:s={SRC_W}x{SRC_H}:d=2:r=30",
+           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(other))
+        check("a second video in the same work directory gets its own cache",
+              detect.cache_path(WORK / "b", other, detector, "balanced")
+              != detect.cache_path(WORK / "b", face_vid, detector, "balanced"))
 
         track_b = framing.solve(dets_b, clip_b, crop_w, detector=detector,
                                 tier="balanced")

@@ -44,8 +44,8 @@ def _read(store: JobStore, job) -> TranscriptResponse:
     transcript = store.transcript_for(job)
     if transcript is None:
         raise NoTranscript("no transcript yet")
-    words, applied, stale = caption_words(transcript, job.options,
-                                          job.work_dir(store.root))
+    words, _blanked, applied, stale = caption_words(transcript, job.options,
+                                                     job.work_dir(store.root))
     return _payload(transcript, words, applied, stale)
 
 
@@ -66,6 +66,15 @@ def get_transcript(job_id: str, store: JobStore = Depends(get_store)) -> Transcr
     to look first, not the plan. Each word's `start` is also how you find it in
     the audio — scrub there, hear what was actually said, then correct it with
     `PUT`.
+
+    **Some words may come back with an empty `text`.** `pipeline.health.repair`
+    blanks a decoder repetition loop (four or more identical tokens in a row)
+    rather than deleting it, so the word count and every `start`/`end` stay put
+    — deleting would break `PUT`'s position-keyed overlay and its own refusal of
+    a word-count change. A blank renders as nothing (`captions.group_words`
+    skips it), but it is still a real element of `words`: `PUT` must echo it
+    back unchanged like any other word, or it trips the same word-count/timing
+    contract as an accidental deletion would.
 
     Read from `<work>/words-<model>-<lang>.json`. The cache key includes the
     Whisper size and the forced language, so `?language=ar` after an English run
@@ -121,7 +130,7 @@ def put_transcript(job_id: str, body: TranscriptUpdate,
     if transcript is None:
         raise NoTranscript("no transcript to correct yet")
 
-    baseline = baseline_words(transcript, job.options)
+    baseline, _blanked = baseline_words(transcript, job.options)
     submitted = words_from_dicts([w.model_dump() for w in body.words])
     corrections = pipeline.edits.diff(baseline, submitted)
 

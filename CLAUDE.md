@@ -30,8 +30,11 @@ qatf/
     asr.py         2.  transcribe + word times  faster-whisper
     fixups.py      2b. substitutions by value   text only, never timestamps
     edits.py       2c. corrections by position  text only, never timestamps
+    health.py      2d. loop repair + timing flags  text only, never timestamps
     select.py      3.  pick clips               the configured provider
     cuts.py        4.  snap to word bounds      deterministic
+    detect.py      4b. find faces               OpenCV, cached against the video
+    framing.py     4c. solve the crop path      deterministic
     captions.py    5a. ASS generation           deterministic
     encode.py      5b. reframe + burn + encode  ffmpeg
   llm/             stage 3 providers — the only swappable part of the pipeline
@@ -53,7 +56,8 @@ qatf/
     parser.py      the argument surface
     runner.py      preflight + the run flow
 qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_{pipeline,llm,api}.py, load_api.py, _harness.py
+tests/             smoke_{pipeline,llm,api}.py, load_api.py, score_transcript.py,
+                   verify_render.py, fixtures/, _harness.py
 docs/              human-facing reference — see "Documentation" below
 ```
 
@@ -102,6 +106,12 @@ qatf talk.mov -o reels/ --language ar --clips 8 --min-len 28 --max-len 52 \
 model picks them, so it routinely adds a few seconds. Ask for 60 and some clips
 land at 63, which YouTube Shorts rejects. Reels and TikTok allow longer.
 
+`within_duration` allows `DURATION_SLACK` (2s) either side, absolute rather than
+proportional — the old `hi * 1.4` admitted 72.8s for `--max-len 52`, which
+defeats the whole point of passing 52. Anything further out is the model
+overrunning its instruction, and it is dropped **and logged**: a plan silently
+returning 7 clips for `--clips 8` reads as the model finding nothing.
+
 ```bash
 
 # API
@@ -119,9 +129,14 @@ python tests/load_api.py                      # ~20s, 24 threads, asserts
 ruff check .
 
 # the one suite that DOES need ffmpeg — it renders clips and measures where the
-# subject landed. Fixture B additionally needs OpenCV and one network fetch
+# subject landed, and exercises stage 4b's decoder directly. Fixture B (real
+# face, so the detector too) additionally needs OpenCV and one network fetch
 # (cached after the first run); it skips rather than fails without them.
+# It honours QATF_FFMPEG, so it does not silently no-op where ffmpeg is off PATH.
 python tests/verify_render.py                 # ~40s
+
+# grade a transcript against docs/quality.md's tracked terms (--audio needs ffmpeg)
+python tests/score_transcript.py <words.json> --audio <wav>   # grade a transcript
 ```
 
 Transcription is cached at `<work>/words-<model>-<lang>.json`. Delete it to
@@ -190,6 +205,13 @@ Two habits behind those:
 - **Never echo caller input in an error.** The 422 handler in `api/__init__.py`
   reports location and reason only — FastAPI's default embeds the input, which
   both reflects content and fails outright on a non-serialisable `inf`.
+  **The handler cannot finish this job alone**: it strips FastAPI's `input`
+  field, but it cannot un-say a value a validator formatted into its own
+  message, which arrives as part of the *reason*. `whisper`, `preset` and
+  `resolution` all quoted the rejected value back for exactly that reason, while
+  `smoke_api.py` reported the rule as held — its check only exercised the
+  FastAPI-composed path. A live server found it. So: no `{value!r}` in a
+  validator message; name the allowed set instead.
 
 ---
 
@@ -297,6 +319,13 @@ bitrate** because there is genuinely that much more detail to encode.
 `crop` is the default and is right for a centred talking head. Reach for `blur`
 only when the framing genuinely needs the full width — and know what it costs.
 
+`track` is `crop` with a moving x, so it carries the same subject pixels and
+costs the same to encode; the extra cost is stage 4b, which is linear in
+`--track-tier`. It is a third mode rather than a change to `crop` deliberately:
+every number above was measured against the two static graphs, and a mode that
+did not exist cannot invalidate them. Read open risk #2 before promising anything
+about it.
+
 ### Performance — measured, and mostly negative results
 
 Synthetic 1080p source, 4 clips x 18s to 1080x1920, 16 cores. Ratios transfer;
@@ -397,6 +426,16 @@ boundaries come from the model; acoustic boundaries come from Whisper. Never mix
 This applies to **hand-edited plans too**, which is why `PUT /jobs/{id}/plan` and
 `--plan` re-snap by default. A human typing `"start": 20.0` is making the same kind
 of semantic guess the model makes.
+
+Because of that default, **`snap` must stay idempotent** — the round trip runs it
+over its own output, so a value it already produced has to be a fixed point. It
+was not: `SNAP_TAIL` is 0.35s while Arabic word ends measure ~0.45s apart, so the
+re-search landed on the *next* word and every edit-and-resubmit cycle pushed the
+end out ~0.5s. Five round trips grew a real clip from 56.70s to 59.21s — a clip
+chosen to sit under 60s crossing it, silently, with nothing in the diff to show
+for it. `snap` also returns a **new** `Clip` rather than rewriting the caller's:
+the first test written for that drift compared `before` with `after` and saw
+nothing, because the in-place mutation had made them one object.
 
 Corollary: clip quality problems are usually a stage-3 prompt issue. Clip *edge*
 problems are always a stage-4 issue. Diagnose them separately.
@@ -537,6 +576,15 @@ Be honest about this in any session. It is the difference between a demo and a t
   with a seeded transcript cache standing in for stage 2 and `--plan` for stage
   3). Output is 1080x1920, 30fps, yuv420p, audio intact, captions burned in.
 - Both filtergraphs (`crop`, `blur`) produce 1080x1920 output with correct duration
+- `tests/verify_render.py` (10 checks without OpenCV, more with it): the `track`
+  path rendered through real ffmpeg and measured — the tracked render holds the
+  subject in every probed frame and the `crop` control provably loses it. Plus
+  stage 4b's decoder, which needs ffmpeg but **not** OpenCV and so runs where
+  fixture B skips: grid anchoring, that a re-sampled span reproduces the same
+  instants, that a failed decode raises instead of reading as "no faces", that
+  abandoning a decode does not deadlock, and that a missing ffmpeg arrives as
+  `FFmpegNotFound`. The re-sampling check found a real drift bug (3.334 vs
+  3.333 for one instant) that one run alone cannot show.
 - Captions burn in and render inside frame — confirmed by extracting PNGs and
   looking at them, in English **and** Arabic
 - RTL word order, after the fix — Arabic reads correctly right-to-left with
@@ -547,7 +595,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   corrupted job record, that concurrent renders are refused with 409, and holds
   budgets for per-job list cost, `/healthz` serial cost and poll latency during
   an upload.
-- `tests/smoke_pipeline.py` (155 checks): timestamp formatting and carry, slugify,
+- `tests/smoke_pipeline.py` (271 checks): timestamp formatting and carry, slugify,
   caption grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
   (no forced `-r`, crf forwarded), device resolution and the CUDA-to-CPU
@@ -564,7 +612,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   `json_object` rather than erroring, that vLLM keeps `json_schema`, refusal and
   truncation handling, the context guard, and `parse_response` across all three
   output tiers. Proves request *shape*, not that any endpoint accepts it.
-- `tests/smoke_api.py` (110 checks): job state machine, transcript cache round
+- `tests/smoke_api.py` (127 checks): job state machine, transcript cache round
   trip, the transcript correction round trip (correction reaches the burned-in
   captions, cut points provably unchanged, retiming/add/remove all refused, the
   overlay stays out of the cache file), plan replace with and without re-snap,
@@ -630,14 +678,47 @@ Related and already visible: `slugify` is ASCII-only, so an all-Arabic title
 produces `02-clip.mp4`. Fine while filenames are internal; not fine once a user
 sees them.
 
-### 2. Reframing is static
+### 2. Tracking frames a face, not a speaker
 
-`crop` is a fixed centre crop; `blur` is scale-to-fit over a blurred fill. Neither
-tracks the subject. Real auto-reframe = sample face positions (MediaPipe, 1-2 fps),
-smooth the x-centre, drive `crop=x='...'` with a piecewise expression or `sendcmd`.
+`--reframe track` exists: stage 4b (`detect.py`, YuNet via OpenCV) samples face
+positions, stage 4c (`framing.py`) solves them into a crop path, stage 5b drives
+`crop=x` with `sendcmd`. `tests/verify_render.py` renders and measures where the
+subject actually landed, with `crop` as a control that must fail.
 
-Deliberately deferred: a perfectly tracked bad clip is still a bad clip. Selection
-quality first.
+**The active-speaker model is not built.** Every `Detection` carries
+`speaking=0.0`, so `framing.subject` always takes its largest-face fallback and
+will frame the listener in a two-shot — on every tier, `best` included. The tiers
+differ only in sample rate today. Say so before claiming multi-speaker support.
+
+**Every `TRACK_*` constant is an unmeasured starting value.** They are product
+decisions so they live in `core/constants.py`, but none has been scored against
+real footage, which is why none of them is in `docs/quality.md` — that file is
+for numbers somebody measured. Two of them encode a real trade worth knowing:
+
+- `TRACK_SHOT_JUMP` (a distance floor) and `TRACK_SHOT_SPEED` (frame widths per
+  second) together decide what counts as a cut. One number cannot: the tiers
+  sample 8x apart, so a per-sample distance means something different in each.
+  A jump must clear both, and it must be confirmed on **both sides** — the new
+  position persists into the next sample, and the position it left was itself
+  established. A lone bad detection produces two large steps, and confirming
+  only the first half still whips on the way back.
+- Consequence: at `fast` (1 fps) a cut moving the subject under ~0.75 of frame
+  width is indistinguishable from a sprint and gets smoothed across. That is the
+  right direction to be wrong in — a missed cut costs one bounded pan, a false
+  one costs a whip on every walking step.
+
+Deliberately still behind selection quality: a perfectly tracked bad clip is
+still a bad clip.
+
+**The face cache keys on the footage, not the output directory.**
+`faces-<detector>-<tier>-<key>.json`, where `key` hashes (resolved path, size,
+mtime) plus `DETECT_WIDTH` and `YUNET_SCORE`. Both halves earn their place: two
+videos rendered into one `-o` directory shared a cache and the second inherited
+the first's face positions with `fallback=False`, and a knob outside the key is a
+knob that silently does nothing on a warm work directory. Same lesson as
+`--language ar` and `asr.cache_path`. Bias a cache key toward re-computing:
+over-triggering costs one re-detection, under-triggering ships fifty confidently
+mis-framed clips.
 
 ### 3. Missing basics
 

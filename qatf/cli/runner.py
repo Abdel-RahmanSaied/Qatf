@@ -111,6 +111,13 @@ def run(args: argparse.Namespace) -> int:
         words, n = pipeline.fixups.apply(words, mapping)
         log(f"      applied {n} word fixups from {len(mapping)} rules")
 
+    words, blanked = pipeline.health.repair(words)
+    if blanked:
+        log(f"      blanked {blanked} looped token(s) — the decoder repeated "
+            f"itself; timings and word count are untouched")
+    for note in pipeline.health.warnings(words):
+        log(f"      NOTE {note}")
+
     # per-word corrections, if someone has written any. Picked up from the work
     # directory with no flag: the file is the interface, the same way the
     # transcript cache is. Fixups first, so a correction wins on the word it

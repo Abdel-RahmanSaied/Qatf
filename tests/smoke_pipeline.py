@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -503,6 +504,48 @@ kept = cuts.within_duration(
 check("duration filter keeps only the middle", [c.title for c in kept] == ["ok"],
       str([c.title for c in kept]))
 
+# snap used to rewrite the clip it was given and hand back the same object. The
+# first test written for the drift below could not see it: `before` and `after`
+# were one object, so it compared a value with itself and reported no change.
+_input = Clip(10.2, 20.7, "t")
+_before = (_input.start, _input.end)
+_out = cuts.snap(_input, w)
+check("snap does not mutate the clip it is given",
+      (_input.start, _input.end) == _before, f"{_before} -> {(_input.start, _input.end)}")
+check("snap returns a new object", _out is not _input)
+check("snap carries the rest of the clip across",
+      _out.title == "t" and _out.score == _input.score)
+
+# `--plan` and `PUT /jobs/{id}/plan` re-snap by default, so the documented
+# hand-edit round trip runs snap over its own output. Each pass used to move the
+# end onto the NEXT word — measured on real Arabic, five passes grew a clip from
+# 56.70s to 59.21s, which is how a clip chosen to sit under 60s crosses it.
+_once = cuts.snap(Clip(10.2, 20.7, "t"), w)
+_twice = cuts.snap(_once, w)
+check("snap is idempotent — a second pass changes nothing",
+      (_twice.start, _twice.end) == (_once.start, _once.end),
+      f"{(_once.start, _once.end)} -> {(_twice.start, _twice.end)}")
+_many = _once
+for _ in range(8):
+    _many = cuts.snap(_many, w)
+check("and stays put over eight hand-edit round trips",
+      abs(_many.duration - _once.duration) < 1e-9,
+      f"{_once.duration:.4f} -> {_many.duration:.4f}")
+# the fixed point must be a REAL boundary, not just any value snap leaves alone
+check("the idempotent value is still on a word boundary",
+      any(abs(_once.start - max(0.0, x.start - 0.15)) < 1e-6 for x in w)
+      and any(abs(_once.end - (x.end + 0.35)) < 1e-6 for x in w))
+
+# `hi * 1.4` admitted 72.8s for --max-len 52, defeating the only reason anyone
+# passes 52 (landing under the 60s Shorts ceiling once snapping has had its say)
+_over = cuts.within_duration([Clip(0, 56.7, "the real clip 03")], 28, 52)
+check("a clip well over max-len is dropped, not admitted by a 40% margin",
+      _over == [], f"kept {[c.duration for c in _over]}")
+check("but snapping's own slack is still allowed",
+      len(cuts.within_duration([Clip(0, 53.0, "just over")], 28, 52)) == 1)
+check("the slack is absolute, so it does not scale with the request",
+      len(cuts.within_duration([Clip(0, 130.0, "long")], 60, 100)) == 0)
+
 section("model response parsing — stage 3")
 good = """```json
 [{"start_mmss": "00:10", "end_mmss": "01:00", "title": "a", "hook": "h",
@@ -526,6 +569,26 @@ check("every line is MM:SS prefixed", all(line.startswith("[") for line in lines
 check("no word lost", sum(len(line.split(" ")) - 1 for line in lines) == 100)
 check("empty input is empty output", select.build_transcript_blocks([]) == "")
 
+# The checks above only ever use plain non-blank words, which is exactly why
+# this regression slipped through review: guarding `buf.append(w.text)` with
+# `if w.text:` (so a blanked repetition-loop token doesn't become a double
+# space in the prompt) also made `buf` stay empty through an all-blank leading
+# run, and the split condition was `... and buf` — so a block whose leading
+# words are entirely blanked, and whose span crosses `block_seconds` before
+# any real word arrives, never split on schedule and mislabelled the next
+# real word with the stale `block_start`. Reproduces the reviewer's case
+# exactly: a blank run from 0.0-13.5s (crossing the 12s boundary while every
+# word in it is blank), then two real words.
+_blank_run = [Word("", 0.0, 2.0), Word("", 3.0, 5.0), Word("", 6.0, 8.0),
+             Word("", 11.0, 13.5)]
+_real_words = [Word("real1", 13.5, 14.0), Word("real2", 20.0, 20.5)]
+_blocked = select.build_transcript_blocks(_blank_run + _real_words, block_seconds=12.0)
+check("a block boundary still fires on schedule during an all-blank run — "
+      "real1 is labelled from its OWN start (00:13), not the stale "
+      "block_start (00:00) a blank-only leading block would otherwise leave "
+      "behind",
+      "[00:13] real1 real2" in _blocked.splitlines(), repr(_blocked))
+
 section("plan round trip")
 original = [Clip(1.5, 2.5, "t", "h", "w", 0.4)]
 restored = clips_from_dicts(clips_to_dicts(original))
@@ -548,6 +611,17 @@ from qatf.core.types import (  # noqa: E402
     track_to_dict,
 )
 from qatf.pipeline import detect, framing  # noqa: E402
+
+
+def _key_with(module, name, value, video):
+    """`cache_key` as it would be with one module-level constant changed."""
+    original = getattr(module, name)
+    setattr(module, name, value)
+    try:
+        return module.cache_key(video)
+    finally:
+        setattr(module, name, original)
+
 
 CW = framing.crop_width(1920, 1080)
 check("crop_width on 16:9", abs(CW - 0.3164) < 0.001, f"{CW:.4f}")
@@ -600,6 +674,10 @@ shaky = framing.solve(jitter, Clip(0, 10, "t"), CW, tier="balanced")
 check("detector jitter inside the deadzone does not move the window",
       len({k.cx for k in shaky.keyframes}) == 1)
 
+check("a still subject emits one keyframe, not one per frame — sendcmd holds "
+      "the last value and a repeat is a no-op that still costs a parse",
+      len(held.keyframes) == 1, f"{len(held.keyframes)} keyframes")
+
 cut = ([det(t / 2.0, 0.30) for t in range(4)] +
        [det(2.0 + t / 2.0, 0.75) for t in range(4)])
 across = framing.solve(cut, Clip(0, 4, "t"), CW, tier="balanced")
@@ -607,6 +685,41 @@ jump = max(abs(b.cx - a.cx)
            for a, b in zip(across.keyframes, across.keyframes[1:], strict=False))
 check("a shot change re-anchors instantly instead of panning across it",
       jump > 0.4, f"largest step {jump:.3f}")
+
+# One bad sample is what YuNet at 0.6 produces on a poster or a reflection, and
+# what `subject` produces when two similarly sized faces trade places. Treating
+# it as a cut re-anchors twice inside two samples, and the re-anchor path
+# consults neither the deadzone nor TRACK_MAX_PAN — a visible whip.
+spike = ([det(i / 3.0, 0.30) for i in range(9)] + [det(3.0, 0.90)] +
+         [det(3.0 + i / 3.0, 0.30) for i in range(1, 9)])
+spiked = framing.solve(spike, Clip(0, 6, "t"), CW, tier="balanced")
+worst = max(abs(b.cx - a.cx) / max(1e-9, b.t - a.t)
+            for a, b in zip(spiked.keyframes, spiked.keyframes[1:], strict=False))
+check("a single outlier detection does not re-anchor the window",
+      worst <= TRACK_MAX_PAN * CW * 1.05, f"peak speed {worst:.4f}")
+
+# TRACK_SHOT_JUMP alone is a per-sample distance, and the tiers sample 8x apart.
+# At `fast` (1s between samples) a walking presenter cleared it on every sample
+# and the path stepped instead of panning.
+stride = [det(float(i), 0.20 + 0.10 * i) for i in range(6)]
+walked = framing.solve(stride, Clip(0, 6, "t"), CW, tier="fast")
+check("ordinary motion at the fast tier's 1s sample gap is not read as a cut",
+      len(framing._segment(framing._observations(stride, Clip(0, 6, "t")))) == 1)
+step = max(abs(b.cx - a.cx) / max(1e-9, b.t - a.t)
+           for a, b in zip(walked.keyframes, walked.keyframes[1:], strict=False))
+check("so the window pans within the speed limit instead of stepping",
+      step <= TRACK_MAX_PAN * CW * 1.05, f"peak speed {step:.4f}")
+# 0.85 of frame width in one second, not 0.73: below TRACK_SHOT_SPEED a cut is
+# genuinely indistinguishable from a sprint at this sample rate, and the tier
+# documents that it absorbs those rather than guessing. Writing the fixture at
+# 0.73 tested the blind spot and read as a broken feature.
+check("a genuine cut is still a cut at the fast tier",
+      len(framing._segment([(0.0, 0.10), (1.0, 0.12), (2.0, 0.95),
+                            (3.0, 0.95)])) == 2)
+check("the return from an outlier does not re-anchor either — a spike is two "
+      "large steps, and confirming only the first half still whips",
+      len(framing._segment([(0.0, 0.30), (0.33, 0.30), (0.67, 0.90),
+                            (1.0, 0.30), (1.33, 0.30)])) == 1)
 
 section("subject tracking — the trust boundary")
 nan = Track(keyframes=[Keyframe(float("nan"), 0.5), Keyframe(0.0, float("inf")),
@@ -634,6 +747,15 @@ check("an oversized track is capped", len(huge.keyframes) == TRACK_MAX_KEYFRAMES
 check("a track sanitised to nothing becomes a centre crop",
       framing.sanitise(Track(keyframes=[Keyframe(float("nan"), 0.5)]),
                        CW, 10.0).keyframes == [Keyframe(0.0, 0.5)])
+_before = Track(keyframes=[Keyframe(0.0, -5.0), Keyframe(99.0, 0.5)])
+_after = framing.sanitise(_before, CW, 10.0)
+check("sanitise leaves the caller's track alone on every path — it used to "
+      "rewrite it in place when anything survived and copy when nothing did",
+      _before.keyframes == [Keyframe(0.0, -5.0), Keyframe(99.0, 0.5)]
+      and _after.keyframes != _before.keyframes)
+check("sanitise carries the provenance across",
+      framing.sanitise(Track(keyframes=[Keyframe(0.0, 0.5)], detector="yunet",
+                             tier="best", coverage=0.9), CW, 10.0).detector == "yunet")
 check("track round trip is lossless",
       track_from_dict(track_to_dict(solved)) == solved)
 check("track round trip tolerates a partial hand-edited dict",
@@ -660,8 +782,33 @@ check("sample times sit on a grid anchored at zero, so extending a span "
       == {1.0})
 raises("a non-positive sample rate is rejected", ValueError,
        detect.sample_times, [(0, 1)], 0.0)
+check("a span is clamped to the end of the video, so the margin past the last "
+      "frame is never recorded as detected",
+      detect.clip_spans([Clip(10, 20, "a")], 21.0) == [(8.0, 21.0)])
 check("the face cache cannot escape the work directory through the tier",
-      detect.cache_path(Path("/w"), "haar", "../../etc/passwd").parent == Path("/w"))
+      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "haar",
+                        "../../etc/passwd").parent == Path("/w"))
+
+# The regression this guards is the `--language ar` incident repeating: two
+# videos rendered into one output directory shared a cache, so the second
+# inherited the first's face positions with fallback=False and nothing flagged
+# it. A key that omits an input is a key that returns another input's answer.
+check("the face cache key separates two videos",
+      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "yunet", "balanced")
+      != detect.cache_path(Path("/w"), Path("/v/b.mp4"), "yunet", "balanced"))
+check("the face cache key covers the detector knobs, so lowering the score "
+      "threshold is not a no-op on a warm work directory",
+      detect.cache_key(Path("/v/a.mp4"))
+      != _key_with(detect, "YUNET_SCORE", 0.9, Path("/v/a.mp4")))
+check("the face cache key covers the detection width",
+      detect.cache_key(Path("/v/a.mp4"))
+      != _key_with(detect, "DETECT_WIDTH", 320, Path("/v/a.mp4")))
+check("the same video keys the same twice",
+      detect.cache_key(Path("/v/a.mp4")) == detect.cache_key(Path("/v/a.mp4")))
+_real = Path(__file__).resolve()
+check("the key follows the file, not just its name — a re-encode in place "
+      "re-detects rather than reusing the old positions",
+      detect.cache_key(_real) != detect.cache_key(_real.parent / "_harness.py"))
 
 section("subject tracking — detector registry and model lookup")
 # Structural, and not busywork: `fast` mapped to a detector that OpenCV 5.0
@@ -719,9 +866,12 @@ raises("an unknown detector is rejected", DetectorNotAvailable,
 section("subject tracking — the render seam")
 check("track is a mode, and the static two are untouched",
       enc.REFRAME_MODES == ("crop", "blur", "track"))
+# One assertion, not `exact or within-2px`: the tolerant clause subsumed the
+# exact one, so a 1px regression passed and the precise half was decoration.
 check("crop centre maps to the frame centre",
-      enc.crop_x_px(0.5, 1920, 1080) == enc.even((1920 - enc.even(round(1080 * 9 / 16))) // 2)
-      or abs(enc.crop_x_px(0.5, 1920, 1080) - (1920 - round(1080 * 9 / 16)) / 2) <= 2)
+      enc.crop_x_px(0.5, 1920, 1080)
+      == enc.even((1920 - enc.even(round(1080 * 9 / 16))) // 2),
+      str(enc.crop_x_px(0.5, 1920, 1080)))
 check("crop x is clamped inside the frame",
       enc.crop_x_px(-3.0, 1920, 1080) == 0
       and enc.crop_x_px(9.0, 1920, 1080) == 1920 - enc.even(round(1080 * 9 / 16)))
@@ -739,7 +889,7 @@ odd = enc.filtergraph("track", None, cmd_path=Path("/tmp/Ahmed's: clips/a.cmd"),
 check("the sendcmd path is escaped exactly as the ass path is",
       r"'\\\''" in odd and r"\:" in odd, odd.split("sendcmd=f=")[1][:44])
 
-_cmd_file = Path(os.environ.get("TMPDIR", "/tmp")) / "qatf-smoke-track.cmd"
+_cmd_file = Path(tempfile.gettempdir()) / "qatf-smoke-track.cmd"
 enc.write_sendcmd(Track(keyframes=[Keyframe(0.0, 0.5), Keyframe(0.5, 0.6)]),
                   _cmd_file, 1920, 1080)
 _written = _cmd_file.read_text(encoding="utf-8").splitlines()
@@ -749,5 +899,150 @@ check("sendcmd emits one integer command per keyframe",
 check("nothing from the track reaches the script as text",
       all(c not in _cmd_file.read_text(encoding="utf-8") for c in "'\"$`"))
 _cmd_file.unlink(missing_ok=True)
+
+section("transcript health — detection")
+from qatf.pipeline import health  # noqa: E402
+
+_rep = [Word("a", 0.0, 0.1), Word("x", 0.1, 0.2), Word("x", 0.2, 0.3),
+        Word("x", 0.3, 0.4), Word("x", 0.4, 0.5), Word("b", 0.5, 0.6)]
+_runs = health.find_repetitions(_rep)
+check("a run of four identical tokens is found",
+      len(_runs) == 1 and _runs[0].token == "x" and _runs[0].count == 4,
+      str(_runs))
+check("the run records where it starts, for the log line",
+      _runs[0].index == 1 and abs(_runs[0].start - 0.1) < 1e-9)
+check("three in a row is not a run — people do repeat themselves",
+      health.find_repetitions([Word("x", 0.0, 0.1), Word("x", 0.1, 0.2),
+                               Word("x", 0.2, 0.3)]) == [])
+check("punctuation does not split a run",
+      len(health.find_repetitions([Word("x", 0.0, 0.1), Word("x.", 0.1, 0.2),
+                                   Word("x", 0.2, 0.3), Word("x", 0.3, 0.4)])) == 1)
+
+_bad = [Word("ok", 0.0, 0.4), Word("zero", 1.0, 1.0), Word("long", 2.0, 20.0)]
+_defects = health.find_timing_defects(_bad)
+check("a zero-length word is a defect",
+      any(d.kind == "zero" and d.index == 1 for d in _defects), str(_defects))
+check("a word longer than the span limit is a defect",
+      any(d.kind == "long" and d.index == 2 for d in _defects), str(_defects))
+check("an ordinary word is not a defect",
+      all(d.index != 0 for d in _defects))
+check("a 20ms word is a defect — below one glottal pulse, so not a real word",
+      any(d.kind == "tiny" for d in health.find_timing_defects(
+          [Word("ok", 0.0, 0.4), Word("الـ", 1.0, 1.02)])))
+check("a NaN timing is a defect — every comparison against NaN is False, so an "
+      "unchecked one reports as no defect at all",
+      [d.kind for d in health.find_timing_defects(
+          [Word("x", float("nan"), 1.0)])] == ["nonfinite"])
+check("an infinite end is a defect",
+      [d.kind for d in health.find_timing_defects(
+          [Word("x", 0.0, float("inf"))])] == ["nonfinite"])
+
+_src = [Word("a", 0.0, 0.1), Word("x", 0.1, 0.2), Word("x", 0.2, 0.3),
+        Word("x", 0.3, 0.4), Word("x", 0.4, 0.5), Word("b", 0.5, 0.6)]
+_times = [(w.start, w.end) for w in _src]
+_fixed, _n = health.repair(_src)
+check("the duplicates are blanked, the first is kept",
+      [w.text for w in _fixed] == ["a", "x", "", "", "", "b"], str([w.text for w in _fixed]))
+check("three duplicates were blanked", _n == 3, str(_n))
+check("REPAIR PRESERVES THE WORD COUNT — edits.py is keyed by position",
+      len(_fixed) == len(_times))
+check("REPAIR NEVER TOUCHES A TIMING — snap anchors cuts on these",
+      [(w.start, w.end) for w in _fixed] == _times)
+check("a clean transcript is left alone",
+      health.repair([Word("a", 0.0, 0.1), Word("b", 0.1, 0.2)])[1] == 0)
+
+check("warnings name the timestamp so the clip can be inspected",
+      any("242.0" in s for s in health.warnings([Word("x", 242.0, 258.0)])))
+check("warnings do NOT re-report a repetition run — repair owns those, and the "
+      "caller logs how many it blanked",
+      health.warnings([Word("x", i / 10, 0.1 + i / 10) for i in range(6)]) == [])
+
+check("captions skip a blanked token instead of emitting an empty word",
+      [[w.text for w in line] for line in
+       captions.group_words([Word("PHP", 0, 1), Word("", 1, 2), Word("ماتت", 2, 3)])]
+      == [["PHP", "ماتت"]])
+
+# `score_transcript.speech_intervals` used to fall back to `duration = 0.0`
+# when `probe_duration` couldn't determine one (raw stream, still-growing
+# recording, missing metadata). That silently returned an empty speech list,
+# so `uncovered_speech` reported zero uncovered speech — a failed measurement
+# read as a clean pass, on the one metric whose whole job is to be the guard
+# on every later ASR-tuning experiment. It must now raise instead. Imported
+# locally (not at module top) to keep this file's own import block untouched
+# by a sibling test module it otherwise has no reason to depend on; `tests/`
+# is already sys.path[0] when this file runs as `python tests/smoke_pipeline.py`.
+import score_transcript  # noqa: E402
+
+from qatf.core.errors import CommandFailed  # noqa: E402
+
+_saved_probe_duration = score_transcript.probe_duration
+score_transcript.probe_duration = lambda path: None
+try:
+    raises("speech_intervals raises rather than silently reporting zero "
+           "uncovered speech when duration cannot be determined",
+           CommandFailed, score_transcript.speech_intervals, Path("no-such-file.wav"))
+finally:
+    score_transcript.probe_duration = _saved_probe_duration
+
+# `score()`'s own window filter used to be `w.start >= since`, and NaN >= 0.0
+# is False — so a NaN-start word vanished from `sel` in EVERY window,
+# whole-file included, rather than only being excluded from a later window it
+# genuinely doesn't belong to. That silently under-counted `words` and made
+# `nonfinite_timings` unable to ever be nonzero, defeating the reason that key
+# is in `_WORSE_IF_UP` at all — the identical trap `find_timing_defects` above
+# was fixed for, one layer up. Two of four words below have a non-finite start
+# on purpose: one NaN, one +inf, so the fix is checked against both flavours of
+# "not comparable to a float" that IEEE 754 has.
+_nan_words = [Word("a", 0.0, 1.0), Word("b", float("nan"), 2.0),
+             Word("c", 3.0, 4.0), Word("d", float("inf"), 5.0)]
+_nan_scored = score_transcript.score(_nan_words, [])
+check("score() counts a NaN/inf-start word rather than silently dropping it",
+      _nan_scored["words"] == 4, str(_nan_scored["words"]))
+check("...and both are reported as nonfinite timing defects, not lost",
+      _nan_scored["nonfinite_timings"] == 2, str(_nan_scored["nonfinite_timings"]))
+
+# `_require_readable`'s probe used to be `path.read_text(encoding="utf-8")`,
+# which is fine for the two JSON arguments but not for `--audio`: a WAV is
+# binary from its first byte (the RIFF header), so that probe raised
+# UnicodeDecodeError — uncaught, since only OSError was handled — and the
+# whole run died exit 1, the exact ambiguity this helper exists to remove.
+# Proven here against a real binary file that is actually committed to the
+# repo, not one this test writes itself, so the check cannot pass vacuously:
+# qatf/pipeline/detect.py loads this exact ONNX file as the YuNet
+# face-detection model, so it is guaranteed present wherever the pipeline
+# package is, and it is committed binary (not text) — see its own LICENSE
+# file alongside it.
+_onnx = Path(pipeline.__file__).parent / "assets" / "face_detection_yunet_2023mar.onnx"
+check("_require_readable accepts a real binary file (committed, not "
+      "written by this test) instead of raising UnicodeDecodeError trying "
+      "to read it as utf-8 text",
+      _onnx.is_file() and score_transcript._require_readable(_onnx, "onnx fixture") == _onnx,
+      str(_onnx))
+
+section("decode parameters — stage 2")
+check("DECODE carries the VAD settings so a sweep has one place to change",
+      "vad_parameters" in asr.DECODE
+      and "min_silence_duration_ms" in asr.DECODE["vad_parameters"])
+_merged = asr.merge_decode({"beam_size": 9})
+check("an override merges over the defaults", _merged["beam_size"] == 9)
+check("and leaves the rest intact",
+      _merged["vad_parameters"] == asr.DECODE["vad_parameters"])
+check("merging does not mutate DECODE itself",
+      "beam_size" not in asr.DECODE or asr.DECODE.get("beam_size") != 9)
+_nested = asr.merge_decode({"vad_parameters": {"speech_pad_ms": 200}})
+check("a nested override merges rather than replacing the whole dict",
+      _nested["vad_parameters"]["min_silence_duration_ms"]
+      == asr.DECODE["vad_parameters"]["min_silence_duration_ms"]
+      and _nested["vad_parameters"]["speech_pad_ms"] == 200)
+# The two checks above both pass even on a broken `dict(DECODE)` shallow copy:
+# a shared nested dict still equals itself, and the merge still reads back the
+# override it just wrote into the shared object. Neither check can fail on the
+# exact bug merge_decode's own docstring warns about. These two check the thing
+# that actually distinguishes a copy from a shared reference.
+check("the merged nested dict is a COPY, not the module's own object",
+      _nested["vad_parameters"] is not asr.DECODE["vad_parameters"])
+check("a nested override does not leak into DECODE — every later sweep run "
+      "would silently inherit it",
+      "speech_pad_ms" not in asr.DECODE["vad_parameters"])
 
 raise SystemExit(report())

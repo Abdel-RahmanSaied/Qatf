@@ -17,6 +17,24 @@ COPY qatf ./qatf
 # when only one provider is ever used.
 RUN pip install --no-cache-dir -e ".[all]"
 
+# CTranslate2's CUDA runtime. Without these the image is a liar in the most
+# expensive way: `ctranslate2.get_cuda_device_count()` sees the GPU, so
+# `resolve_device()` picks cuda and /healthz reports `transcribe_device: cuda`,
+# and then the FIRST ENCODE dies with `Library libcublas.so.12 is not found`.
+# faster-whisper constructs the model lazily, so nothing fails until minutes
+# into a job — the exact two-layer trap `load_model` documents.
+#
+# Installed as separate wheels rather than switching to an nvidia/cuda base
+# image: they are the only pieces CTranslate2 links against, and the slim base
+# keeps the image a fraction of the size. The compose file reserves the GPU;
+# this is what makes that reservation usable.
+RUN pip install --no-cache-dir nvidia-cublas-cu12 nvidia-cudnn-cu12
+
+# The wheels drop their .so files inside site-packages, which is not on the
+# loader path. Setting this in the image rather than the compose file means a
+# plain `docker run` gets a working GPU too.
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib
+
 ENV QATF_DATA_DIR=/data \
     QATF_MEDIA_ROOT=/media \
     QATF_HOST=0.0.0.0 \

@@ -26,10 +26,11 @@ from pathlib import Path
 from _harness import check, report, section  # also puts the project root on sys.path
 from fastapi.testclient import TestClient
 
+from qatf import pipeline
 from qatf.api import create_app
 from qatf.core.config import Settings
-from qatf.core.types import Clip, Transcript, Word
-from qatf.jobs import JobStore
+from qatf.core.types import Clip, Keyframe, Track, Transcript, Word
+from qatf.jobs import JobStore, worker
 from qatf.pipeline import asr, audio, encode, select
 
 SCRATCH = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
@@ -60,7 +61,7 @@ def fake_run(cmd, quiet=True):
 
 
 def fake_transcribe(wav, model_size, device, language,
-                    initial_prompt=None, hotwords=None):
+                    initial_prompt=None, hotwords=None, decode=None):
     SEEN_PROMPTS.append(hotwords or initial_prompt)
     return Transcript(
         words=[Word(f"word{i}", i * 0.5, i * 0.5 + 0.45) for i in range(260)],
@@ -306,6 +307,21 @@ with TestClient(app) as client:
     check("cleared overlay is removed, not left empty",
           not (SETTINGS.data_dir / jid / ".work" / "word-edits.json").exists())
 
+    from qatf.core.types import Word as _W
+    from qatf.jobs import worker as _worker
+
+    class _T:
+        words = [_W("a", 0.0, 0.1)] + [_W("dup", 0.1 + i / 10, 0.2 + i / 10)
+                                       for i in range(5)]
+    # baseline_words now returns (words, blanked) instead of discarding the
+    # repair count — see qatf/jobs/worker.py — so every caller unpacks a pair.
+    _base, _base_blanked = _worker.baseline_words(_T(), {})
+    check("repair reaches the read path, so captions and GET /transcript agree",
+          [w.text for w in _base] == ["a", "dup", "", "", "", ""],
+          str([w.text for w in _base]))
+    check("and the word count the PUT contract depends on is unchanged",
+          len(_base) == 6)
+
     section("output sizes come from the record, not the filesystem")
     # to_response used to stat() every output on every read, which measured 75%
     # of GET /jobs and scaled with the job count on the endpoint clients poll.
@@ -342,6 +358,48 @@ with TestClient(app) as client:
         legacy = c2.get(f"/jobs/{legacy_id}").json()["outputs"]
     check("a record with no stored sizes falls back to stat, not zero",
           legacy and legacy[0]["size_bytes"] == 4096, str(legacy))
+
+    section("track mode reaches the encoder")
+    # REFRAME_MODES advertised three modes while JobOptions offered two, so the
+    # server had no path to the new stage at all — and the moment `track` was
+    # added to the schema without wiring the worker, every job would have died
+    # at stage 5 with a 500 AFTER transcribing. These checks fail if either half
+    # is missing.
+    _opts = spec["components"]["schemas"]["JobOptions"]["properties"]
+    check("track is offered on the wire",
+          "track" in _opts["reframe"]["enum"], str(_opts["reframe"]))
+    check("the tier is offered with it", "track_tier" in _opts)
+
+    SEEN_TRACKING: list[tuple] = []
+
+    def fake_track_clips(video, clips, work, src, *, tier="balanced"):
+        SEEN_TRACKING.append((src, tier, len(clips)))
+        return [Track(keyframes=[Keyframe(0.0, 0.30), Keyframe(1.0, 0.60)],
+                      detector="yunet", tier=tier, coverage=0.9)
+                for _ in clips]
+
+    real_track_clips, real_probe = pipeline.track_clips, worker.probe_video
+    pipeline.track_clips = fake_track_clips
+    worker.probe_video = lambda path: {"width": 1920, "height": 1080}
+    RENDERED.clear()
+    try:
+        tid = client.post("/jobs", json={"path": "talk.mp4", "reframe": "track",
+                                         "track_tier": "best", "device": "cpu"}
+                          ).json()["id"]
+        tjob = wait(client, tid, {"done", "failed"})
+    finally:
+        pipeline.track_clips, worker.probe_video = real_track_clips, real_probe
+
+    check("a track job runs to completion", tjob["state"] == "done", str(tjob.get("error")))
+    check("stage 4c got the SOURCE dimensions, not the output ones — the crop "
+          "path is normalised against the source frame",
+          bool(SEEN_TRACKING) and SEEN_TRACKING[0][0] == (1920, 1080),
+          str(SEEN_TRACKING))
+    check("the requested tier reaches stage 4b rather than the default",
+          bool(SEEN_TRACKING) and SEEN_TRACKING[0][1] == "best", str(SEEN_TRACKING))
+    check("the solved track reaches ffmpeg as a sendcmd script",
+          bool(RENDERED) and any("sendcmd=f=" in " ".join(cmd) for cmd in RENDERED),
+          f"{len(RENDERED)} renders")
 
     section("input validation at the boundary")
     # `language` lands in the transcript cache FILENAME, so a traversal there is
@@ -397,6 +455,21 @@ with TestClient(app) as client:
     check("a validation error is the documented {detail: string} shape",
           isinstance(bad.json().get("detail"), str), bad.text[:200])
     check("the rejected input is not echoed back", "SENTINEL" not in bad.text, bad.text[:200])
+
+    # The check above only exercises the error FastAPI composes, where the
+    # handler strips the `input` field. A validator that formats the value into
+    # its OWN message bypasses that entirely — the value comes back as part of
+    # the reason. All three of these reflected caller content while the check
+    # above passed, and a live server is what surfaced it. Each field is listed
+    # separately so a regression names the one that broke.
+    for field, value in [("whisper", "ZZSENTINELZZ"), ("preset", "ZZSENTINELZZ"),
+                         ("resolution", "ZZSENTINELZZ")]:
+        r = client.post("/jobs", json={"path": "talk.mp4", field: value})
+        check(f"{field}: rejected", r.status_code == 422, str(r.status_code))
+        check(f"{field}: custom validator does not echo the value either",
+              "ZZSENTINELZZ" not in r.text, r.text[:150])
+        check(f"{field}: the caller is still told what IS allowed",
+              len(r.json().get("detail", "")) > 20, r.text[:120])
     check("the reason and location still reach the caller",
           "end" in bad.json()["detail"], bad.json()["detail"][:160])
 
