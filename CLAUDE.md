@@ -21,6 +21,8 @@ qatf/
   core/            depends on nothing. imports no pipeline, no jobs, no HTTP
     config.py      Settings, read from the environment once
     constants.py   product decisions (9:16, caption budget, snap margins)
+    db.py          the only module that imports sqlite3 — WAL, thread-local
+                   connections, PRAGMA-versioned migrations
     dotenv.py      .env parser; the real environment always wins
     errors.py      QatfError hierarchy, each carrying its HTTP status
     types.py       Word, Transcript, Clip — plain dataclasses
@@ -56,7 +58,7 @@ qatf/
     parser.py      the argument surface
     runner.py      preflight + the run flow
 qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_{pipeline,llm,api}.py, load_api.py, score_transcript.py,
+tests/             smoke_{db,pipeline,llm,api}.py, load_api.py, score_transcript.py,
                    verify_render.py, fixtures/, _harness.py
 docs/              human-facing reference — see "Documentation" below
 ```
@@ -139,10 +141,13 @@ python tests/verify_render.py                 # ~40s
 python tests/score_transcript.py <words.json> --audio <wav>   # grade a transcript
 ```
 
-Transcription is cached at `<work>/words-<model>-<lang>.json`. Delete it to
-re-transcribe; otherwise iterating on clip selection is free. The cache key
-includes the Whisper size and the forced language — keying on the output
-directory alone silently reused an English transcript after `--language ar`.
+Transcription is cached in the `transcripts` table of `<work>/qatf.db`, keyed
+on the Whisper size and the forced language (`asr.cache_key`) — keying on the
+output directory alone silently reused an English transcript after
+`--language ar`. A pre-SQLite `<work>/words-<model>-<lang>.json` is imported
+into that table on first read and left on disk; **deleting the JSON alone does
+not force a re-transcription** once the row exists — delete the row (or the
+whole `qatf.db`) instead. Otherwise iterating on clip selection is free.
 
 ---
 
@@ -231,10 +236,15 @@ Availability and usability are separate questions, so there are two layers:
 - `resolve_device()` asks CTranslate2, not `nvidia-smi`. A card the installed
   CTranslate2 cannot target (compute capability, driver mismatch) is not a usable
   device, and only the engine knows that.
-- `load_model()` wraps the actual model construction, because a device can pass
-  the availability check and still fail to load — OOM, or a build with no kernels
-  for that architecture. Under `auto` that falls back to CPU with the reason
-  logged; under an explicit `cuda` it raises.
+- `transcribe()` wraps the whole of `_transcribe_on` — model construction AND
+  consuming the segment generator — in a try/except, because a device can pass
+  the availability check and still fail to load, and faster-whisper builds
+  happily on a GPU whose CUDA libraries are missing: the real failure only
+  surfaces lazily, on the first encode, which happens while iterating segments.
+  A guard around construction alone never sees that, which is why the fallback
+  wraps the full call rather than being its own construction-only layer. Under
+  `auto` that falls back to CPU with the reason logged; under an explicit
+  `cuda` it raises.
 
 The device actually used is recorded on the `Transcript`, echoed in the job record
 and `GET /jobs/{id}`, and reported up front by `/healthz` (`cuda_devices`,
@@ -275,7 +285,10 @@ nothing                       23 wrong,  8 right, 15 wrong after 300s
   errors a substitution structurally cannot reach: a word misheard once where the
   same string is correct elsewhere. `من` → `مين` is unfixable by rule — `من` is
   one of the most common words in Arabic. Keyed by position, stored as an overlay
-  at `<work>/word-edits.json`, applied on read. `PUT /jobs/{id}/transcript`
+  in the `word_edits` table of `<work>/qatf.db`, applied on read. For the CLI,
+  `<work>/word-edits.json` is still the interface — there is no flag — imported
+  into that table and re-imported whenever the file's mtime moves, so editing
+  it again after the first run keeps working. `PUT /jobs/{id}/transcript`
   refuses any submission that changes the word count or a timing, so the
   invariant is enforced by the contract, not by discipline. Each correction
   records the text it replaced; if the transcript moves underneath it (different
@@ -595,7 +608,14 @@ Be honest about this in any session. It is the difference between a demo and a t
   corrupted job record, that concurrent renders are refused with 409, and holds
   budgets for per-job list cost, `/healthz` serial cost and poll latency during
   an upload.
-- `tests/smoke_pipeline.py` (271 checks): timestamp formatting and carry, slugify,
+- `tests/smoke_db.py` (14 checks): `core/db.py` in isolation from `jobs` and
+  `pipeline` — WAL and `busy_timeout` are actually on, the schema version is
+  stamped, connecting twice neither duplicates nor drops a table, a v1 database
+  migrates forward to v2 without losing a row a v1 client wrote, each thread
+  gets its own connection object while the same thread reuses one, a failed
+  transaction leaves nothing behind, and a corrupt file raises rather than
+  quietly returning an empty database.
+- `tests/smoke_pipeline.py` (297 checks): timestamp formatting and carry, slugify,
   caption grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
   (no forced `-r`, crf forwarded), device resolution and the CUDA-to-CPU
@@ -612,7 +632,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   `json_object` rather than erroring, that vLLM keeps `json_schema`, refusal and
   truncation handling, the context guard, and `parse_response` across all three
   output tiers. Proves request *shape*, not that any endpoint accepts it.
-- `tests/smoke_api.py` (127 checks): job state machine, transcript cache round
+- `tests/smoke_api.py` (131 checks): job state machine, transcript cache round
   trip, the transcript correction round trip (correction reaches the burned-in
   captions, cut points provably unchanged, retiming/add/remove all refused, the
   overlay stays out of the cache file), plan replace with and without re-snap,
@@ -710,8 +730,10 @@ for numbers somebody measured. Two of them encode a real trade worth knowing:
 Deliberately still behind selection quality: a perfectly tracked bad clip is
 still a bad clip.
 
-**The face cache keys on the footage, not the output directory.**
-`faces-<detector>-<tier>-<key>.json`, where `key` hashes (resolved path, size,
+**The face cache keys on the footage, not the output directory.** Stored in the
+`detections` table of `<work>/qatf.db`, row-keyed
+`faces-<detector>-<tier>-<key>.json` (still that exact string — a row key now,
+not a filename), where `key` hashes (resolved path, size,
 mtime) plus `DETECT_WIDTH` and `YUNET_SCORE`. Both halves earn their place: two
 videos rendered into one `-o` directory shared a cache and the second inherited
 the first's face positions with `fallback=False`, and a knob outside the key is a
@@ -827,7 +849,8 @@ Neither is warranted yet.
   entirely on the first pass.
 - **Stages 1, 4 and 5 can be exercised without a GPU or an API key** by seeding
   `<work>/words-<model>-<lang>.json` and running with `--plan`. Use that for
-  render-path work instead of waiting on transcription.
+  render-path work instead of waiting on transcription. (The legacy filename
+  still works — `asr.read_cache` imports it into `qatf.db` on first read.)
 - **Both smoke suites must stay green, and new behaviour gets a check.** They run
   in seconds with no external dependencies; there is no excuse for skipping them.
   `ruff check .` too.

@@ -94,7 +94,10 @@ Fixups are keyed by *value*, so they cannot fix a word that is wrong here and
 correct everywhere else — a rule `من = مين` would rewrite every `من` in the file.
 
 For those, write an overlay at `<out>/.work/word-edits.json`. There is no flag:
-the file is the interface, the same way the transcript cache is.
+the file is the interface — it is imported into the `word_edits` table of
+`<out>/.work/qatf.db` and re-imported every time the file's mtime moves, so
+editing it again after the first run still takes effect (unlike the transcript
+cache's `words-*.json`, which is imported once and then ignored — see below).
 
 ```json
 {
@@ -104,9 +107,11 @@ the file is the interface, the same way the transcript cache is.
 }
 ```
 
-`index` is the word's position in `<out>/.work/words-<model>-<lang>.json`, which
-also gives you its `start` — scrub there to hear what was actually said before
-correcting it. `was` is a drift guard: if that word no longer reads `من`, the
+`index` is the word's position in the transcript (`GET /jobs/{id}/transcript`,
+or the `transcripts` row in `<out>/.work/qatf.db` — a legacy
+`<out>/.work/words-<model>-<lang>.json`, if that is all that is there, works
+too), which also gives you its `start` — scrub there to hear what was actually
+said before correcting it. `was` is a drift guard: if that word no longer reads `من`, the
 correction is reported as **stale** and skipped rather than landing on an
 unrelated word.
 
@@ -191,8 +196,9 @@ someone running, so it is smoothed across rather than re-anchored. That is the
 deliberate direction to be wrong in — a missed cut costs one bounded pan, a
 false one costs a whip on every walking step.
 
-Detections are cached at `<work>/faces-<detector>-<tier>-<key>.json`, keyed to
-the footage and the detector settings, and cover a growing set of spans. Moving a
+Detections are cached in the `detections` table of `<work>/qatf.db`, row-keyed
+`faces-<detector>-<tier>-<key>.json`, keyed to the footage and the detector
+settings, and cover a growing set of spans. Moving a
 cut in a plan editor re-solves the crop path from disk in milliseconds instead of
 re-running the detector. Each solved path is written to `<work>/track-NN.json`
 for review — check the ones the CLI reports as thin or fallen back.

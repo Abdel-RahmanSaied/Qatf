@@ -162,9 +162,7 @@ def list_jobs(state: JobState | None = Query(
     anything that was *running* at the time comes back as `failed: interrupted
     by a server restart`, because the thread pool holding it did not.
     """
-    jobs = store.list()
-    if state:
-        jobs = [j for j in jobs if j.state == state.value]
+    jobs = store.list(state=state.value if state else None)
     return JobList(jobs=[to_response(store, j) for j in jobs])
 
 

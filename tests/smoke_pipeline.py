@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -27,7 +28,7 @@ from qatf.core.errors import (
     SeedTooLong,
     TranscriptStructureChanged,
 )
-from qatf.core.types import Clip, Word, clips_from_dicts, clips_to_dicts
+from qatf.core.types import Clip, Transcript, Word, clips_from_dicts, clips_to_dicts
 from qatf.core.utils import mmss_to_seconds, slugify, ts_ass, ts_human
 from qatf.pipeline import asr, captions, cuts, edits, fixups, select
 
@@ -299,6 +300,34 @@ raises("over-long prompt rejected up front", SeedTooLong,
 check("model and language still in the key",
       asr.cache_path(_w, "small", "ar") != base
       and asr.cache_path(_w, "large-v3", "en") != base)
+check("cache_path is cache_key plus .json — one derivation, not two copies",
+      asr.cache_path(Path("/w"), "large-v3", "ar", None, "بايثون").name
+      == asr.cache_key("large-v3", "ar", None, "بايثون") + ".json")
+
+section("transcript cache — SQLite")
+_work = Path(tempfile.mkdtemp(prefix="qatf-tc-"))
+_key = asr.cache_key("large-v3", "ar", None, "بايثون فلاتر")
+check("the key is the filename stem the old cache used, so every rule already "
+      "fought for carries over", _key.startswith("words-large-v3-ar-")
+      and len(_key.split("-")[-1]) == 8, _key)
+check("a miss is None, not an exception", asr.read_cache(_work, _key) is None)
+
+_t = Transcript(words=[Word("مدار", 0.0, 0.4), Word("المحيطة", 0.4, 0.9)],
+                language="ar", language_probability=1.0,
+                device="cuda", compute_type="float16")
+asr.write_cache(_work, _key, _t)
+_back = asr.read_cache(_work, _key)
+check("round trip keeps the words", [w.text for w in _back.words] == ["مدار", "المحيطة"])
+check("round trip keeps the timings exactly",
+      [(w.start, w.end) for w in _back.words] == [(0.0, 0.4), (0.4, 0.9)])
+check("round trip keeps the provenance",
+      (_back.language, _back.device, _back.compute_type) == ("ar", "cuda", "float16"))
+check("a different language is a different key — the --language ar incident",
+      asr.cache_key("large-v3", "en") != asr.cache_key("large-v3", "ar"))
+check("a different vocabulary is a different key",
+      asr.cache_key("large-v3", "ar", None, "x") != asr.cache_key("large-v3", "ar", None, "y"))
+check("the database lands in the work directory, beside what it replaced",
+      (_work / "qatf.db").exists())
 
 section("device selection — GPU first, CPU fallback")
 _real_count = asr.cuda_device_count
@@ -319,25 +348,43 @@ check("compute type follows device",
 check("a broken ctranslate2 counts as no GPU, not a crash",
       _real_count() >= 0, str(_real_count()))
 
-# load_model: availability and usability are different questions
+# transcribe(): availability and usability are different questions. The
+# fallback wraps the WHOLE of _transcribe_on (construction AND consuming the
+# segment generator), not just constructing WhisperModel — faster-whisper
+# builds happily on a GPU whose CUDA libraries are missing and only fails once
+# decoding actually starts (see _transcribe_on's own docstring on why
+# construction and consumption are guarded together). So the fake below fails
+# from .transcribe(), not __init__, to exercise that real, lazy failure shape
+# — a construction-only guard (the now-deleted `load_model`, which this
+# section used to test) would never see it.
 class _FakeWhisper:
-    """Raises on cuda, succeeds on cpu — a driver/compute-capability mismatch."""
+    """Raises once asked to actually transcribe on cuda; succeeds on cpu."""
     def __init__(self, size, device="cpu", compute_type="int8"):
-        if device == "cuda":
-            raise RuntimeError("no kernel image is available for execution")
         self.device = device
+
+    def transcribe(self, *args, **kwargs):
+        if self.device == "cuda":
+            raise RuntimeError("no kernel image is available for execution")
+        class _Info:
+            language = "en"
+            language_probability = 1.0
+        return iter(()), _Info()
 
 
 _fake_mod = types.ModuleType("faster_whisper")
 _fake_mod.WhisperModel = _FakeWhisper
 sys.modules["faster_whisper"] = _fake_mod
+_fake_wav = Path("_fake_for_device_fallback_test.wav")  # never opened — WhisperModel is faked
 
-_model, _used = asr.load_model("large-v3", "cuda", requested="auto")
-check("auto-selected cuda that fails to load falls back to cpu", _used == "cpu")
+asr.cuda_device_count = lambda: 1
+_t_auto = asr.transcribe(_fake_wav, "large-v3", "auto", None)
+check("auto-selected cuda that fails during transcription falls back to cpu",
+      _t_auto.device == "cpu", _t_auto.device)
 raises("explicitly requested cuda raises instead of silently degrading",
-       RuntimeError, asr.load_model, "large-v3", "cuda", "cuda")
-check("cpu load needs no fallback",
-      asr.load_model("large-v3", "cpu", requested="auto")[1] == "cpu")
+       RuntimeError, asr.transcribe, _fake_wav, "large-v3", "cuda", None)
+asr.cuda_device_count = lambda: 0
+_t_cpu = asr.transcribe(_fake_wav, "large-v3", "auto", None)
+check("cpu-only path needs no fallback", _t_cpu.device == "cpu", _t_cpu.device)
 
 del sys.modules["faster_whisper"]
 asr.cuda_device_count = _real_count
@@ -614,11 +661,11 @@ from qatf.pipeline import detect, framing  # noqa: E402
 
 
 def _key_with(module, name, value, video):
-    """`cache_key` as it would be with one module-level constant changed."""
+    """`cache_key_for` as it would be with one module-level constant changed."""
     original = getattr(module, name)
     setattr(module, name, value)
     try:
-        return module.cache_key(video)
+        return module.cache_key_for(video)
     finally:
         setattr(module, name, original)
 
@@ -785,30 +832,35 @@ raises("a non-positive sample rate is rejected", ValueError,
 check("a span is clamped to the end of the video, so the margin past the last "
       "frame is never recorded as detected",
       detect.clip_spans([Clip(10, 20, "a")], 21.0) == [(8.0, 21.0)])
-check("the face cache cannot escape the work directory through the tier",
-      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "haar",
-                        "../../etc/passwd").parent == Path("/w"))
+# `cache_key` (detector, tier, video) is now the DB row key rather than a
+# filename, so a caller-controlled tier cannot escape a directory through it —
+# what it CAN do is produce a key containing a path separator, which would
+# still be dangerous the moment `read_cache`'s legacy import builds
+# `work / f"{key}.json"` from it. slugify strips exactly that.
+check("the face cache key cannot escape the work directory through the tier",
+      not set("/\\") & set(detect.cache_key(Path("/v/a.mp4"), "haar",
+                                            "../../etc/passwd")))
 
 # The regression this guards is the `--language ar` incident repeating: two
 # videos rendered into one output directory shared a cache, so the second
 # inherited the first's face positions with fallback=False and nothing flagged
 # it. A key that omits an input is a key that returns another input's answer.
 check("the face cache key separates two videos",
-      detect.cache_path(Path("/w"), Path("/v/a.mp4"), "yunet", "balanced")
-      != detect.cache_path(Path("/w"), Path("/v/b.mp4"), "yunet", "balanced"))
+      detect.cache_key(Path("/v/a.mp4"), "yunet", "balanced")
+      != detect.cache_key(Path("/v/b.mp4"), "yunet", "balanced"))
 check("the face cache key covers the detector knobs, so lowering the score "
       "threshold is not a no-op on a warm work directory",
-      detect.cache_key(Path("/v/a.mp4"))
+      detect.cache_key_for(Path("/v/a.mp4"))
       != _key_with(detect, "YUNET_SCORE", 0.9, Path("/v/a.mp4")))
 check("the face cache key covers the detection width",
-      detect.cache_key(Path("/v/a.mp4"))
+      detect.cache_key_for(Path("/v/a.mp4"))
       != _key_with(detect, "DETECT_WIDTH", 320, Path("/v/a.mp4")))
 check("the same video keys the same twice",
-      detect.cache_key(Path("/v/a.mp4")) == detect.cache_key(Path("/v/a.mp4")))
+      detect.cache_key_for(Path("/v/a.mp4")) == detect.cache_key_for(Path("/v/a.mp4")))
 _real = Path(__file__).resolve()
 check("the key follows the file, not just its name — a re-encode in place "
       "re-detects rather than reusing the old positions",
-      detect.cache_key(_real) != detect.cache_key(_real.parent / "_harness.py"))
+      detect.cache_key_for(_real) != detect.cache_key_for(_real.parent / "_harness.py"))
 
 section("subject tracking — detector registry and model lookup")
 # Structural, and not busywork: `fast` mapped to a detector that OpenCV 5.0
@@ -1019,6 +1071,90 @@ check("_require_readable accepts a real binary file (committed, not "
       _onnx.is_file() and score_transcript._require_readable(_onnx, "onnx fixture") == _onnx,
       str(_onnx))
 
+section("scorer reads a transcript from either store")
+# `score_transcript.load_words` used to accept only a JSON path. The stage-2
+# sweep recorded in docs/quality.md compares runs SIDE BY SIDE as files —
+# several sweep-*.json transcripts sit in the repo root from a real
+# measurement session — so a scorer that can only read the live database
+# could never diff today's run against one taken last week. Both forms have
+# to keep working, hence this check on top of the manual verification against
+# the real sweep transcripts (docs/quality.md; those files are gitignored, so
+# they cannot be the fixture here).
+import json  # noqa: E402
+
+_scw = Path(tempfile.mkdtemp(prefix="qatf-score-"))
+_sc_plain = _scw / "words-plain.json"
+_sc_plain.write_text(
+    json.dumps({"words": [{"text": "a", "start": 0.0, "end": 0.5},
+                          {"text": "b", "start": 0.5, "end": 1.0}]}),
+    encoding="utf-8")
+check("load_words still reads a plain words-*.json path, unchanged",
+      [w.text for w in score_transcript.load_words(_sc_plain)] == ["a", "b"])
+
+_sc_key = asr.cache_key("large-v3", "ar")
+asr.write_cache(_scw, _sc_key,
+                Transcript(words=[Word("كلمة", 0.0, 0.5)], language="ar"))
+check("load_words also reads a db:<database>#<key> string, so the sweep "
+      "tooling keeps working once a transcript lives in SQLite instead of a "
+      "words-*.json file",
+      [w.text for w in score_transcript.load_words(f"db:{_scw / 'qatf.db'}#{_sc_key}")]
+      == ["كلمة"])
+
+try:
+    score_transcript.load_words(f"db:{_scw / 'qatf.db'}#no-such-key")
+    check("a missing db key is reported and exits, rather than silently "
+          "reading as an empty transcript", False, "did not raise")
+except SystemExit as exc:
+    check("a missing db key exits 2 — the same usage-error code "
+          "_require_readable uses for a missing plain path — so a typo'd key "
+          "reads as distinguishable from a real scoring regression (exit 1)",
+          exc.code == 2, str(exc.code))
+
+# Fix round 1 (reviewer-reproduced): the first `db:` implementation
+# hand-rolled `SELECT ... FROM transcripts` instead of calling
+# `asr.read_cache`, which dropped two things `read_cache` already does — fall
+# back to importing a legacy `words-*.json` when there is no row yet, and
+# close its own connection. The two checks below are the reviewer's
+# reproduction, kept as regression tests.
+_legw = Path(tempfile.mkdtemp(prefix="qatf-score-legacy-"))
+_legk = asr.cache_key("large-v3", "ar")
+(_legw / f"{_legk}.json").write_text(
+    json.dumps({"words": [{"text": "أ", "start": 0.0, "end": 0.4},
+                          {"text": "ب", "start": 0.4, "end": 0.9}]},
+               ensure_ascii=False),
+    encoding="utf-8")
+_via_plain = [w.text for w in score_transcript.load_words(_legw / f"{_legk}.json")]
+try:
+    # Caught here, not left to propagate: the pre-fix hand-rolled `db:`
+    # branch raised an UNCAUGHT SystemExit(2) on exactly this input (no row
+    # yet, no fallback), which would otherwise abort this whole test script
+    # rather than let the harness record one FAIL and keep going.
+    _via_db = [w.text for w in score_transcript.load_words(
+        f"db:{_legw / 'qatf.db'}#{_legk}")]
+except SystemExit as exc:
+    _via_db = f"<SystemExit {exc.code}>"
+check("a work directory holding ONLY a legacy words-*.json (no qatf.db yet "
+      "— the exact shape run-fixed/.work/ is in) scores identically through "
+      "the plain path and through db: — the hand-rolled SELECT used to fail "
+      "this with 'no transcript ... in ...' and exit 2",
+      _via_plain == _via_db == ["أ", "ب"], f"{_via_plain} vs {_via_db}")
+
+_badw = Path(tempfile.mkdtemp(prefix="qatf-score-badpath-"))
+_bad_db = _badw / "qatf.db"
+_exit_code = None
+try:
+    score_transcript.load_words(f"db:{_bad_db}#no-such-key")
+except SystemExit as exc:
+    _exit_code = exc.code
+check("db: naming a database that does not exist, with no legacy file to "
+      "fall back to, exits 2 and creates NOTHING — db.connect (called "
+      "inside read_cache) creates the database file and its parent "
+      "directory as a side effect of opening a connection, so a read-only "
+      "scoring tool must refuse before ever reaching it on a path with "
+      "nothing to read",
+      _exit_code == 2 and not _bad_db.exists(),
+      f"exit={_exit_code}, created={_bad_db.exists()}")
+
 section("decode parameters — stage 2")
 check("DECODE carries the VAD settings so a sweep has one place to change",
       "vad_parameters" in asr.DECODE
@@ -1044,5 +1180,169 @@ check("the merged nested dict is a COPY, not the module's own object",
 check("a nested override does not leak into DECODE — every later sweep run "
       "would silently inherit it",
       "speech_pad_ms" not in asr.DECODE["vad_parameters"])
+
+section("per-word overlay — SQLite")
+_ew = Path(tempfile.mkdtemp(prefix="qatf-ed-"))
+check("no overlay is an empty list, not an error", edits.load(_ew, "job1") == [])
+edits.save(_ew, "job1", [edits.Edit(index=1, was="من", text="مين")])
+_got = edits.load(_ew, "job1")
+check("the overlay round trips",
+      len(_got) == 1 and _got[0].index == 1 and _got[0].text == "مين")
+check("it records what it replaced, so a moved transcript goes stale rather "
+      "than landing on an unrelated word", _got[0].was == "من")
+check("scopes do not leak into each other", edits.load(_ew, "job2") == [])
+
+section("per-word overlay — an explicitly cleared overlay stays cleared")
+# Reproduces the resurrection bug found in fix round 1: a pre-SQLite
+# word-edits.json is (by design) left on disk after the first import — see
+# `_load_legacy`'s docstring. Before the `imported` marker table existed,
+# `load` treated "zero rows for this scope" as one state whether the scope
+# had never been written OR had just been explicitly cleared, so it fell
+# through to the still-present legacy file and re-imported it — silently
+# undoing the very correction `save(work, scope, [])` just removed.
+# `PUT /jobs/{id}/transcript` with the pristine transcript IS how a user
+# undoes a correction (`save`'s own docstring says so), so this is that undo
+# reverting itself on the next `GET`.
+import json  # noqa: E402
+
+_lw = Path(tempfile.mkdtemp(prefix="qatf-ed-legacy-"))
+(_lw / edits.FILENAME).write_text(
+    json.dumps({"edits": [{"index": 3, "was": "X", "text": "CORRECTED"}]}),
+    encoding="utf-8")
+_first = edits.load(_lw, "jobL")
+check("first load imports the legacy file",
+      len(_first) == 1 and _first[0].text == "CORRECTED", str(_first))
+edits.save(_lw, "jobL", [])   # the user explicitly clears every correction
+_second = edits.load(_lw, "jobL")
+check("AN EXPLICITLY CLEARED OVERLAY DOES NOT COME BACK FROM THE DEAD — the "
+      "legacy file is still on disk and must not be re-imported on the next "
+      "read just because the table is empty again",
+      _second == [], str(_second))
+check("the legacy file itself is untouched — nothing in the upgrade path "
+      "may delete it, import or no", (_lw / edits.FILENAME).is_file())
+
+section("per-word overlay — the legacy file stays the interface (finding 1)")
+# Fixing the resurrection bug above by making `load` import the legacy file AT
+# MOST ONCE, tracked by a bare marker, broke the CLI's only interface: `save`
+# has exactly one caller (the API's PUT /transcript), so `<out>/.work/
+# word-edits.json` IS how a CLI user writes a correction — CLAUDE.md, docs/
+# cli.md, docs/quality.md and docs/troubleshooting.md all say so. Once a scope
+# had been imported once, `load`'s `if found: return found` early-exited on
+# the DB rows forever, so re-editing the file after the first run was silently
+# ignored and there was no way to force a re-import short of hand-editing
+# qatf.db. The marker now records the file's mtime, not just that an import
+# happened, so `load` re-imports whenever the file has moved since — the file
+# stays the interface for a CLI user with no flag to remember.
+_lw1 = Path(tempfile.mkdtemp(prefix="qatf-ed-cli-"))
+_legacy1 = _lw1 / edits.FILENAME
+_legacy1.write_text(
+    json.dumps({"edits": [{"index": 0, "was": "A", "text": "FIRST"}]}),
+    encoding="utf-8")
+_first_cli = edits.load(_lw1, "jobCLI")
+check("first load imports the legacy file",
+      len(_first_cli) == 1 and _first_cli[0].text == "FIRST", str(_first_cli))
+
+# Re-edit the file exactly the way a CLI user would: change the text, and the
+# mtime moves forward. Force it forward with os.utime rather than trusting a
+# back-to-back write to land on a different mtime — this must not flake on a
+# filesystem whose mtime resolution is coarser than this test runs in.
+_legacy1.write_text(
+    json.dumps({"edits": [{"index": 0, "was": "A", "text": "SECOND"}]}),
+    encoding="utf-8")
+_bumped1 = _legacy1.stat().st_mtime + 5
+os.utime(_legacy1, (_bumped1, _bumped1))
+_second_cli = edits.load(_lw1, "jobCLI")
+check("EDITING THE FILE AGAIN AFTER THE FIRST RUN IS PICKED UP, NOT IGNORED "
+      "— this was the bug: 'load' returned the stored DB rows forever once a "
+      "scope had been imported once, and a CLI user had no other way in",
+      len(_second_cli) == 1 and _second_cli[0].text == "SECOND", str(_second_cli))
+
+# Clearing the CLI's only interface has to actually clear the correction too,
+# not just get ignored the same way a re-edit was.
+_legacy1.write_text(json.dumps({"edits": []}), encoding="utf-8")
+_bumped1b = _legacy1.stat().st_mtime + 5
+os.utime(_legacy1, (_bumped1b, _bumped1b))
+_emptied_cli = edits.load(_lw1, "jobCLI")
+check("emptying the legacy file and re-loading returns no corrections",
+      _emptied_cli == [], str(_emptied_cli))
+
+section("per-word overlay — save() marks the scope without a prior load() (finding 2)")
+# `save` never wrote the `imported` marker — only `_import_legacy` did — and
+# `put_transcript` (api/routers/plan.py) never calls `load` before it calls
+# `save`. So for a pre-SQLite job whose word-edits.json still exists, a client
+# that PUTs a correction without ever GETting the transcript first left the
+# marker unset. The documented undo — PUT the pristine transcript back, which
+# `diff` turns into `save(work, scope, [])` — then reverted ITSELF on the next
+# `load`, which fell through to the still-present legacy file and reimported
+# the stale correction. Reproduced end to end through the real HTTP API in
+# smoke_api.py; this is the same bug from the pipeline side, with no HTTP
+# layer to obscure it.
+_lw2 = Path(tempfile.mkdtemp(prefix="qatf-ed-api-"))
+_legacy2 = _lw2 / edits.FILENAME
+_legacy2.write_text(
+    json.dumps({"edits": [{"index": 5, "was": "من", "text": "مين"}]}),
+    encoding="utf-8")
+# save() called directly, no load() first — exactly what put_transcript does.
+edits.save(_lw2, "jobAPI", [edits.Edit(index=2, was="X", text="Y")])
+edits.save(_lw2, "jobAPI", [])   # the user clears it; still no load() ever ran
+_after_clear = edits.load(_lw2, "jobAPI")
+check("A save() WITH NO PRIOR load() STILL MARKS THE SCOPE — a PUT that never "
+      "followed a GET does not leave the clear reverting itself on the next "
+      "read", _after_clear == [], str(_after_clear))
+
+section("face cache — SQLite")
+_dw = Path(tempfile.mkdtemp(prefix="qatf-fc-"))
+_dk = detect.cache_key(Path(__file__), "yunet", "balanced")
+check("two videos get different keys — one output directory used to serve the "
+      "first video's faces to the second",
+      _dk != detect.cache_key(Path(__file__).parent / "_harness.py",
+                              "yunet", "balanced"))
+detect.write_cache(_dw, _dk, [(0.0, 4.0)],
+                   [Detection(t=1.0, cx=0.5, cy=0.5, w=0.1, h=0.15, score=0.9)])
+_spans, _dets = detect.read_cache(_dw, _dk)
+check("the face cache round trips", _spans == [(0.0, 4.0)] and len(_dets) == 1)
+check("a miss is empty, not an error", detect.read_cache(_dw, "nope") == ([], []))
+
+section("import boundary — qatf.cli stays free of pydantic and fastapi")
+# CLAUDE.md and docs/architecture.md both claim "there is a check for this in
+# the smoke suite." There never was — nothing anywhere asserted it, so a stray
+# module-level `import fastapi` in qatf/cli could ship and both docs would
+# keep saying otherwise. The invariant is real: the CLI must install and run
+# without the `[api]` extra, and `pip install -e ".[api,anthropic]"` must not
+# drag in the OpenAI SDK (see "Import cost is deliberate too" in CLAUDE.md).
+#
+# This cannot be checked in-process. By this point in the file `qatf.pipeline`
+# and a dozen of its stage modules are already imported, so a plain
+# `'pydantic' not in sys.modules` here would report a false PASS if nothing in
+# this whole suite happens to import them — or a false FAIL for a reason that
+# has nothing to do with qatf.cli if something later in the file does. Only a
+# subprocess that imports NOTHING but qatf.cli — starting from a completely
+# clean sys.modules — can answer the question honestly. It imports the
+# submodules too (parser.py, runner.py), not just the package `__init__`, so
+# an eager import buried in either one is caught as well.
+_cli_probe = subprocess.run(
+    [sys.executable, "-c",
+     "import qatf.cli, qatf.cli.parser, qatf.cli.runner, sys; "
+     "print('pydantic' in sys.modules); print('fastapi' in sys.modules)"],
+    capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+)
+_cli_lines = _cli_probe.stdout.splitlines()
+check("qatf.cli import subprocess ran cleanly", _cli_probe.returncode == 0,
+      (_cli_probe.stderr or "")[-500:])
+
+
+def _cli_free_of(name: str, index: int) -> None:
+    # The probe's raw stdout is worth printing when this fails — it says which
+    # of the two lines came back True, and shows a truncated/absent line if the
+    # subprocess died mid-import. It is NOT worth printing when it passes:
+    # `check` echoes `detail` unconditionally, so passing it always would append
+    # a bare "False\nFalse" to a green run for every one of these.
+    ok = _cli_lines[index:index + 1] == ["False"]
+    check(f"qatf.cli import does not pull in {name}", ok,
+          "" if ok else f"probe stdout: {_cli_probe.stdout!r}")
+
+
+_cli_free_of("pydantic", 0)
+_cli_free_of("fastapi", 1)
 
 raise SystemExit(report())
