@@ -39,7 +39,7 @@ MAX_PLAN_CLIPS = 100
 
 __all__ = [
     "JobState", "RUNNING_STATES", "RUNNING_STATE_VALUES", "MAX_SECONDS",
-    "JobOptions", "JobCreate", "ClipModel", "PlanUpdate", "WordModel",
+    "JobOptions", "JobCreate", "JobFromUrl", "ClipModel", "PlanUpdate", "WordModel",
     "TranscriptResponse", "TranscriptUpdate",
     "ClipOutput", "JobResponse", "JobList",
     "ProviderInfo", "Health", "ErrorResponse",
@@ -192,6 +192,19 @@ class JobOptions(BaseModel):
     captions: bool = Field(True, description="burn captions into the video")
     per_line: int = Field(CAPTION_MAX_WORDS, ge=1, le=8,
                           description="max words per caption line")
+    transcript_source: Literal["auto", "captions", "whisper"] = Field(
+        "auto",
+        description="where stage 2's words come from. `auto` (the default) uses "
+                    "the video's caption track when the source is a URL and the "
+                    "track carries per-word timings, and transcribes otherwise. "
+                    "`captions` asks for the track and still falls back to "
+                    "Whisper if it is unusable — falling back here is a fall UP "
+                    "in quality, so it is logged rather than failed. `whisper` "
+                    "never reads captions. **A caption track gives one instant "
+                    "per token and no word ENDS**, so `timing_source` on the "
+                    "transcript comes back `captions` and stage 4 stops "
+                    "extending cuts past a bound — see GET /jobs/{id}/transcript.",
+    )
     auto_render: bool = Field(
         True,
         description="false stops at state=planned so the plan can be edited "
@@ -246,6 +259,39 @@ class JobCreate(JobOptions):
                     "QATF_MEDIA_ROOT; absolute paths must still land inside it. "
                     "This is a security boundary — anything escaping it is a 403.",
         examples=["talks/keynote.mov"],
+    )
+
+
+class JobFromUrl(JobOptions):
+    """Job from a video the server downloads.
+
+    Separate from `JobCreate` rather than making `path` optional: two required
+    fields that are mutually exclusive is a contract every generated client has
+    to special-case, and `POST /jobs/upload` already established one endpoint
+    per source."""
+
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "url": "https://youtu.be/j5HVqFaa2Ts",
+            "clips": 8,
+            "min_len": 28,
+            "max_len": 52,
+            "language": "ar",
+            "transcript_source": "captions",
+            "font": "Noto Naskh Arabic",
+        }],
+    })
+
+    url: str = Field(
+        ...,
+        description="https URL of the video to fetch. **Only YouTube hosts are "
+                    "accepted** — the fetcher backing this endpoint reads "
+                    "`file://` and supports a thousand sites, so an open URL "
+                    "field would be a local-file read and an outbound-request "
+                    "primitive. Anything else is a 403, the same refusal a path "
+                    "outside QATF_MEDIA_ROOT gets.",
+        examples=["https://youtu.be/j5HVqFaa2Ts"],
+        max_length=2048,
     )
 
 
@@ -346,6 +392,16 @@ class TranscriptResponse(BaseModel):
     language: str | None = None
     language_probability: float | None = Field(
         None, description="Whisper's confidence in the detected language, 0-1")
+    timing_source: Literal["asr", "captions"] = Field(
+        "asr",
+        description="where the word timings came from, and it changes what they "
+                    "MEAN. `asr` — Whisper measured both edges of every word "
+                    "against the audio. `captions` — a caption track supplied "
+                    "one instant per token and no ends at all, so each `end` is "
+                    "the next token's start: an upper bound, not a measurement. "
+                    "Stage 4 reads this and stops extending cuts past a bound, "
+                    "so a caption-sourced clip closes exactly on a word onset.",
+    )
     word_count: int
     edits_applied: int = Field(
         0, description="per-word corrections currently in effect")
@@ -440,7 +496,11 @@ class JobResponse(BaseModel):
     message: str = Field("", description="human-readable progress, e.g. '[2/5] transcribing'")
     error: str | None = Field(None, description="set only in state=failed")
     video: str
-    source: Literal["upload", "path"]
+    source: Literal["upload", "path", "youtube"]
+    url: str = Field(
+        "", description="the URL a youtube-sourced job was created from. Kept "
+                        "because stage 0 replaces `video` with a local path, so "
+                        "this is the only record of where the media came from.")
     options: JobOptions
     created_at: str
     updated_at: str
@@ -475,7 +535,7 @@ class ProviderInfo(BaseModel):
             "base_url": None,
             "key_env": "ANTHROPIC_API_KEY",
             "structured_output": "json_schema",
-            "context_tokens": 200_000,
+            "context_tokens": 1_000_000,
             "note": "",
         }],
     })

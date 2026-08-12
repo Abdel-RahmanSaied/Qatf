@@ -75,7 +75,7 @@ finally:
 migrated = db.connect(v1_path)
 check("an existing v1 database migrates forward to the current version",
       migrated.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-      and db.SCHEMA_VERSION == 3, str(db.SCHEMA_VERSION))
+      and db.SCHEMA_VERSION == 4, str(db.SCHEMA_VERSION))
 check("the v2 table exists after migrating an old file",
       migrated.execute(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='imported'"
@@ -115,7 +115,7 @@ finally:
 migrated2 = db.connect(v2_path)
 check("an existing v2 database migrates forward to the current version",
       migrated2.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-      and db.SCHEMA_VERSION == 3, str(db.SCHEMA_VERSION))
+      and db.SCHEMA_VERSION == 4, str(db.SCHEMA_VERSION))
 check("the v3 column exists on the v2 table after migrating",
       any(r[1] == "mtime" for r in
           migrated2.execute("PRAGMA table_info(imported)")))
@@ -129,6 +129,56 @@ check("an imported row written under v2 survives the migration to v3, with "
           "SELECT kind, mtime FROM imported WHERE scope='job-v2'"
       ).fetchone()) == ("word_edits", None))
 db.close(v2_path)
+
+section("core/db — a v3 database migrates to v4, transcripts intact")
+# `_SCHEMA_V4` adds `timing_source` to `transcripts`, a table `_SCHEMA_V1`
+# created and that real installs are already full of. The behavioural risk is
+# not the column appearing; it is what an OLD row reads back as. Every row
+# written before this column existed came from Whisper, so a NULL must be read
+# as "asr" — read it as anything else and `cuts.tail_for` would drop SNAP_TAIL
+# to zero on a measured transcript, silently shortening every cached job's
+# clips by 0.35s on the next re-snap.
+v3_path = TMP / "v3.db"
+_raw3 = sqlite3.connect(v3_path)
+try:
+    with _raw3:
+        _raw3.executescript(db._SCHEMA_V1)
+        _raw3.executescript(db._SCHEMA_V2)
+        _raw3.executescript(db._SCHEMA_V3)
+        _raw3.execute("PRAGMA user_version=3")
+        _raw3.execute(
+            "INSERT INTO transcripts (key, language, language_probability, "
+            "device, compute_type, words) VALUES (?,?,?,?,?,?)",
+            ("words-large-v3-ar", "ar", 1.0, "cuda", "float16",
+             '[{"text": "\u0645\u064a\u0646", "start": 1.0, "end": 1.4}]'))
+finally:
+    _raw3.close()
+
+migrated3 = db.connect(v3_path)
+check("an existing v3 database migrates forward to the current version",
+      migrated3.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+      and db.SCHEMA_VERSION == 4, str(db.SCHEMA_VERSION))
+check("the v4 column exists on the v3 transcripts table after migrating",
+      any(r[1] == "timing_source" for r in
+          migrated3.execute("PRAGMA table_info(transcripts)")))
+check("a transcripts row written under v3 survives, new column NULL",
+      tuple(migrated3.execute(
+          "SELECT language, device, timing_source FROM transcripts "
+          "WHERE key='words-large-v3-ar'").fetchone()) == ("ar", "cuda", None))
+db.close(v3_path)
+
+# The one that actually matters: a pre-v4 row must READ BACK as measured.
+from qatf.pipeline import cuts as _cuts  # noqa: E402
+
+_restored = db.connect(v3_path)
+_row = _restored.execute(
+    "SELECT timing_source FROM transcripts WHERE key='words-large-v3-ar'").fetchone()
+check("a NULL timing_source reads back as 'asr', not as captions",
+      (_row["timing_source"] or "asr") == "asr")
+check("and therefore keeps the full SNAP_TAIL",
+      _cuts.tail_for(_row["timing_source"] or "asr") == 0.35,
+      str(_cuts.tail_for(_row["timing_source"] or "asr")))
+db.close(v3_path)
 
 section("core/db — thread affinity")
 # sqlite3 connection objects are NOT safe to share across threads, and the job

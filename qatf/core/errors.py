@@ -72,6 +72,40 @@ class TranscriptTooLong(QatfError):
     status_code = 413
 
 
+# -- stage 0 (fetch) -------------------------------------------------------
+
+class FetcherNotAvailable(QatfError):
+    """A URL source was asked for and yt-dlp is not installed.
+
+    Same shape and the same reasoning as `DetectorNotAvailable` and
+    `TranscriberNotAvailable`: a missing optional dependency is a deployment
+    fact the caller can act on, not a crash."""
+
+    status_code = 503
+
+
+class UnsupportedSourceUrl(QatfError):
+    """A caller-supplied URL failed the scheme/host allowlist.
+
+    A security boundary, and the URL twin of `SourceOutsideMediaRoot`. yt-dlp
+    accepts `file://` and carries a thousand site extractors, so an unvalidated
+    URL from a request body is simultaneously a local-file read and an
+    outbound-request primitive. 403 rather than 422 for the same reason
+    `SourceOutsideMediaRoot` is: this is a refusal, not a typo."""
+
+    status_code = 403
+
+
+class SourceNotFetchable(QatfError):
+    """The URL passed the allowlist and the download still failed.
+
+    Distinct from `UnsupportedSourceUrl` on purpose: one is us refusing, the
+    other is the far end — private video, region block, removed, rate limit.
+    502 because the failure is upstream, not in the request."""
+
+    status_code = 502
+
+
 # -- stage 4b --------------------------------------------------------------
 
 class TranscriberNotAvailable(QatfError):

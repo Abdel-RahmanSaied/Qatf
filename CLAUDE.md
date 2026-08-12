@@ -28,8 +28,10 @@ qatf/
     types.py       Word, Transcript, Clip — plain dataclasses
     utils.py       subprocess, timestamps, slugs, logging
   pipeline/        the five stages, one module each. the ONLY pipeline logic
+    fetch.py       0.  url -> local file        yt-dlp, owns the url allowlist
     audio.py       1.  demux                    ffmpeg
     asr.py         2.  transcribe + word times  faster-whisper
+    subs.py        2'. caption track -> words   pure, ALTERNATIVE to asr.py
     fixups.py      2b. substitutions by value   text only, never timestamps
     edits.py       2c. corrections by position  text only, never timestamps
     health.py      2d. loop repair + timing flags  text only, never timestamps
@@ -60,6 +62,11 @@ qatf/
 qatf.py            legacy shim for `python qatf.py`
 tests/             smoke_{db,pipeline,llm,api}.py, load_api.py, score_transcript.py,
                    verify_render.py, fixtures/, _harness.py
+                   api_full_flow.py  every endpoint against a RUNNING server and a
+                                     real video — the one test the in-process
+                                     fakes cannot stand in for
+                   sweep_asr.py      one stage-2 run per decode override, in Docker
+                   sweep_all.sh      drives sweep_asr.py across the sweep table
 docs/              human-facing reference — see "Documentation" below
 ```
 
@@ -201,6 +208,7 @@ so the CLI gets the same treatment.
 | filter quoting | `encode.filtergraph` | `'` needs ffmpeg's `'\''` idiom |
 | cut timings | `edits.diff` | check finiteness *before* comparing — NaN defeats `>` |
 | media root / downloads | `api/deps.py` | resolve first, check second — that is what catches symlinks |
+| source URL | `pipeline/fetch.validate_url` | https + exact-host allowlist. NOT `.endswith` |
 
 Two habits behind those:
 
@@ -316,6 +324,65 @@ Whisper's 448-token context is shared between the seed and decoding. Overrun it
 and faster-whisper dies with `ValueError: The maximum decoding length must be > 0`,
 which names neither the vocabulary nor the limit. `check_seed_budget` rejects it
 up front instead.
+
+### Stage 0 and stage 2' — a YouTube URL, and captions instead of Whisper
+
+`POST /jobs/url`, or a URL as the CLI's positional argument. Stage 0 downloads
+to the job's `source/` directory and rewrites `video` to a local path, so stages
+1-5 never learn a URL was involved. A new **source** must not become a new
+pipeline.
+
+**The URL is a trust boundary, and a new kind for this project.** `media_root`
+bounds which *files* a request may name; nothing bounded which *URLs* it could,
+because until now none could. yt-dlp reads `file://` and carries extractors for a
+thousand sites, so an unvalidated string is a local-file read and an
+outbound-request primitive in one field. `fetch.validate_url` allows https only,
+on an exact-host allowlist, refusing userinfo (`https://youtube.com@evil/x`
+resolves to `evil`) and ports. **Exact match, never `.endswith`** — that is how
+`youtube.com.evil.net` gets in. It is enforced in `pipeline/`, and *again* in the
+router so a refusal is a synchronous 403 rather than a 202 and a job that dies on
+a worker thread. The suite caught that one: the first version returned 202 for
+`file:///etc/passwd`.
+
+**What a caption track actually gives you**, measured on the real 12-minute
+Arabic video (724s) against a large-v3 run of the same audio:
+
+```text
+                     YouTube ASR   Whisper large-v3
+words                       1637               1569
+wpm                        135.9              130.5
+repetition loops               0                  0
+tracked terms            2✓ / 4✗            0✓ / 6✗
+cost                  173 KB, ~2s          18m43s CPU
+```
+
+Two caveats, and both matter more than the table:
+
+- **That Whisper run used no `hotwords`.** The vocabulary is the main quality
+  lever (23 wrong → 19, and → 7 with denoise), so this is YouTube beating an
+  *unoptimised* Whisper. A rematch against `prompts/ar-tech.txt` has not been run.
+- **`json3` carries `tOffsetMs` — a START — and no end anywhere.** So a caption
+  word's `end` is the *next* word's start: an upper bound, not a measurement.
+
+That second point is the whole design. `Transcript.timing_source` records it,
+survives the cache (schema v4) and the plan round trip, and `cuts.tail_for`
+reads it to drop `SNAP_TAIL` to **zero**. Adding 0.35s to an upper bound does not
+extend into silence — it extends past the point the next word already started,
+slicing its first phoneme. That is the mid-syllable cut the core invariant exists
+to prevent, and nothing downstream could see it: the plan looks right, the
+durations look right, only listening reveals it.
+
+A hand-uploaded caption track is line-level, has no per-word offsets, and is
+**refused** for this purpose — `subs.has_word_timings` is the gate. The job then
+falls back to Whisper and says so. That fallback is deliberately a log, not a
+failure, unlike `--device cuda` and `--reframe track`: those two refuse because
+they have no better alternative to fall back *to*, whereas here the fallback is a
+fall *up* in quality and costs only time.
+
+`subs.py` imports no network client and parses a document, so it is testable from
+a fixture with no yt-dlp and no network — same split as `select.parse_response`.
+Rolling `aAppend` events need no special handling, which is measured rather than
+assumed: of 454 events, 226 carry `aAppend` and all 226 hold only blank segments.
 
 ### Reframe: crop keeps ~3x the subject pixels
 
@@ -535,6 +602,7 @@ and a job id; the client polls `GET /jobs/{id}`.
 ```http
 POST   /jobs                  start from a server-side path (sandboxed to media root)
 POST   /jobs/upload           multipart; options is a JSON string form field
+POST   /jobs/url              fetch a YouTube URL (stage 0). 403 off the allowlist
 GET    /jobs                  list, optional ?state=
 GET    /jobs/{id}             state, message, error, plan, outputs
 POST   /jobs/{id}/cancel      cooperative
@@ -548,8 +616,10 @@ GET    /jobs/{id}/clips       + /{name} to download
 GET    /healthz               reports whether ffmpeg is actually on PATH
 ```
 
-States: `queued → extracting → transcribing → selecting → planned → rendering →
-done`, plus `failed` and `cancelled`. Set `auto_render: false` to stop at
+States: `queued → fetching → extracting → transcribing → selecting → planned →
+rendering → done`, plus `failed` and `cancelled`. `fetching` only occurs on a
+`source="youtube"` job and is its own state because it is the one stage whose
+duration depends on somebody else's network. Set `auto_render: false` to stop at
 `planned` for review.
 
 Settings come from `qatf.config.Settings`; `create_app(settings=...)` takes an
@@ -608,14 +678,14 @@ Be honest about this in any session. It is the difference between a demo and a t
   corrupted job record, that concurrent renders are refused with 409, and holds
   budgets for per-job list cost, `/healthz` serial cost and poll latency during
   an upload.
-- `tests/smoke_db.py` (14 checks): `core/db.py` in isolation from `jobs` and
+- `tests/smoke_db.py` (23 checks): `core/db.py` in isolation from `jobs` and
   `pipeline` — WAL and `busy_timeout` are actually on, the schema version is
   stamped, connecting twice neither duplicates nor drops a table, a v1 database
   migrates forward to v2 without losing a row a v1 client wrote, each thread
   gets its own connection object while the same thread reuses one, a failed
   transaction leaves nothing behind, and a corrupt file raises rather than
   quietly returning an empty database.
-- `tests/smoke_pipeline.py` (297 checks): timestamp formatting and carry, slugify,
+- `tests/smoke_pipeline.py` (354 checks): timestamp formatting and carry, slugify,
   caption grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
   (no forced `-r`, crf forwarded), device resolution and the CUDA-to-CPU
@@ -623,16 +693,18 @@ Be honest about this in any session. It is the difference between a demo and a t
   assertion that timings are untouched), per-word corrections (that `diff`
   refuses a retiming or a changed word count, that a shifted overlay goes stale
   rather than corrupting a word, and again that timings are untouched), snap edge
-  cases, model-response parsing, and the trust boundaries — that caption text
-  and font names cannot inject ASS directives, and that `language` cannot escape
-  the work directory through the cache filename
+  cases, model-response parsing, the font-availability warning (that a missing
+  family warns, that an absent `fc-list` skips the check rather than warning,
+  and that the lookup uses `safe_font`'s output), and the trust boundaries —
+  that caption text and font names cannot inject ASS directives, and that
+  `language` cannot escape the work directory through the cache filename
 - `tests/smoke_llm.py` (38 checks): provider request shapes with the SDK client
   faked — that Anthropic gets `output_config.format` and no sampling params,
   that GPT-5 gets `max_completion_tokens`, that Kimi/GLM/Ollama downgrade to
   `json_object` rather than erroring, that vLLM keeps `json_schema`, refusal and
   truncation handling, the context guard, and `parse_response` across all three
   output tiers. Proves request *shape*, not that any endpoint accepts it.
-- `tests/smoke_api.py` (131 checks): job state machine, transcript cache round
+- `tests/smoke_api.py` (154 checks): job state machine, transcript cache round
   trip, the transcript correction round trip (correction reaches the burned-in
   captions, cut points provably unchanged, retiming/add/remove all refused, the
   overlay stays out of the cache file), plan replace with and without re-snap,
@@ -654,6 +726,20 @@ Be honest about this in any session. It is the difference between a demo and a t
   8 vertical clips under 60s with burned-in Arabic captions. Stage 2 and stage 3
   interiors are therefore no longer unverified.
 
+- **The HTTP API has now run the same material end to end** — `POST /jobs` on the
+  12-minute 4K ProRes Arabic file (73 GB), all five stages through the server:
+  demux + denoise, `large-v3` on CPU (1569 words, `language=ar` at p=1.000),
+  stage 3 through OpenRouter, snap, and 8 rendered clips. Every clip is
+  1080x1920 hevc, tagged `hvc1`, AAC audio intact, duration matching the plan,
+  and `30000/1001` preserved rather than forced to 30. Also confirmed live, none
+  of which the in-process fakes can show: `snap` is idempotent across five plan
+  round trips on real Arabic word spacing (clip 1 flat at 50.680s); a transcript
+  correction leaves the plan byte-identical while a retiming, an added word, a
+  removed word and a non-finite timing are each refused 422; `GET /clips` sizes
+  match `stat()`; a download is byte-identical to the file on disk; and no
+  validator echoes a rejected value back. **Stage 5a is NOT clean** — see open
+  risk #4.
+
 **UNVERIFIED — never executed:**
 - **Every provider except OpenRouter, against its real endpoint.** OpenRouter has
   now served a real request (Claude Opus 5, json_object tier). The rest —
@@ -662,13 +748,13 @@ Be honest about this in any session. It is the difference between a demo and a t
   OpenRouter's own default model ID was already stale when checked
   (`kimi-k2` → `kimi-k3`), so expect the same of the others.
 - Arabic *selection* quality on any non-Claude provider (see Stage 3 providers).
-- The API server against a real video — the CLI has run end to end, `qatf.api`
-  has not.
 - Whisper word-timestamp *accuracy* on Arabic. Transcription spelling is now
   measured, but nobody has checked whether the word boundaries `snap` relies on
   land where the words actually start. Clip edges are the thing to inspect.
-- The API has never run against a real video, a real GPU, or a real API key.
-  Every stage boundary is exercised; two stage interiors are not.
+- **The API on a GPU host.** It has now run a real video end to end with a real
+  key, but `transcribe_device` was `cpu` throughout — `cuda_devices: 0`. Nothing
+  about the server's GPU behaviour, or `QATF_WORKERS > 1` contending for one, has
+  been executed.
 - **The entire Arabic path.** See below.
 
 ---
@@ -693,6 +779,27 @@ Choppity, quso, 2short) is English-first.
   the rendering host. libass falls back silently, which is how you ship 50 clips in
   the wrong typeface without noticing. Under the API the rendering host is the
   server, not the caller's machine.
+
+  **Now warned about, not fixed.** `captions.font_warning` asks `fc-list` whether
+  the requested family exists and logs a warning if it does not — from the CLI's
+  `preflight` *and* from `jobs/worker.py` before stage 5, because under Docker the
+  rendering host is the server and warning only in the CLI would leave the
+  deployment that actually renders silent. Three deliberate properties:
+  - **A warning, never a refusal.** Unlike `--device cuda` and `--reframe track`,
+    which raise rather than degrade, there is no correct alternative to hand the
+    caller, and refusing an hour-long job over a font name costs more than an
+    ugly substitution.
+  - **No fontconfig means "cannot tell", never "missing".** A stock macOS host has
+    no `fc-list`; a warning that fires because the *checker* is absent is one
+    people learn to ignore. The check silently skips instead.
+  - It asks about `safe_font(name)`, the string that actually reaches the
+    `Style:` line — not the raw argument, which libass is never asked to resolve.
+
+  Verified in the image: `python:3.12-slim` + the Dockerfile's apt line already
+  carries `/usr/bin/fc-list` (fontconfig 2.15.0, pulled in as a dependency) and
+  5 Naskh families, so no Dockerfile change was needed. **This is a warning about
+  a fallback, not a check that the face has Arabic glyphs** — an installed Latin
+  font passes it and still renders tofu.
 
 Related and already visible: `slugify` is ASCII-only, so an all-Arabic title
 produces `02-clip.mp4`. Fine while filenames are internal; not fine once a user
@@ -746,6 +853,41 @@ mis-framed clips.
 
 No loudness normalization (`loudnorm` is a one-line filter add, highest
 value-per-effort item here), no silence trimming, no scene-change detection.
+
+### 4. Caption cues overlap — measured, unfixed
+
+Listed last only to avoid renumbering; **by impact it outranks 2 and 3**, because
+it is visible in every clip the tool currently ships.
+
+`LAST_WORD_HOLD` (0.12s) is added to the end of every caption line and nothing
+clamps it against the next line's start. On continuous speech the next line
+almost always begins inside that window, so two `Dialogue:` events are live at
+once and libass stacks them — for ~3 frames the viewer sees **the upcoming
+caption sitting above the one still on screen**.
+
+Measured on the real 12-minute Arabic file, first three clips:
+
+```text
+01-clip.ass   28 cues, 22 overlapping pairs   e.g. 5.74-9.31 vs 9.19-10.57
+02-clip.ass   26 cues, 20 overlapping pairs
+03-clip.ass   30 cues, 29 overlapping pairs
+              71 of 83 consecutive pairs — 85%
+```
+
+It hits **LTR as well as RTL**: the highlight path holds each word until the next
+word starts *within* a chunk, but the last word of every chunk still takes the
+unclamped `+ LAST_WORD_HOLD`.
+
+Found by rendering a clip and extracting a frame — the `.ass` file reads as
+entirely correct, which is the same trap the RTL bug set. A cue-timing assertion
+in `smoke_pipeline.py` would have caught it without a render, and there is no
+such assertion today: nothing anywhere checks that consecutive cues are disjoint.
+
+The fix is a clamp in `build_ass`, but the product decision is not obvious and
+should be made deliberately: clamping the end to the next cue's start removes the
+hold wherever speech is continuous (captions become gap-free hand-offs), whereas
+holding the line and pushing the *next* cue later trades the overlap for a brief
+gap with no caption at all.
 
 ---
 

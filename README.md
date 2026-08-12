@@ -143,13 +143,13 @@ Every provider except OpenRouter against its real endpoint. Whisper's *word
 timestamp accuracy* on Arabic — spelling quality is measured, but nobody has
 checked whether the boundaries `snap` depends on land where words actually start.
 
-No CI. 517 checks run with no ffmpeg, GPU, API key, or network:
+No CI. 592 checks run with no ffmpeg, GPU, API key, or network:
 
 ```bash
-python tests/smoke_db.py          #  18   the SQLite layer, in isolation
-python tests/smoke_pipeline.py    # 304
+python tests/smoke_db.py          #  23   the SQLite layer, in isolation
+python tests/smoke_pipeline.py    # 354
 python tests/smoke_llm.py         #  38
-python tests/smoke_api.py         # 134
+python tests/smoke_api.py         # 154
 python tests/load_api.py          #  23   concurrent load, ~20s
 ruff check .
 ```

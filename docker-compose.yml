@@ -32,10 +32,10 @@ services:
       - ./qatf-data:/data
       - ./media:/media:ro
     # GPU for faster-whisper. Drop this block and set --device cpu if there is none.
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
 
   # ---- local open-source model, easy path -----------------------------
   # Then: QATF_LLM_PROVIDER=ollama QATF_LLM_BASE_URL=http://ollama:11434/v1
@@ -44,10 +44,10 @@ services:
     image: ollama/ollama:latest
     ports: ["11434:11434"]
     volumes: ["ollama:/root/.ollama"]
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
 
   # One-shot: pull the model so the first clip request isn't a cold download.
   ollama-pull:
@@ -72,10 +72,10 @@ services:
       --model zai-org/GLM-4-9B-0414
       --max-model-len 32768
       --gpu-memory-utilization 0.90
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
 
 volumes:
   ollama:

@@ -24,7 +24,21 @@ pipeline logic of their own.
 from __future__ import annotations
 
 from ..core.types import Clip, Detection, Track, Transcript, Word, track_to_dict
-from . import asr, audio, captions, cuts, detect, edits, encode, fixups, framing, health, select
+from . import (
+    asr,
+    audio,
+    captions,
+    cuts,
+    detect,
+    edits,
+    encode,
+    fetch,
+    fixups,
+    framing,
+    health,
+    select,
+    subs,
+)
 from .asr import (
     DEVICES,
     cache_key,
@@ -39,12 +53,14 @@ from .asr import (
     write_cache,
 )
 from .audio import DENOISE_FILTER, audio_path, extract_audio
-from .captions import build_ass, group_words
-from .cuts import snap, within_duration, words_in
+from .captions import build_ass, font_available, font_warning, group_words
+from .cuts import snap, tail_for, within_duration, words_in
 from .detect import detections_for
 from .encode import REFRAME_MODES, clip_stem, filtergraph, render, render_all
+from .fetch import Fetched, is_url, validate_url
 from .framing import crop_width, sanitise, solve
 from .select import build_transcript_blocks, parse_response, pick_clips
+from .subs import has_word_timings, to_transcript
 
 __all__ = [
     "asr", "audio", "captions", "cuts", "detect", "encode", "framing", "select",
@@ -53,8 +69,10 @@ __all__ = [
     "read_cache", "write_cache",
     "DEVICES", "resolve_device", "cuda_device_count", "compute_type_for",
     "pick_clips", "build_transcript_blocks", "parse_response",
-    "snap", "words_in", "within_duration", "plan_clips",
-    "build_ass", "group_words",
+    "snap", "words_in", "within_duration", "plan_clips", "tail_for",
+    "fetch", "subs", "Fetched", "validate_url", "is_url",
+    "has_word_timings", "to_transcript",
+    "build_ass", "group_words", "font_available", "font_warning",
     "detections_for", "solve", "crop_width", "sanitise", "track_clips",
     "render", "render_all", "filtergraph", "clip_stem", "REFRAME_MODES",
     "Clip", "Detection", "Track", "Transcript", "Word",
@@ -62,7 +80,8 @@ __all__ = [
 
 
 def plan_clips(words: list[Word], n: int, lo: int, hi: int,
-               model: str | None = None, settings=None) -> list[Clip]:
+               model: str | None = None, settings=None,
+               timing_source: str | None = None) -> list[Clip]:
     """Stages 3 and 4 together: propose, then snap, then drop what the snap
     pushed out of range.
 
@@ -70,9 +89,16 @@ def plan_clips(words: list[Word], n: int, lo: int, hi: int,
     a test that patches `pipeline.select.pick_clips` is actually honoured.
 
     `settings` is threaded rather than read from the process — see
-    `select.pick_clips`."""
+    `select.pick_clips`.
+
+    `timing_source` decides the snap tail and must be the transcript's own —
+    see `cuts.tail_for`. It is threaded rather than inferred because the same
+    decision has to be reproducible in `PUT /jobs/{id}/plan`, which re-snaps
+    over this function's output; a round trip that used a different tail than
+    the first pass would move the boundaries on every edit."""
     clips = select.pick_clips(words, n, lo, hi, model=model, settings=settings)
-    clips = [cuts.snap(c, words) for c in clips]
+    tail = cuts.tail_for(timing_source)
+    clips = [cuts.snap(c, words, tail=tail) for c in clips]
     return cuts.within_duration(clips, lo, hi)
 
 

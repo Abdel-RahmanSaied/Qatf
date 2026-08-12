@@ -97,14 +97,6 @@ def probe_duration(path) -> float | None:
 
 #: `/healthz` answers this on every request, and `check_ffmpeg` spawns a
 #: process. Measured under concurrent polling that put /healthz at p99 > 1s —
-#: twenty times the endpoint that does real work — because process creation
-#: dominates and serialises behind the threadpool.
-#:
-#: ffmpeg does not appear and disappear mid-run, so the answer is cached. The
-#: TTL is short rather than permanent so a health check still self-heals if
-#: ffmpeg is installed while the server is up.
-#: `/healthz` answers this on every request, and `check_ffmpeg` spawns a
-#: process. Measured under concurrent polling that put /healthz at p99 > 1s —
 #: twenty times `GET /jobs/{id}`, which does real work.
 #:
 #: Two obvious fixes both failed, which is why this is written the way it is:
@@ -120,6 +112,11 @@ def probe_duration(path) -> float | None:
 #: startup, and an expired entry is served stale while a daemon thread
 #: refreshes — the answer is a health flag, and a 30-second-old one is worth
 #: far more than a fresh one that costs a request 300ms.
+#:
+#: The TTL is short rather than permanent. ffmpeg does not appear and disappear
+#: mid-run, so a long cache would be correct almost always — but a health check
+#: that cannot self-heal once ffmpeg is installed while the server is up reports
+#: `degraded` forever, and the operator's fix looks like it did nothing.
 FFMPEG_PROBE_TTL = 30.0
 _ffmpeg_probe: tuple[float, bool] | None = None
 _ffmpeg_refreshing = False

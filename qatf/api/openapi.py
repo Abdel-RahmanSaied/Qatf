@@ -37,6 +37,17 @@ RUNNING = {409: _error("the job is running — cancel it first",
 #: Asked for a plan or a render before the pipeline produced one.
 NO_PLAN = {409: _error("nothing to work with yet", "job has no plan to render")}
 
+#: Cancelling a job no worker is holding any more. The mirror image of RUNNING —
+#: that one refuses a mutation *because* a worker holds the job, this one refuses
+#: a cancel because none does. Declared here rather than inline on the route: an
+#: inline `{409: {"description": ...}}` carries no `model`, so it reaches the
+#: schema with no `ErrorResponse` $ref and a generated client gets no error type
+#: for a case every polling client will hit. That is exactly what this module
+#: exists to prevent, and the one route that hand-rolled it was the one route
+#: `smoke_api.py`'s single spot-check did not look at.
+ALREADY_FINISHED = {409: _error("the job already finished",
+                                "job is already done")}
+
 #: Asked for the transcript before stage 2 finished, or asked to re-snap a
 #: hand-edited plan on a job that never got one.
 NO_TRANSCRIPT = {409: _error("no transcript for this job yet",
@@ -51,6 +62,24 @@ OUTSIDE_ROOT = {403: _error("path escaped QATF_MEDIA_ROOT",
 #: one is a security refusal, the other is a typo.
 SOURCE_MISSING = {404: _error("no such file under the media root",
                               "no such file: talks/keynote.mov")}
+
+#: A caller-supplied URL failed the scheme/host allowlist. The URL twin of
+#: OUTSIDE_ROOT, and 403 for the same reason: a refusal, not a typo.
+BAD_URL = {403: _error("url is not an accepted host",
+                       "only these hosts are accepted: m.youtube.com, "
+                       "music.youtube.com, www.youtube.com, www.youtu.be, "
+                       "youtu.be, youtube.com")}
+
+#: The URL was accepted and the far end still would not serve it — private,
+#: removed, region-locked, rate-limited.
+NOT_FETCHABLE = {502: _error("the source could not be fetched",
+                             "could not fetch the video: DownloadError")}
+
+#: yt-dlp is not installed on this server.
+NO_FETCHER = {503: _error("this server cannot fetch urls",
+                          "fetching from a url needs yt-dlp — install it with "
+                          "`pip install -e \".[youtube]\"`, or download the video "
+                          "yourself and submit it by path or upload")}
 
 TOO_LARGE = {413: _error("upload exceeds QATF_MAX_UPLOAD_MB",
                          "upload exceeds QATF_MAX_UPLOAD_MB (2048 MB)")}

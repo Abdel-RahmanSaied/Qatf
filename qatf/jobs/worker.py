@@ -77,11 +77,97 @@ def caption_words(transcript, opts: dict, work: Path | None = None,
     return words, blanked, applied, len(stale)
 
 
+def fetch_source(store: JobStore, job_id: str, job) -> object | None:
+    """Stage 0. Returns what was fetched, or None for a job that needs no fetch.
+
+    Only `source="youtube"` jobs fetch. The job's `video` is rewritten to the
+    downloaded path here, so every later stage is handed a local file and none
+    of them learns that a URL was ever involved — the same shape as an upload,
+    which also rewrites `video` before submitting."""
+    if job.source != "youtube" or not job.url:
+        return None
+
+    want_captions = job.options.get("transcript_source", "auto") != "whisper"
+    store.update(job_id, state=JobState.fetching.value,
+                 message="[0/5] fetching the video"
+                         + (" and its captions" if want_captions else ""))
+    fetched = pipeline.fetch.download(
+        job.url, job.source_dir(store.root),
+        language=job.options.get("language"),
+        want_captions=want_captions,
+    )
+    store.update(job_id, video=str(fetched.video))
+    log(f"stage 0: fetched {fetched.title!r} ({fetched.duration}s)")
+    return fetched
+
+
+def obtain_transcript(store: JobStore, job_id: str, opts: dict, work: Path,
+                      wav: Path, fetched) -> tuple[object, bool, str]:
+    """Stage 2, from a caption track when one is usable and Whisper otherwise.
+
+    Returns (transcript, was_cached, cache key).
+
+    The preference is a request, not a guarantee, and the fallback is LOUD on
+    purpose. Falling back here is a fall *up* in quality — Whisper measures both
+    edges of every word, where a caption track bounds one — so the only thing
+    lost is the minutes stage 2 costs, which is worth a log line rather than a
+    failed job. That is the opposite of `--device cuda` and `--reframe track`,
+    which refuse rather than degrade, and the difference is exactly that those
+    two have no better alternative to fall back TO."""
+    preference = opts.get("transcript_source", "auto")
+    language = opts.get("language")
+
+    if preference != "whisper" and fetched is not None and fetched.captions:
+        raw = Path(fetched.captions).read_text(encoding="utf-8")
+        if pipeline.subs.has_word_timings(raw):
+            key = pipeline.asr.subs_cache_key(language)
+            cached = pipeline.read_cache(work, key)
+            if cached is not None:
+                return cached, True, key
+            store.update(job_id, state=JobState.transcribing.value,
+                         message="[2/5] reading the caption track (no transcription)")
+            transcript = pipeline.subs.to_transcript(raw, language)
+            if transcript.words:
+                pipeline.write_cache(work, key, transcript)
+                log(f"stage 2: {len(transcript.words)} tokens from captions — "
+                    f"word ends are BOUNDS, not measurements (see timing_source)")
+                return transcript, False, key
+            note = "the caption track parsed to no words"
+        else:
+            note = "the caption track has no per-word timings (line-level only)"
+    elif preference == "captions":
+        note = "no caption track was available"
+    else:
+        note = ""
+
+    if preference == "captions" and note:
+        log(f"stage 2: asked for captions but {note} — transcribing instead")
+        store.update(job_id, message=f"[2/5] captions unusable ({note}) — transcribing")
+
+    requested = opts.get("device", "auto")
+    device = pipeline.resolve_device(requested)
+    store.update(job_id, state=JobState.transcribing.value,
+                 message=f"[2/5] transcribing with whisper {opts['whisper']} on "
+                         f"{device}{' (auto-selected)' if requested == 'auto' else ''}")
+    key = pipeline.cache_key(opts["whisper"], language,
+                             opts.get("initial_prompt"), opts.get("hotwords"))
+    transcript, cached = pipeline.transcribe_cached(
+        wav, work, opts["whisper"], requested, language,
+        opts.get("initial_prompt"), opts.get("hotwords")
+    )
+    return transcript, cached, key
+
+
 def run_pipeline(store: JobStore, job_id: str) -> None:
     """All five stages. Stops at `planned` when auto_render is off."""
     job = store.require(job_id)
     opts = job.options
     work = job.work_dir(store.root)
+
+    store.checkpoint(job_id)
+    fetched = fetch_source(store, job_id, job)
+    if fetched is not None:
+        job = store.require(job_id)      # stage 0 rewrote `video`
 
     store.checkpoint(job_id)
     denoise = opts.get("denoise", False)
@@ -92,15 +178,9 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
                                  denoise=denoise)
 
     store.checkpoint(job_id)
-    requested = opts.get("device", "auto")
-    device = pipeline.resolve_device(requested)
-    store.update(job_id, state=JobState.transcribing.value,
-                 message=f"[2/5] transcribing with whisper {opts['whisper']} on "
-                         f"{device}{' (auto-selected)' if requested == 'auto' else ''}")
-    transcript, cached = pipeline.transcribe_cached(
-        wav, work, opts["whisper"], requested, opts.get("language"),
-        opts.get("initial_prompt"), opts.get("hotwords")
-    )
+    transcript, cached, transcript_key = obtain_transcript(
+        store, job_id, opts, work, wav, fetched)
+    store.update(job_id, transcript_key=transcript_key)
     if not transcript:
         raise NoSpeechFound("no speech found — nothing to clip")
     words, blanked, _, _ = caption_words(transcript, opts, work, job_id)
@@ -118,9 +198,14 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
             f"itself; timings and word count are untouched")
     for note in pipeline.health.warnings(words):
         log(f"      NOTE {note}")
+    # `transcript.device` alone, with no local fallback: a caption transcript
+    # ran on no device at all and must report None rather than inheriting
+    # whatever `resolve_device` would have answered. The Whisper path already
+    # records the device it actually used on the Transcript — including after
+    # the CUDA-to-CPU fallback, which is the whole reason that field exists.
     store.update(job_id, language=transcript.language,
                  word_count=len(words), transcript_cached=cached,
-                 device=transcript.device or device)
+                 device=transcript.device)
 
     store.checkpoint(job_id)
     # the store's settings, not the process-wide ones — see JobStore.__init__
@@ -135,7 +220,8 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
     # must use the object this app was built with, not the environment's.
     clips = pipeline.plan_clips(words, opts["clips"],
                                 opts["min_len"], opts["max_len"],
-                                model=model, settings=settings)
+                                model=model, settings=settings,
+                                timing_source=transcript.timing_source)
     store.update(job_id, clips=clips_to_dicts(clips),
                  message="[4/5] snapped cuts to word boundaries")
 
@@ -175,6 +261,15 @@ def render_plan(store: JobStore, job_id: str,
     out_dir = job.out_dir(store.root)
     for stale in out_dir.glob("*.mp4"):
         stale.unlink()
+
+    # The CLI warns about this in `preflight`; the server has no preflight, and
+    # under Docker the RENDERING host is the server rather than the caller's
+    # machine — so this path is the one that actually matters. Warning only in
+    # `cli/runner.py` would leave the deployment that renders in production the
+    # one deployment that says nothing, which is the same front-end asymmetry
+    # `baseline_words` had to fix for the repetition-repair count.
+    if opts.get("captions", True) and (note := pipeline.font_warning(opts["font"])):
+        log(f"      WARNING {note}")
 
     store.update(job_id, state=JobState.rendering.value, outputs=[],
                  output_sizes={},
