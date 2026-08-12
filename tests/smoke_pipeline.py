@@ -1329,9 +1329,20 @@ _cli_probe = subprocess.run(
 _cli_lines = _cli_probe.stdout.splitlines()
 check("qatf.cli import subprocess ran cleanly", _cli_probe.returncode == 0,
       (_cli_probe.stderr or "")[-500:])
-check("qatf.cli import does not pull in pydantic",
-      _cli_lines[:1] == ["False"], _cli_probe.stdout)
-check("qatf.cli import does not pull in fastapi",
-      _cli_lines[1:2] == ["False"], _cli_probe.stdout)
+
+
+def _cli_free_of(name: str, index: int) -> None:
+    # The probe's raw stdout is worth printing when this fails — it says which
+    # of the two lines came back True, and shows a truncated/absent line if the
+    # subprocess died mid-import. It is NOT worth printing when it passes:
+    # `check` echoes `detail` unconditionally, so passing it always would append
+    # a bare "False\nFalse" to a green run for every one of these.
+    ok = _cli_lines[index:index + 1] == ["False"]
+    check(f"qatf.cli import does not pull in {name}", ok,
+          "" if ok else f"probe stdout: {_cli_probe.stdout!r}")
+
+
+_cli_free_of("pydantic", 0)
+_cli_free_of("fastapi", 1)
 
 raise SystemExit(report())
