@@ -58,7 +58,7 @@ Two layers, because availability and usability are different questions:
 | Layer | Answers | On failure under `auto` | Under explicit `cuda` |
 | --- | --- | --- | --- |
 | `resolve_device()` | can CTranslate2 see a device? | pick `cpu` | raise |
-| `load_model()` | can it actually load? (OOM, missing kernels) | fall back to `cpu`, reason logged | raise |
+| `transcribe()`'s try/except around `_transcribe_on` | can it actually load AND decode? (OOM, missing kernels, or a lazy CUDA failure on first encode) | fall back to `cpu`, reason logged | raise |
 
 **An explicit `--device cuda` never falls back.** Silently getting CPU turns a
 benchmark into a lie, so it raises instead. Use the explicit form whenever you

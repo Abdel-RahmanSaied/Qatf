@@ -140,7 +140,20 @@ def _migrate(con: sqlite3.Connection) -> None:
 
     `PRAGMA user_version` rather than a table of our own: it costs no row, it
     cannot itself be half-written, and it is readable with any sqlite client
-    when something has gone wrong."""
+    when something has gone wrong.
+
+    If `version` is AHEAD of `len(_MIGRATIONS)` — a database written by a
+    newer build of qatf, opened by an older one — `range(version, len(...))`
+    is empty and this is a silent no-op: nothing is applied, nothing is
+    downgraded, and the connection proceeds against whatever tables that newer
+    version left behind. That is deliberate, not an oversight: the only
+    alternative is refusing to open the file, which turns "downgraded qatf
+    once" into a hard outage instead of a possible compatibility hiccup the
+    caller may never even hit (a newer migration might have added a column
+    nothing older reads). Silently rewriting the file backward would be worse
+    still — that is exactly the kind of destructive guess this module refuses
+    to make elsewhere (see `read_cache`/`write_cache` in `pipeline.asr`, which
+    never merge a correction overlay into the cache for the same reason)."""
     version = con.execute("PRAGMA user_version").fetchone()[0]
     for index in range(version, len(_MIGRATIONS)):
         with con:

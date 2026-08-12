@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -259,11 +260,21 @@ def speech_intervals(wav: Path, noise_db: float = -30.0,
             f"which reads as a clean result rather than a failed measurement."
         )
 
-    out = subprocess.run(
-        [binary("ffmpeg"), "-hide_banner", "-nostats", "-i", str(wav),
-         "-af", f"silencedetect=n={noise_db}dB:d={min_silence}", "-f", "null", "-"],
-        capture_output=True, text=True,
-    ).stderr
+    cmd = [binary("ffmpeg"), "-hide_banner", "-nostats", "-i", str(wav),
+           "-af", f"silencedetect=n={noise_db}dB:d={min_silence}", "-f", "null", "-"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        # The bug this guards against: a bad path, an unsupported codec, or a
+        # missing binary all mean ffmpeg emits no silence_start/silence_end
+        # lines at all — indistinguishable from "the file is one long speech
+        # span" to the parser below. That reads as a clean measurement, on the
+        # one metric whose entire job is to be the guard on every other
+        # number this module reports. `probe_duration`'s own handling just
+        # above already refuses to guess for the same reason; this closes the
+        # other half of the same function. Shape matches `qatf.core.utils.run`.
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-15:])
+        raise CommandFailed(f"command failed: {shlex.join(cmd)}\n{tail}")
+    out = proc.stderr
 
     silences: list[tuple[float, float]] = []
     start = None

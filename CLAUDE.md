@@ -236,10 +236,15 @@ Availability and usability are separate questions, so there are two layers:
 - `resolve_device()` asks CTranslate2, not `nvidia-smi`. A card the installed
   CTranslate2 cannot target (compute capability, driver mismatch) is not a usable
   device, and only the engine knows that.
-- `load_model()` wraps the actual model construction, because a device can pass
-  the availability check and still fail to load — OOM, or a build with no kernels
-  for that architecture. Under `auto` that falls back to CPU with the reason
-  logged; under an explicit `cuda` it raises.
+- `transcribe()` wraps the whole of `_transcribe_on` — model construction AND
+  consuming the segment generator — in a try/except, because a device can pass
+  the availability check and still fail to load, and faster-whisper builds
+  happily on a GPU whose CUDA libraries are missing: the real failure only
+  surfaces lazily, on the first encode, which happens while iterating segments.
+  A guard around construction alone never sees that, which is why the fallback
+  wraps the full call rather than being its own construction-only layer. Under
+  `auto` that falls back to CPU with the reason logged; under an explicit
+  `cuda` it raises.
 
 The device actually used is recorded on the `Transcript`, echoed in the job record
 and `GET /jobs/{id}`, and reported up front by `/healthz` (`cuda_devices`,

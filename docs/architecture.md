@@ -213,9 +213,9 @@ Availability and usability are separate questions, so there are two layers:
 ```mermaid
 flowchart TD
     R["resolve_device()"] -->|"asks CTranslate2,<br/>not nvidia-smi"| D{usable device?}
-    D -->|yes| L["load_model()"]
+    D -->|yes| L["_transcribe_on()<br/>build + consume, inside transcribe()'s try"]
     D -->|no| CPU[cpu]
-    L -->|OOM, no kernels| F{requested?}
+    L -->|"OOM, no kernels,<br/>or a lazy failure on first encode"| F{requested?}
     F -->|auto| CPU2["cpu — reason logged"]
     F -->|explicit cuda| E[raise]
     L -->|ok| G[cuda]
@@ -224,9 +224,14 @@ flowchart TD
 - **`resolve_device()`** asks CTranslate2, not `nvidia-smi`. A card the installed
   CTranslate2 cannot target (compute capability, driver mismatch) is not a usable
   device, and only the engine knows that.
-- **`load_model()`** wraps the actual model construction, because a device can
-  pass the availability check and still fail to load — OOM, or a build with no
-  kernels for that architecture.
+- **`transcribe()`** wraps the whole of `_transcribe_on` — construction AND
+  consuming the segment generator — in a try/except, because a device can pass
+  the availability check and still fail: OOM, a build with no kernels for that
+  architecture, or faster-whisper's lazy initialisation, which builds the model
+  happily on a GPU whose CUDA libraries are missing and only fails once decoding
+  starts. A guard around construction alone (an earlier `load_model` helper,
+  since removed — it had no production caller and could not see the lazy
+  failures) cannot catch that; only wrapping the full call does.
 
 The device actually used is recorded on the `Transcript`, echoed in the job record
 and `GET /jobs/{id}`, and reported up front by `/healthz`. It is deliberately

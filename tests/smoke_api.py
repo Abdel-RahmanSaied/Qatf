@@ -30,7 +30,7 @@ from qatf import pipeline
 from qatf.api import create_app
 from qatf.core.config import Settings
 from qatf.core.types import Clip, Keyframe, Track, Transcript, Word
-from qatf.jobs import JobStore, worker
+from qatf.jobs import RUNNING_STATE_VALUES, JobStore, worker
 from qatf.pipeline import asr, audio, encode, select
 
 SCRATCH = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
@@ -106,9 +106,6 @@ def wait(client, job_id, states, timeout=30):
     raise AssertionError(f"timeout; last state={job.get('state')} error={job.get('error')}")
 
 
-_RUNNING = {"queued", "extracting", "transcribing", "selecting", "rendering"}
-
-
 def settle(client, timeout=30):
     """Block until no job is mid-pipeline.
 
@@ -125,7 +122,7 @@ def settle(client, timeout=30):
     deadline = time.time() + timeout
     while time.time() < deadline:
         jobs = client.get("/jobs").json()["jobs"]
-        if not any(j["state"] in _RUNNING for j in jobs):
+        if not any(j["state"] in RUNNING_STATE_VALUES for j in jobs):
             return
         time.sleep(0.05)
     raise AssertionError("jobs still running after timeout")
@@ -680,15 +677,6 @@ with TestClient(app) as client:
     _rows = _con.execute("SELECT count(*) FROM jobs").fetchone()[0]
     check("jobs are rows, not files", _rows > 0, str(_rows))
 
-    # The old version of this check only confirmed an index NAMED
-    # ix_jobs_state existed in sqlite_master — true even if `list()` were
-    # rewritten to fetch every row and filter in Python (the exact regression
-    # ix_jobs_state exists to prevent), since nothing there asks whether any
-    # query actually USES the index. Capture the real SQL `JobStore.list()`
-    # runs via a trace callback — not a hand-copied string, the literal query
-    # the store executes — then ask the query planner what it did with it.
-    # That is the only way to prove the index is load-bearing rather than
-    # merely present.
     # The old version of this check only confirmed an index NAMED
     # ix_jobs_state existed in sqlite_master — true even if `list()` were
     # rewritten to fetch every row and filter in Python (the exact regression

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -347,25 +348,43 @@ check("compute type follows device",
 check("a broken ctranslate2 counts as no GPU, not a crash",
       _real_count() >= 0, str(_real_count()))
 
-# load_model: availability and usability are different questions
+# transcribe(): availability and usability are different questions. The
+# fallback wraps the WHOLE of _transcribe_on (construction AND consuming the
+# segment generator), not just constructing WhisperModel — faster-whisper
+# builds happily on a GPU whose CUDA libraries are missing and only fails once
+# decoding actually starts (see _transcribe_on's own docstring on why
+# construction and consumption are guarded together). So the fake below fails
+# from .transcribe(), not __init__, to exercise that real, lazy failure shape
+# — a construction-only guard (the now-deleted `load_model`, which this
+# section used to test) would never see it.
 class _FakeWhisper:
-    """Raises on cuda, succeeds on cpu — a driver/compute-capability mismatch."""
+    """Raises once asked to actually transcribe on cuda; succeeds on cpu."""
     def __init__(self, size, device="cpu", compute_type="int8"):
-        if device == "cuda":
-            raise RuntimeError("no kernel image is available for execution")
         self.device = device
+
+    def transcribe(self, *args, **kwargs):
+        if self.device == "cuda":
+            raise RuntimeError("no kernel image is available for execution")
+        class _Info:
+            language = "en"
+            language_probability = 1.0
+        return iter(()), _Info()
 
 
 _fake_mod = types.ModuleType("faster_whisper")
 _fake_mod.WhisperModel = _FakeWhisper
 sys.modules["faster_whisper"] = _fake_mod
+_fake_wav = Path("_fake_for_device_fallback_test.wav")  # never opened — WhisperModel is faked
 
-_model, _used = asr.load_model("large-v3", "cuda", requested="auto")
-check("auto-selected cuda that fails to load falls back to cpu", _used == "cpu")
+asr.cuda_device_count = lambda: 1
+_t_auto = asr.transcribe(_fake_wav, "large-v3", "auto", None)
+check("auto-selected cuda that fails during transcription falls back to cpu",
+      _t_auto.device == "cpu", _t_auto.device)
 raises("explicitly requested cuda raises instead of silently degrading",
-       RuntimeError, asr.load_model, "large-v3", "cuda", "cuda")
-check("cpu load needs no fallback",
-      asr.load_model("large-v3", "cpu", requested="auto")[1] == "cpu")
+       RuntimeError, asr.transcribe, _fake_wav, "large-v3", "cuda", None)
+asr.cuda_device_count = lambda: 0
+_t_cpu = asr.transcribe(_fake_wav, "large-v3", "auto", None)
+check("cpu-only path needs no fallback", _t_cpu.device == "cpu", _t_cpu.device)
 
 del sys.modules["faster_whisper"]
 asr.cuda_device_count = _real_count
@@ -1283,5 +1302,36 @@ detect.write_cache(_dw, _dk, [(0.0, 4.0)],
 _spans, _dets = detect.read_cache(_dw, _dk)
 check("the face cache round trips", _spans == [(0.0, 4.0)] and len(_dets) == 1)
 check("a miss is empty, not an error", detect.read_cache(_dw, "nope") == ([], []))
+
+section("import boundary — qatf.cli stays free of pydantic and fastapi")
+# CLAUDE.md and docs/architecture.md both claim "there is a check for this in
+# the smoke suite." There never was — nothing anywhere asserted it, so a stray
+# module-level `import fastapi` in qatf/cli could ship and both docs would
+# keep saying otherwise. The invariant is real: the CLI must install and run
+# without the `[api]` extra, and `pip install -e ".[api,anthropic]"` must not
+# drag in the OpenAI SDK (see "Import cost is deliberate too" in CLAUDE.md).
+#
+# This cannot be checked in-process. By this point in the file `qatf.pipeline`
+# and a dozen of its stage modules are already imported, so a plain
+# `'pydantic' not in sys.modules` here would report a false PASS if nothing in
+# this whole suite happens to import them — or a false FAIL for a reason that
+# has nothing to do with qatf.cli if something later in the file does. Only a
+# subprocess that imports NOTHING but qatf.cli — starting from a completely
+# clean sys.modules — can answer the question honestly. It imports the
+# submodules too (parser.py, runner.py), not just the package `__init__`, so
+# an eager import buried in either one is caught as well.
+_cli_probe = subprocess.run(
+    [sys.executable, "-c",
+     "import qatf.cli, qatf.cli.parser, qatf.cli.runner, sys; "
+     "print('pydantic' in sys.modules); print('fastapi' in sys.modules)"],
+    capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
+)
+_cli_lines = _cli_probe.stdout.splitlines()
+check("qatf.cli import subprocess ran cleanly", _cli_probe.returncode == 0,
+      (_cli_probe.stderr or "")[-500:])
+check("qatf.cli import does not pull in pydantic",
+      _cli_lines[:1] == ["False"], _cli_probe.stdout)
+check("qatf.cli import does not pull in fastapi",
+      _cli_lines[1:2] == ["False"], _cli_probe.stdout)
 
 raise SystemExit(report())
