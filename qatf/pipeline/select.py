@@ -83,12 +83,36 @@ def build_transcript_blocks(words: list[Word],
     """Timestamped transcript. Coarse blocks keep the token count sane and stop
     the model from inventing precise timings it can't actually know."""
     lines, buf, block_start = [], [], words[0].start if words else 0.0
+    # `block_open` tracks block MEMBERSHIP — has this block seen any word at
+    # all, blank included — separately from `buf`, which tracks only the TEXT
+    # that gets joined into the line. Before the blank-token guard below was
+    # added, `buf` did both jobs at once: a blank word still appended (as an
+    # empty string) so `buf` still went truthy, which is what let the split
+    # check fire on schedule. Once blanks stopped being appended, a block
+    # whose leading run was entirely blanked left `buf` empty right up to the
+    # first real word, so `and buf` stayed False past the `block_seconds`
+    # boundary — the split silently didn't happen, and `block_start` (and
+    # therefore the label on the next real word) went stale by however long
+    # the blank run lasted. `block_open` restores the original "any word
+    # counts" trigger while `buf` stays real-text-only, so both properties —
+    # no double-space text, and a block boundary that still fires on time —
+    # hold together.
+    block_open = False
     for w in words:
-        if w.start - block_start >= block_seconds and buf:
+        if w.start - block_start >= block_seconds and block_open:
             lines.append(f"[{ts_human(block_start)}] {' '.join(buf)}")
-            buf, block_start = [], w.start
-        buf.append(w.text)
-    if buf:
+            buf, block_start, block_open = [], w.start, False
+        block_open = True
+        # `health.repair` blanks a decoder repetition loop's duplicates rather
+        # than deleting them, so a blanked token is still a real element of
+        # `words` — `w.text == ""`. `captions.group_words` already knows to
+        # skip it; this loop didn't, so a blanked run became a run of double
+        # spaces in the prompt sent to stage 3. Harmless to the model, but a
+        # transcript the operator reads (this string is what gets logged and
+        # sent) should not show damage that was supposedly already repaired.
+        if w.text:
+            buf.append(w.text)
+    if block_open:
         lines.append(f"[{ts_human(block_start)}] {' '.join(buf)}")
     return "\n".join(lines)
 

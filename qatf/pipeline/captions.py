@@ -58,6 +58,10 @@ def group_words(words: list[Word], max_words: int = CAPTION_MAX_WORDS,
     out: list[list[Word]] = []
     cur: list[Word] = []
     for w in words:
+        if not w.text:
+            # a token blanked by health.repair — it keeps its index and timings
+            # so the overlay stays aligned, but it must not reach a caption
+            continue
         projected = sum(len(x.text) for x in cur) + len(cur) + len(w.text)
         if cur and (len(cur) >= max_words or projected > max_chars):
             out.append(cur)

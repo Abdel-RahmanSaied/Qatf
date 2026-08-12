@@ -24,9 +24,14 @@ boundaries *after* the model picks them, and both boundaries move outward
 (−0.15 s lead, +0.35 s tail). Ask for 60 and some clips land at 63, which Shorts
 rejects. Reels and TikTok allow longer.
 
-The duration filter is loose on purpose — a clip survives between `min_len × 0.6`
-and `max_len × 1.4` — because snapping legitimately moves a boundary by a whole
-word and a tight filter throws away good clips.
+The duration filter allows **±2 s** around the request — an absolute margin, not
+a percentage, because what snapping adds is absolute: 0.5 s of lead and tail plus
+at most a word of boundary movement. It was `min_len × 0.6` to `max_len × 1.4`,
+which admitted a **72.8 s** clip for `--max-len 52` and so defeated the only
+reason anyone passes 52. A clip further out than that is the model overrunning
+its instruction rather than snapping drifting, and it is **dropped and logged** —
+never dropped quietly, because a plan that silently returns 7 clips for
+`--clips 8` reads as the model finding nothing, which is a different problem.
 
 ---
 
@@ -139,7 +144,8 @@ That is a deliberate consequence of the RTL fix — see
 
 | Flag | Default | |
 | --- | --- | --- |
-| `--reframe {crop,blur}` | `crop` | |
+| `--reframe {crop,blur,track}` | `crop` | `track` needs OpenCV: `pip install -e ".[track]"` |
+| `--track-tier {fast,balanced,best}` | `balanced` | face detection at 1 · 3 · 8 fps. `--reframe track` only |
 | `--resolution R` | `1080p` | `source` · `1080p` · `1440p` · `4k` · `WxH` |
 | `--codec {h264,h265}` | `h265` | |
 | `--preset P` | `medium` | `veryslow` … `ultrafast` |
@@ -155,6 +161,41 @@ slower *and* softer; reach for it only when the framing genuinely needs the full
 width. Full arithmetic in
 [architecture.md](architecture.md#stage-5--reframe), timings in
 [quality.md](quality.md#render-performance).
+
+`track` is `crop` with a window that follows the speaker, so it carries the same
+subject pixels and costs the same to encode — the extra cost is stage 4b, the
+face detection pass, which is the only place a vision model runs. It is a third
+mode rather than a change to `crop` on purpose: every measured number above was
+scored against the two static graphs, and a mode that did not exist cannot
+invalidate them.
+
+Requires OpenCV (`pip install -e ".[track]"`); the YuNet weights ship with the
+package, so there is nothing to download. Without OpenCV the run fails at
+preflight rather than quietly rendering a static crop — the same contract as
+`--device cuda`.
+
+### `--track-tier`
+
+The cost knob, and the only difference between the tiers today: face detection
+at **1 fps** (`fast`), **3 fps** (`balanced`, the default) or **8 fps** (`best`).
+Detection time is linear in it.
+
+**No tier picks the speaker yet.** The active-speaker model is not implemented,
+so every detection reports `speaking=0.0` and stage 4c falls back to framing the
+largest face. In a two-shot that will sometimes frame the listener, on every
+tier. Do not read `best` as "gets the right person".
+
+`fast` has one further blind spot worth knowing: at one sample per second a cut
+that moves the subject less than ~0.75 of frame width is indistinguishable from
+someone running, so it is smoothed across rather than re-anchored. That is the
+deliberate direction to be wrong in — a missed cut costs one bounded pan, a
+false one costs a whip on every walking step.
+
+Detections are cached at `<work>/faces-<detector>-<tier>-<key>.json`, keyed to
+the footage and the detector settings, and cover a growing set of spans. Moving a
+cut in a plan editor re-solves the crop path from disk in milliseconds instead of
+re-running the detector. Each solved path is written to `<work>/track-NN.json`
+for review — check the ones the CLI reports as thin or fallen back.
 
 ### `--resolution source`
 

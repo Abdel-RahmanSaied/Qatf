@@ -26,7 +26,8 @@ Maps to faster-whisper's `hotwords`. Applies to the **whole file**.
 
 Write the terms **the way you want them spelled back**.
 [`prompts/ar-tech.txt`](../prompts/ar-tech.txt) is the working list — 30 terms,
-227 characters.
+170 characters. A 38-term extension was tried and reverted; see the stage-2
+sweep below for why.
 
 ### `--denoise` — free, and also faster
 
@@ -75,6 +76,149 @@ So nobody repeats them:
 | `condition_on_previous_text=False` | no effect alone, **worse** combined |
 | `beam_size` 8 / 10 | **worse**, and 50% slower |
 | `dynaudnorm` | correct terms 24 → **13** |
+| Extending Arabic vocabulary 30 → 38 terms | tracked terms 0/17 → 7/0, but uncovered speech 66.1s → 166.9s and 195 fewer words. Rejected. |
+
+### The stage-2 sweep — how to run one
+
+Baseline, measured on the reference transcript
+(`words-large-v3-ar-6da1b0b4.json`, 1390 words — the same denoised car
+recording as the rest of this page): one repetition run (`ومكتفي` ×7,
+242.0-243.9s), 21 timing defects (12 zero + 2 tiny + 7 long; the longest
+single word spans 15.42s), 108.1s of uncovered speech across six gaps ≥10s,
+and 0.0% tracked-term accuracy (0 right / 17 wrong against
+`tests/fixtures/ar-terms.json`). Every hypothesis below targets one of these
+four numbers.
+
+**That reference came from an older environment, and the framing above needs
+a correction.** Re-running the identical 30-term vocabulary in the current
+container (`control`, in the vocabulary results below) beats it on all four
+numbers before a single decode parameter changes. Several defects the
+reference transcript carries — the repetition loop entirely, 11 of 12
+zero-length timings, 42 of the 108.1s of uncovered speech — are artifacts of
+that older faster-whisper build, not necessarily something a decode parameter
+needs to fix. New sweep rows should be scored against `control`, not the
+reference figures above.
+
+The uncovered-speech metric's own top three are worth reading before tuning
+anything: 667.9-685.3s (17.5s), 167.9-183.3s (15.4s), 424.6-439.6s (15.0s).
+The first of those has **zero words over it** and measures -19.4 dB against a
+-22.3 dB known-speech reference — louder than average speech, not silence.
+A words-only analysis (no `--audio`) had previously reported it as "largest
+silent gap 17.47s"; it never looked at the audio, so dropped speech read as
+silence. The third, 424.6-439.6s, is the `آآ` collapse discussed below.
+
+Every run changes ONE thing and is scored the same way:
+
+```bash
+python tests/score_transcript.py <new>.json --audio <wav> --baseline <prev>.json
+```
+
+Record the result here whether it wins or loses. The table above exists
+because three plausible changes were worse, and writing them down is what
+stops them being retried.
+
+| Hypothesis | Parameter | Target defect | Result |
+| --- | --- | --- | --- |
+| Our 500ms silence threshold merges chunks to 30s and starves the decoder | `vad_parameters.min_silence_duration_ms` 500 → 160 | 15s of speech in one token | *pending* |
+| Padding changes where word boundaries land | `vad_parameters.speech_pad_ms` | degenerate timings | *pending* |
+| A bad window never triggers temperature fallback | `compression_ratio_threshold`, `log_prob_threshold` | dropped speech | *pending* |
+| The extended vocabulary fixes product names | `--vocab-file prompts/ar-tech.txt` (38 terms) | PHP, JavaScript, seniors | **Measured — rejected.** Term accuracy improved (2/6 → 7/0) by dropping 195 words; uncovered speech 66.1s → 166.9s. Reverted. Details below. |
+| N-gram blocking breaks the loop | `no_repeat_ngram_size=3` | `ومكتفي` ×7 | *pending* |
+| Penalising repeats breaks the loop more gently | `repetition_penalty` 1.05 / 1.10 | `ومكتفي` ×7 | *pending* |
+| Anomalous segments in silence are hallucinations | `hallucination_silence_threshold=2.0` | invented proper nouns | *pending* |
+
+Replace each *pending* as runs complete. A row that loses keeps its result.
+Of the seven hypotheses above, only the vocabulary row has actually run — the
+six decode-parameter rows (`min_silence_duration_ms`, `speech_pad_ms`,
+`compression_ratio_threshold` / `log_prob_threshold`, `no_repeat_ngram_size`,
+`repetition_penalty`, `hallucination_silence_threshold`) are still pending.
+
+### Vocabulary — measured, and it reversed a decision
+
+**The headline finding: every product name added to the hotword list buys
+tracked-term accuracy by dropping real speech.** Uncovered speech rises
+monotonically with the number of product terms — 66.1s → 86.2s → 125.0s →
+166.9s, `control` → `+PHP only` → `lean` → `extended`:
+
+| run | vocabulary | words | repetition run | zero timings | long timings | max word span | tracked terms | uncovered speech |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| reference (older env) | 30 terms | 1390 | 7 | 12 | 7 | 15.42s | 0 / 17 | 108.1s |
+| control | 30 terms | 1440 | none | 1 | 4 | 13.34s | 2 / 6 | 66.1s |
+| +PHP only | 33 terms | 1419 | 5 | 9 | 15 | 15.82s | 5 / 6 | 86.2s |
+| lean | 27 terms | 1316 | none | 12 | 19 | 13.08s | 4 / 4 | 125.0s |
+| extended | 38 terms | 1245 | none | 4 | 18 | 23.52s | 7 / 0 | 166.9s |
+
+The 38-term list reached "100% term accuracy" only because the previously
+wrong tokens **vanished** along with 145 other words — `wrong` fell to zero
+through deletion, not correction. The regression gate caught it and exited 1:
+
+```text
+REGRESSED on tiny_timings, long_timings, max_word_span, words 1390 -> 1245
+```
+
+That is exactly the failure the word-count guard exists for.
+
+**Second finding: with the 30-term list, Whisper does not mishear the product
+names — it omits them.** At 190-212s the reference reads `كله زمانة على
+البيتش بي قالك ماتت خلاص`; the control reads `كله زمان على قالك ماتت خلاص`.
+PHP is simply gone. That is why those terms score 0 right **and** 0 wrong — a
+dropped term is neither, and a fixup cannot recover a token that was never
+produced.
+
+**Third finding: the environment upgrade alone was worth more than any
+vocabulary change.** Re-running the same 30-term list on the newer
+faster-whisper build (`control`, above) cut uncovered speech 108.1s → 66.1s,
+removed the `ومكتفي` ×7 repetition loop entirely, and took zero-length timings
+from 12 to 1 — before touching the vocabulary at all. Several defects the
+reference transcript carried are artifacts of that older build, not something
+inherent to the audio.
+
+**The caveat, stated plainly: tracked-term accuracy does not penalise an
+omission.** The metric is `right / (right + wrong)`; a term Whisper drops
+entirely is neither right nor wrong and never enters the ratio. On `control`,
+five of the seven tracked terms are absent outright, so its delivered 100%
+(after fixups, below) means "100% of the terms that appear," not "100% of the
+terms spoken." Read every tracked-term figure on this page with that in mind,
+not only this one.
+
+**Decision: `prompts/ar-tech.txt` is reverted to the 30-term list** (170
+characters). The 38-term extension is reverted — it cost 100 extra seconds of
+dropped speech for a term-accuracy number the metric was already overstating.
+`إكس` is corrected in `prompts/ar-fixups.txt` instead (`اكسة = إكس`,
+`اكس = إكس`), which recovers 6 occurrences at no coverage cost and lifts
+delivered tracked-term accuracy to 8 right / 0 wrong — with the same caveat
+above still attached to that number.
+
+**The open problem is not spelling.** With the best configuration measured —
+current environment, 30-term vocabulary, fixups applied — **66 seconds of real
+speech across the 12-minute file is still not transcribed at all.** That, not
+a wrong word, is the dominant stage-2 defect. The decode-parameter hypotheses
+in the table above are the untried levers against it.
+
+**`hallucination_silence_threshold` cannot fix the 15s `آآ`.** Reading
+faster-whisper's implementation — before spending a GPU run to find out —
+shows it only skips a segment flagged anomalous when that segment is
+surrounded by silence longer than the threshold. The 424.6-439.6s window is
+not silence: it holds speech at -17.5 dB against a -18.7 dB known-speech
+reference. Listed against the invented proper nouns instead, above, where the
+mechanism actually applies.
+
+**The prime suspect for the dropped speech is this project's own setting.**
+`DECODE` in `asr.py` sets `vad_parameters={"min_silence_duration_ms": 500}`;
+faster-whisper's default under `vad_filter=True` is 160, and VAD chunks are
+capped at `max_speech_duration_s` regardless (30s). A higher silence threshold
+merges speech across short pauses into longer chunks, and a 30s window of
+noisy car audio that mostly decodes to nothing is exactly how 15 seconds of
+speech becomes one token. The value is justified in the code only as "a big
+speed win" and has never been scored for accuracy — that is row 1 of the table
+above.
+
+**The acceptance bar is 85% tracked-term accuracy; the baseline is 0.0%.**
+`terms_accuracy` is printed by the scorer on every run and is guarded as a
+regression by `--baseline`, the same way a word-count drop or a new timing
+defect is — a run that pushes it below the previous best fails the gate. The
+current delivered figure, 30-term vocabulary plus fixups, is 8/0 — but that
+number carries the caveat above and should not be read as "85% cleared."
 
 ---
 

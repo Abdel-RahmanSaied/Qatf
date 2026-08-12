@@ -22,9 +22,19 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | 1 | [`pipeline/audio.py`](../qatf/pipeline/audio.py) | demux to 16 kHz mono wav, optionally denoised | no | yes |
 | 2 | [`pipeline/asr.py`](../qatf/pipeline/asr.py) | transcribe with word-level timings | Whisper | no |
+| 2d | [`pipeline/health.py`](../qatf/pipeline/health.py) | find decoder damage — repetition loops (blanked) and impossible word timings (reported, not corrected) | no | yes |
 | 3 | [`pipeline/select.py`](../qatf/pipeline/select.py) | pick which passages become clips | **your LLM** | no |
 | 4 | [`pipeline/cuts.py`](../qatf/pipeline/cuts.py) | snap cut points onto word boundaries | no | yes |
+| 4b | [`pipeline/detect.py`](../qatf/pipeline/detect.py) | find faces (`--reframe track` only) | YuNet | no |
+| 4c | [`pipeline/framing.py`](../qatf/pipeline/framing.py) | solve those into a crop path | no | yes |
 | 5 | [`pipeline/captions.py`](../qatf/pipeline/captions.py) + [`encode.py`](../qatf/pipeline/encode.py) | ASS generation, reframe, burn, encode | no | yes |
+
+Stage 4b is the third place a model runs and the only vision one. It is split
+from 4c for the reason stage 3 is split from stage 4: *a face is here and that
+one is talking* is a semantic claim, and turning it into geometry under limits
+the detector never sees is not. Semantic in, geometric out, so stage 5 stays
+model-free. If the framing lags or whips, the bug is in 4c; if the wrong person
+is framed, it is in 4b. Diagnose them separately.
 
 ---
 
@@ -75,10 +85,18 @@ Diagnose them separately. They have never once been the same bug.
 and the end to the nearest **word end** plus `SNAP_TAIL` (0.35s). Both move
 outward. A clip the model sized at 58s routinely lands at 60–63s.
 
-`within_duration` then drops anything that landed well outside the request, with
-deliberately loose margins — `lo * 0.6` to `hi * 1.4` — because snapping
-legitimately moves a boundary by a whole word and a tight filter would throw away
-good clips.
+`within_duration` then drops anything that landed outside the request by more
+than `DURATION_SLACK` (2 s). The margin is absolute rather than proportional
+because what snapping adds is absolute — lead plus tail plus at most a word. The
+old `lo * 0.6` to `hi * 1.4` scaled with the request and stopped meaning anything
+at the top: `--max-len 52` admitted 72.8 s. Drops are logged.
+
+`snap` is **idempotent**, and that is load-bearing rather than tidy: `--plan` and
+`PUT /jobs/{id}/plan` re-snap by default, so the hand-edit round trip runs it
+over its own output. It used to move the end onto the *next* word each pass —
+`SNAP_TAIL` is 0.35 s while Arabic word ends measured ~0.45 s apart — so five
+round trips grew one clip from 56.70 s to 59.21 s, silently. It also returns a
+new `Clip` rather than rewriting the one it was given.
 
 **Practical consequence:** ask for `--max-len 52` if you are targeting YouTube
 Shorts' 60-second limit.
@@ -145,8 +163,11 @@ qatf/
     asr.py         2.  transcribe + word times  faster-whisper
     fixups.py      2b. substitutions by value   text only, never timestamps
     edits.py       2c. corrections by position  text only, never timestamps
+    health.py      2d. decoder-damage repair    blank a repetition loop, report a bad timing
     select.py      3.  pick clips               LLM
     cuts.py        4.  snap to word bounds      deterministic
+    detect.py      4b. find faces               OpenCV, cached against the video
+    framing.py     4c. solve the crop path      deterministic
     captions.py    5a. ASS generation           deterministic
     encode.py      5b. reframe + burn + encode  ffmpeg
   llm/             stage 3 providers — the only swappable part of the pipeline
@@ -241,6 +262,14 @@ Both change `Word.text` and neither can touch `Word.start`/`Word.end`.
 | --- | --- | --- | --- |
 | `fixups.py` | value | a term the decoder **always** mishears the same way | a text file you build up across videos |
 | `edits.py` | position | a word misheard **once**, where the same string is correct elsewhere | `<work>/word-edits.json`, per recording |
+| `health.py` | run of identical tokens | a decoder repetition loop — damage, not a mishearing, so there is no "correct" text to substitute; the run is blanked instead | nowhere — applied on read like the other two, but nothing is stored |
+
+`health.py` is not really a third member of "two text layers" — it repairs
+decoder damage rather than correcting a mishearing — but it obeys the same
+rule the other two do (`Word.text` only, `Word.start`/`Word.end` untouched) and
+runs in the same read path, `worker.baseline_words`: fixups first (a global
+rule), then repair, then — for `caption_words` specifically — per-word edits
+on top. It belongs in this table rather than a separate one.
 
 The second exists because the first structurally cannot do it. On Egyptian
 Arabic, Whisper writing `من` for `مين` is unfixable by substitution — `من` is one
@@ -282,7 +311,10 @@ there is genuinely that much more detail to encode — and it renders faster, si
 `crop` is the default and is right for a centred talking head. Reach for `blur`
 only when the framing genuinely needs the full width, and know what it costs.
 
-Neither mode tracks the subject. See [Open risks](#open-risks) below.
+A third mode, `track`, follows the subject: stage 4b samples face positions and
+stage 4c solves them into a crop path that stage 5b drives with `sendcmd`. Both
+static modes are untouched by it, deliberately — every number above was measured
+against them.
 
 ---
 
@@ -360,11 +392,18 @@ quality and not just captions — and it is still unmeasured. Fonts are a live
 hazard too: libass falls back silently, which is how you ship 50 clips in the
 wrong typeface.
 
-**2 · Reframing is static.** `crop` is a fixed centre crop; `blur` is
-scale-to-fit. Neither tracks the subject. Real auto-reframe means sampling face
-positions (MediaPipe, 1–2 fps), smoothing the x-centre and driving
-`crop=x='...'` with a piecewise expression or `sendcmd`. Deliberately deferred: a
-perfectly tracked bad clip is still a bad clip. Selection quality first.
+**2 · Tracking frames a face, not a speaker.** `--reframe track` exists and is
+verified by [`tests/verify_render.py`](../tests/verify_render.py), which renders
+and measures where the subject landed. What is *not* built is the active-speaker
+model: every detection reports `speaking=0.0`, so stage 4c always takes its
+largest-face fallback and will frame the listener in a two-shot — on every tier,
+including `best`. The tiers currently differ only in sample rate. Say so before
+claiming multi-speaker support.
+
+Untuned and unmeasured beyond that: every constant in the `TRACK_*` block of
+`core/constants.py` is a starting value nobody has scored against real footage,
+which is why none of them appears in [quality.md](quality.md). Deliberately still
+behind selection quality — a perfectly tracked bad clip is still a bad clip.
 
 **3 · Missing basics.** No loudness normalisation (`loudnorm` is a one-line filter
 add and the highest value-per-effort item here), no silence trimming, no

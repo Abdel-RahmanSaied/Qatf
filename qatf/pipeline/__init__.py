@@ -24,7 +24,7 @@ pipeline logic of their own.
 from __future__ import annotations
 
 from ..core.types import Clip, Detection, Track, Transcript, Word, track_to_dict
-from . import asr, audio, captions, cuts, detect, edits, encode, fixups, framing, select
+from . import asr, audio, captions, cuts, detect, edits, encode, fixups, framing, health, select
 from .asr import (
     DEVICES,
     cache_path,
@@ -46,7 +46,7 @@ from .select import build_transcript_blocks, parse_response, pick_clips
 
 __all__ = [
     "asr", "audio", "captions", "cuts", "detect", "encode", "framing", "select",
-    "extract_audio", "audio_path", "DENOISE_FILTER", "fixups", "edits",
+    "extract_audio", "audio_path", "DENOISE_FILTER", "fixups", "edits", "health",
     "transcribe", "transcribe_cached", "cache_path", "read_cache", "write_cache",
     "DEVICES", "resolve_device", "cuda_device_count", "compute_type_for",
     "pick_clips", "build_transcript_blocks", "parse_response",

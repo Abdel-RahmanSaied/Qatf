@@ -22,7 +22,7 @@ import json
 import os
 from pathlib import Path
 
-from ..core.errors import SeedTooLong
+from ..core.errors import SeedTooLong, TranscriberNotAvailable
 from ..core.types import Transcript, Word, words_from_dicts, words_to_dicts
 from ..core.utils import log, slugify
 
@@ -95,13 +95,32 @@ def resolve_device(requested: str = "auto") -> str:
     return "cuda" if cuda_device_count() > 0 else "cpu"
 
 
+def whisper_model_class():
+    """Import WhisperModel, or say which package is missing and how to get it.
+
+    Imported inside the functions that need it — CLAUDE.md's import-cost rule —
+    which is exactly why the failure needs typing here: a lazy import turns a
+    missing extra into a `ModuleNotFoundError` raised from the middle of a
+    running job rather than at startup. It reached the job record raw, with no
+    status code and no install hint, until a live API run surfaced it."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise TranscriberNotAvailable(
+            "stage 2 needs faster-whisper — install it with "
+            "`pip install -e \".[all]\"`, or pass --plan to render a plan you "
+            "already have and skip transcription entirely"
+        ) from exc
+    return WhisperModel
+
+
 def load_model(model_size: str, device: str, requested: str = "auto"):
     """Construct a WhisperModel, falling back to CPU when a GPU load fails.
 
     The fallback applies only when the device was auto-selected. If the caller
     named `cuda` explicitly, the failure is raised — they asked a specific
     question and deserve the real answer."""
-    from faster_whisper import WhisperModel
+    WhisperModel = whisper_model_class()
 
     try:
         return WhisperModel(model_size, device=device,
@@ -157,10 +176,45 @@ def register_cuda_dlls() -> int:
     return len(found)
 
 
+#: Decode parameters, in one place so a sweep changes one thing at a time.
+#:
+#: EVERY VALUE HERE IS THE CURRENT BEHAVIOUR, NOT A MEASURED OPTIMUM. The only
+#: non-default entry is min_silence_duration_ms, which this project set to 500
+#: for speed; faster-whisper's default under vad_filter is 160, and a higher
+#: value merges across short pauses into longer chunks (capped at
+#: max_speech_duration_s = 30s). A 30s window of noisy audio that decodes to
+#: almost nothing is how 15 seconds of speech became one `آآ` token. That is
+#: hypothesis #1 in docs/quality.md, not a conclusion.
+DECODE: dict = {
+    "vad_filter": True,
+    "vad_parameters": {"min_silence_duration_ms": 500},
+}
+
+
+def merge_decode(overrides: dict | None) -> dict:
+    """DECODE with `overrides` merged one level deep, leaving DECODE untouched.
+
+    One level is enough — `vad_parameters` is the only nested key — and a deeper
+    merge would hide which knob a sweep actually moved. A shallow `dict(DECODE)`
+    is not enough on its own: it copies the top level but leaves `vad_parameters`
+    shared by reference, so `merged["vad_parameters"]["x"] = y` would mutate the
+    module-level dict every later run inherits. Each nested dict is copied too,
+    and a nested override updates the copy rather than replacing it, so
+    overriding `speech_pad_ms` alone still keeps `min_silence_duration_ms`."""
+    merged = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DECODE.items()}
+    for key, value in (overrides or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key].update(value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _transcribe_on(wav: Path, model_size: str, device: str,
                    language: str | None,
                    initial_prompt: str | None = None,
-                   hotwords: str | None = None) -> Transcript:
+                   hotwords: str | None = None,
+                   decode: dict | None = None) -> Transcript:
     """Build the model AND fully consume the segment generator.
 
     Consuming inside this function is the whole point. `WhisperModel(...)`
@@ -170,7 +224,7 @@ def _transcribe_on(wav: Path, model_size: str, device: str,
     guard around construction alone never sees it."""
     if device == "cuda":
         register_cuda_dlls()
-    from faster_whisper import WhisperModel
+    WhisperModel = whisper_model_class()
 
     model = WhisperModel(model_size, device=device,
                          compute_type=compute_type_for(device))
@@ -178,8 +232,9 @@ def _transcribe_on(wav: Path, model_size: str, device: str,
         str(wav),
         language=language,          # None => autodetect; "ar" / "en" to force
         word_timestamps=True,
-        vad_filter=True,            # drops long silences, big speed win
-        vad_parameters={"min_silence_duration_ms": 500},
+        # VAD and any other decode knob live in DECODE (above), so a sweep can
+        # change exactly one of them per run instead of editing this call.
+        **merge_decode(decode),
         # `hotwords` biases vocabulary on EVERY window; `initial_prompt` seeds
         # only the first. On a 12-minute Egyptian Arabic file, measured over the
         # whole transcript:
@@ -234,7 +289,8 @@ def check_seed_budget(initial_prompt: str | None, hotwords: str | None) -> None:
 def transcribe(wav: Path, model_size: str, device: str,
                language: str | None,
                initial_prompt: str | None = None,
-               hotwords: str | None = None) -> Transcript:
+               hotwords: str | None = None,
+               decode: dict | None = None) -> Transcript:
     """`device` may be auto/cuda/cpu. The device actually used is recorded on the
     returned Transcript, so callers report what happened rather than what was
     asked for.
@@ -251,7 +307,7 @@ def transcribe(wav: Path, model_size: str, device: str,
 
     try:
         return _transcribe_on(wav, model_size, resolved, language,
-                              initial_prompt, hotwords)
+                              initial_prompt, hotwords, decode)
     except Exception as exc:                # noqa: BLE001 — CUDA failures are not one type
         if resolved != "cuda" or device == "cuda":
             raise
@@ -259,7 +315,7 @@ def transcribe(wav: Path, model_size: str, device: str,
         log("      falling back to CPU. For GPU speed install the CUDA runtime: "
             "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
         return _transcribe_on(wav, model_size, "cpu", language,
-                              initial_prompt, hotwords)
+                              initial_prompt, hotwords, decode)
 
 
 def cache_path(work: Path, model_size: str, language: str | None,
@@ -322,13 +378,40 @@ def write_cache(path: Path, transcript: Transcript) -> None:
 def transcribe_cached(wav: Path, work: Path, model_size: str, device: str,
                       language: str | None,
                       initial_prompt: str | None = None,
-                      hotwords: str | None = None) -> tuple[Transcript, bool]:
-    """Returns (transcript, was_cached). Delete the cache file to re-transcribe."""
+                      hotwords: str | None = None,
+                      decode: dict | None = None) -> tuple[Transcript, bool]:
+    """Returns (transcript, was_cached). Delete the cache file to re-transcribe.
+
+    `decode` is deliberately NOT part of `cache_path`'s key. Stability is what
+    CAUSES reuse, not what prevents it — a key that stayed the same across two
+    different `decode` values would be exactly the bug: run 2 would read run
+    1's cached transcript back and silently report it as run 2's result. It is
+    keying on `decode` (i.e. making the key CHANGE when `decode` changes) that
+    would prevent that, and this function does not do it.
+
+    Nothing is broken by that today, but only because of where the boundary
+    actually is: `tests/sweep_asr.py` calls `asr.transcribe()` directly, not
+    this function, so a decode-parameter sweep never goes through this cache at
+    all — each run is written to its own explicitly named output file instead.
+    That is what "each run compared side by side" actually depends on; it has
+    nothing to do with this function's key being stable.
+
+    The hazard this leaves: `transcribe_cached` still ACCEPTS a `decode`
+    parameter, and on a warm cache it is silently ignored — a caller who does
+    reach this function directly with a `decode` override and an existing
+    cache file gets back whatever `decode` produced the cached transcript, not
+    the one just requested. That is the exact "a knob outside the key is a
+    knob that silently does nothing" pattern CLAUDE.md names for `--language`
+    in `cache_path` and again for the face-detection cache — reproduced here
+    the moment anything other than `sweep_asr.py` calls this function with a
+    non-default `decode`. Not fixed here: whether a decode override should
+    invalidate the cache once a value graduates from the sweep into `DECODE`
+    is an open question, left for whoever does that promotion."""
     cache = cache_path(work, model_size, language, initial_prompt, hotwords)
     if cache.exists():
         return read_cache(cache), True
 
     transcript = transcribe(wav, model_size, device, language,
-                            initial_prompt, hotwords)
+                            initial_prompt, hotwords, decode)
     write_cache(cache, transcript)
     return transcript, False

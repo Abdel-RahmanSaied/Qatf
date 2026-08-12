@@ -1,0 +1,12 @@
+{
+  "comment": "baseline_total is a heuristic ceiling, in TOKEN units, on words-large-v3-ar-6da1b0b4.json: it is the wrong-token count measured there for each term (right was 0 for every term on that reference run, so right+wrong == wrong there — that coincidence is what let a wrong-unit ceiling look correct for six of seven terms and hide the bug on the seventh). `right` counts OCCURRENCES of the expected term, not tokens, so a term whose wrong spelling is split across multiple tokens (\"جونيورز\" mangled to \"وناشوا نيورز\": 2 wrong tokens, 1 right occurrence once fixed) makes baseline_total and right structurally incomparable units. terms_invented is therefore advisory only (printed, not gated) — see the comment on _WORSE_IF_UP in score_transcript.py.",
+  "terms": [
+    {"expected": "PHP",        "wrong": ["البيتش", "بيتش"],        "baseline_total": 3},
+    {"expected": "جافا سكريبت", "wrong": ["الجفا", "سيكلت"],        "baseline_total": 2},
+    {"expected": "هايرنج",      "wrong": ["هيرنج"],                 "baseline_total": 1},
+    {"expected": "جونيورز",     "wrong": ["نيورز", "وناشوا"],       "baseline_total": 2},
+    {"expected": "سينيورز",     "wrong": ["يورز", "سن"],            "baseline_total": 3},
+    {"expected": "لينكد إن",    "wrong": ["الليك"],                 "baseline_total": 1},
+    {"expected": "إكس",         "wrong": ["اكسة", "اكس"],           "baseline_total": 5}
+  ]
+}
