@@ -5,10 +5,18 @@ these and nothing else.
 
 Device selection is two-layered on purpose. `resolve_device` asks CTranslate2
 whether a usable CUDA device exists, which is what decides the log message and
-`/healthz`. `load_model` then wraps the actual model construction, because
-availability and usability are different things: a driver mismatch, an unsupported
-compute capability, or an out-of-memory GPU all report a device and then fail on
-load. Only the second layer can catch those.
+`/healthz`. `transcribe` then wraps the whole of `_transcribe_on` — model
+construction AND consuming the segment generator — in a try/except, because
+availability and usability are different things: a driver mismatch, an
+unsupported compute capability, or an out-of-memory GPU all report a device and
+then fail either at construction or lazily, on the first encode. A guard around
+construction alone cannot see the lazy failures — faster-whisper builds happily
+on a GPU whose CUDA libraries are missing, and only errors once decoding starts
+— which is why the fallback wraps the full call rather than being a separate
+construction-only layer. (An earlier `load_model` helper was exactly that
+narrower, construction-only layer; it caught less than `transcribe`'s own
+try/except already did, had no production caller, and was removed rather than
+kept as a second, incomplete path.)
 
 UNVERIFIED: `model.transcribe`'s exact `info` attributes and `WhisperModel`
 kwargs are from documentation, not from a run.
@@ -113,26 +121,6 @@ def whisper_model_class():
             "already have and skip transcription entirely"
         ) from exc
     return WhisperModel
-
-
-def load_model(model_size: str, device: str, requested: str = "auto"):
-    """Construct a WhisperModel, falling back to CPU when a GPU load fails.
-
-    The fallback applies only when the device was auto-selected. If the caller
-    named `cuda` explicitly, the failure is raised — they asked a specific
-    question and deserve the real answer."""
-    WhisperModel = whisper_model_class()
-
-    try:
-        return WhisperModel(model_size, device=device,
-                            compute_type=compute_type_for(device)), device
-    except Exception as exc:                # noqa: BLE001 — CUDA failures are not one type
-        if device != "cuda" or requested == "cuda":
-            raise
-        log(f"      GPU reported available but would not load ({type(exc).__name__}: "
-            f"{exc}); falling back to CPU")
-        return WhisperModel(model_size, device="cpu",
-                            compute_type=compute_type_for("cpu")), "cpu"
 
 
 #: handles from os.add_dll_directory must stay alive — the directory is removed
