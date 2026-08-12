@@ -20,7 +20,7 @@ qatf talk.mov -o reels/ --clips 8 --language ar --denoise \
       03:04-03:53 (49.5s, 0.85)  PHP ماتت؟ الكلام ده بقاله سنين
       08:24-09:14 (50.0s, 0.84)  ما تسلّمش دماغك لأي حد: دوّر بنفسك
       ...
-[5/5] rendering 8 clips at 1080x1920 h264
+[5/5] rendering 8 clips at 1080x1920 h265 -preset medium
 done. 8 clips in reels/
 ```
 
@@ -77,12 +77,27 @@ qatf talk.mov -o out/ --plan out/plan.json
 qatf talk.mov -o reels/ --language ar --clips 8 --min-len 28 --max-len 52 \
   --denoise --vocab-file prompts/ar-tech.txt --fixups prompts/ar-fixups.txt \
   --font "Traditional Arabic"
+
+# let the crop follow the subject instead of holding a static centre slice
+qatf talk.mov -o reels/ --reframe track
 ```
 
 **Use `--max-len 52`, not 60.** Stage 4 moves cut points onto word boundaries
 *after* the model picks them, which routinely adds a few seconds. Ask for 60 and
 some clips land at 63 — which YouTube Shorts rejects. Reels and TikTok allow
 longer.
+
+**`--reframe track` follows the largest face, not the active speaker.** There is
+no active-speaker model yet, so in a two-shot it can frame the listener. The
+tracked path is rendered and measured by `verify_render.py`, but every `TRACK_*`
+tuning constant is an unmeasured starting value — say so before promising
+multi-speaker support.
+
+**Transcription is cached, so iterating on clip selection is free.** The cache
+lives in one `qatf.db` (SQLite, WAL) per work directory, alongside job records,
+per-word corrections and the face-detection cache. It is keyed on the Whisper
+size and the forced language — passing `--language ar` after an English run
+re-transcribes rather than silently reusing the wrong transcript.
 
 Or run it as a service:
 
@@ -128,18 +143,31 @@ Every provider except OpenRouter against its real endpoint. Whisper's *word
 timestamp accuracy* on Arabic — spelling quality is measured, but nobody has
 checked whether the boundaries `snap` depends on land where words actually start.
 
-No CI. 326 checks run with no ffmpeg, GPU, API key, or network:
+No CI. 517 checks run with no ffmpeg, GPU, API key, or network:
 
 ```bash
-python tests/smoke_pipeline.py    # 155
+python tests/smoke_db.py          #  18   the SQLite layer, in isolation
+python tests/smoke_pipeline.py    # 304
 python tests/smoke_llm.py         #  38
-python tests/smoke_api.py         # 110
+python tests/smoke_api.py         # 134
 python tests/load_api.py          #  23   concurrent load, ~20s
 ruff check .
 ```
 
+One suite needs ffmpeg, because the only honest way to verify a filtergraph is to
+render through it and measure the result:
+
+```bash
+python tests/verify_render.py     #  11   renders clips, measures where the subject landed
+```
+
 `load_api.py` hammers every endpoint from 24 threads and **asserts** — it found
 `/healthz` spawning a process per request, which no sequential test would.
+
+Every fixture in `verify_render.py` renders `crop` as a control and asserts the
+control **fails**. A check that cannot fail measures nothing — twice a broken
+harness reported the subject missing from both renders, which reads exactly like
+a broken feature.
 
 **The API has no authentication.** Put something in front of it before exposing a
 port — see [security.md](docs/security.md).
