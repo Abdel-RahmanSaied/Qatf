@@ -8,6 +8,7 @@ anything real.
 ## Install
 
 ```bash
+cd qatf-backend
 pip install -e ".[all]"              # api + every provider SDK
 pip install -e ".[api,anthropic]"    # or just the one you use
 pip install -e ".[api,openai]"       # also drives kimi, glm, vllm, ollama, openrouter
@@ -45,6 +46,7 @@ is not.
 ## GPU
 
 ```bash
+cd qatf-backend
 qatf talk.mov -o out/                  # --device auto is the default
 curl -s localhost:8000/healthz | jq '{cuda_devices, transcribe_device}'
 ```
@@ -146,18 +148,34 @@ tuning. See [quality.md](quality.md#render-performance).
 
 ## Docker
 
+`docker-compose.yaml` sits at the repo root, alongside `qatf-backend/` and
+`qatf-frontend/` — run these from the root, not from either package directory.
+
 ```bash
 docker compose up qatf                    # hosted provider
 docker compose --profile ollama up        # + local GLM-4-9B via Ollama
 docker compose --profile vllm up          # + local GLM-4-9B via vLLM (needs a GPU)
+docker compose up                         # backend + web UI together
 ```
 
-The `qatf` service maps `./qatf-data → /data` and `./media → /media:ro`, and sets
-`QATF_MEDIA_ROOT=/media` — so the media root is both the sandbox and a read-only
-mount. Provider keys pass through from your shell or `.env`.
+The `qatf` service builds from `./qatf-backend` and maps `./qatf-data → /data`
+and `./media → /media:ro`, and sets `QATF_MEDIA_ROOT=/media` — so the media root
+is both the sandbox and a read-only mount. Provider keys pass through from your
+shell or `.env`.
 
 The GPU reservation block is on by default. **Drop it and set `device: cpu` if
 there is no GPU**, or the container will not start.
+
+### The frontend service
+
+`frontend` builds from `./qatf-frontend` and publishes the web UI on `:3000`; it
+`depends_on: [qatf]` but does not gate on the backend being healthy, only
+started. nginx serves the static build and reverse-proxies `/api/*` to the
+`qatf` service on the compose network, so the browser only ever talks to one
+origin. **The UI adds no auth of its own** — it is the same unauthenticated
+trust model as the API itself (see [security.md](security.md)); whatever you put
+in front of `:3000` (or `:8000`, if exposed directly) is the only gate either
+way.
 
 ### Pointing at a local model
 
@@ -181,6 +199,7 @@ does fit one 16–24 GB GPU quantised, which is why both local profiles pull it.
 ## Running the server
 
 ```bash
+cd qatf-backend
 uvicorn qatf.api:app --reload      # development
 qatf-serve                         # reads QATF_HOST / QATF_PORT
 python -m qatf.api                 # same
@@ -243,6 +262,7 @@ interface.
 Seconds to run. No ffmpeg, GPU, API key or network needed.
 
 ```bash
+cd qatf-backend
 python tests/smoke_db.py          #  23 checks
 python tests/smoke_pipeline.py    # 354 checks
 python tests/smoke_llm.py         #  38 checks
@@ -261,6 +281,7 @@ thresholds exist to stop both coming back. Raise `--jobs` and `--concurrency` to
 push harder:
 
 ```bash
+cd qatf-backend
 python tests/load_api.py --jobs 500 --concurrency 48 --rounds 8
 ```
 

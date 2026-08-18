@@ -190,6 +190,15 @@ known CVEs in it. Pin a digest and rebuild on a schedule.
 an unauthenticated API on every interface. Bind to `127.0.0.1:8000:8000` unless
 something is fronting it.
 
+**The frontend's nginx proxy is not a new trust boundary.** It forwards
+`/api/*` to the same unauthenticated `qatf` service on the same host with the
+prefix stripped, so reaching the API through `:3000` instead of `:8000` changes
+nothing about who can call it — the gaps above apply identically either way.
+`client_max_body_size 0` and `proxy_request_buffering off` are deliberate:
+uploads are multi-GB, and the size check stays in FastAPI
+(`QATF_MAX_UPLOAD_MB`) as the single authority — nginx does not duplicate it,
+and a limit set there instead would just be a second, driftable number.
+
 **`.env` discovery walks upward** to the filesystem root. On a shared host, a
 writable parent directory means arbitrary environment variables. Standard for
 dotenv loaders; worth knowing where you start the process.

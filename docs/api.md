@@ -1,6 +1,7 @@
 # HTTP API
 
 ```bash
+cd qatf-backend
 uvicorn qatf.api:app --reload      # or: qatf-serve, or: python -m qatf.api
 ```
 

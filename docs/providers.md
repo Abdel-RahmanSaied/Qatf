@@ -51,6 +51,7 @@ Each SDK sits behind its own extra, so installing one provider does not pull the
 others:
 
 ```bash
+cd qatf-backend
 pip install -e ".[api,anthropic]"
 pip install -e ".[api,openai]"      # also drives kimi, glm, vllm, ollama, openrouter
 pip install -e ".[all]"
@@ -145,6 +146,7 @@ Before switching the Arabic path to an open model, A/B it on the same transcript
 and **read the clips**. `--plan-only` makes that cheap:
 
 ```bash
+cd qatf-backend
 QATF_LLM_PROVIDER=openrouter QATF_LLM_MODEL=anthropic/claude-opus-5 \
   qatf talk.mov -o cmp-claude/ --language ar --plan-only
 QATF_LLM_PROVIDER=glm \

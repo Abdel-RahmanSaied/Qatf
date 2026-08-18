@@ -17,56 +17,66 @@ Every module lives in a subpackage. Only `__init__.py` and `__main__.py` sit
 loose at the package top level.
 
 ```text
-qatf/
-  core/            depends on nothing. imports no pipeline, no jobs, no HTTP
-    config.py      Settings, read from the environment once
-    constants.py   product decisions (9:16, caption budget, snap margins)
-    db.py          the only module that imports sqlite3 — WAL, thread-local
-                   connections, PRAGMA-versioned migrations
-    dotenv.py      .env parser; the real environment always wins
-    errors.py      QatfError hierarchy, each carrying its HTTP status
-    types.py       Word, Transcript, Clip — plain dataclasses
-    utils.py       subprocess, timestamps, slugs, logging
-  pipeline/        the five stages, one module each. the ONLY pipeline logic
-    fetch.py       0.  url -> local file        yt-dlp, owns the url allowlist
-    audio.py       1.  demux                    ffmpeg
-    asr.py         2.  transcribe + word times  faster-whisper
-    subs.py        2'. caption track -> words   pure, ALTERNATIVE to asr.py
-    fixups.py      2b. substitutions by value   text only, never timestamps
-    edits.py       2c. corrections by position  text only, never timestamps
-    health.py      2d. loop repair + timing flags  text only, never timestamps
-    select.py      3.  pick clips               the configured provider
-    cuts.py        4.  snap to word bounds      deterministic
-    detect.py      4b. find faces               OpenCV, cached against the video
-    framing.py     4c. solve the crop path      deterministic
-    captions.py    5a. ASS generation           deterministic
-    encode.py      5b. reframe + burn + encode  ffmpeg
-  llm/             stage 3 providers — the only swappable part of the pipeline
-    base.py        the contract: complete_json + declared Capabilities
-    claude.py      Anthropic Messages API, official SDK
-    openai_compat.py  everything speaking /v1/chat/completions
-    presets.py     named endpoints: openai kimi glm ollama vllm openrouter
-  jobs/            knows nothing about HTTP
-    model.py       Job record, JobState, on-disk layout
-    store.py       persistence, accessors, the thread pool
-    worker.py      what a job actually runs
-  api/             endpoints only
-    __init__.py    create_app + the OpenAPI description
-    deps.py        shared dependencies and the media-root boundary
-    openapi.py     reusable failure declarations for the schema
-    schemas.py     pydantic wire contract
-    routers/       meta.py jobs.py plan.py outputs.py
-  cli/
-    parser.py      the argument surface
-    runner.py      preflight + the run flow
-qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_{db,pipeline,llm,api}.py, load_api.py, score_transcript.py,
-                   verify_render.py, fixtures/, _harness.py
-                   api_full_flow.py  every endpoint against a RUNNING server and a
-                                     real video — the one test the in-process
-                                     fakes cannot stand in for
-                   sweep_asr.py      one stage-2 run per decode override, in Docker
-                   sweep_all.sh      drives sweep_asr.py across the sweep table
+qatf-backend/      the Python pipeline, CLI and API — everything below lives here
+  qatf/
+    core/            depends on nothing. imports no pipeline, no jobs, no HTTP
+      config.py      Settings, read from the environment once
+      constants.py   product decisions (9:16, caption budget, snap margins)
+      db.py          the only module that imports sqlite3 — WAL, thread-local
+                     connections, PRAGMA-versioned migrations
+      dotenv.py      .env parser; the real environment always wins
+      errors.py      QatfError hierarchy, each carrying its HTTP status
+      types.py       Word, Transcript, Clip — plain dataclasses
+      utils.py       subprocess, timestamps, slugs, logging
+    pipeline/        the five stages, one module each. the ONLY pipeline logic
+      fetch.py       0.  url -> local file        yt-dlp, owns the url allowlist
+      audio.py       1.  demux                    ffmpeg
+      asr.py         2.  transcribe + word times  faster-whisper
+      subs.py        2'. caption track -> words   pure, ALTERNATIVE to asr.py
+      fixups.py      2b. substitutions by value   text only, never timestamps
+      edits.py       2c. corrections by position  text only, never timestamps
+      health.py      2d. loop repair + timing flags  text only, never timestamps
+      select.py      3.  pick clips               the configured provider
+      cuts.py        4.  snap to word bounds      deterministic
+      detect.py      4b. find faces               OpenCV, cached against the video
+      framing.py     4c. solve the crop path      deterministic
+      captions.py    5a. ASS generation           deterministic
+      encode.py      5b. reframe + burn + encode  ffmpeg
+    llm/             stage 3 providers — the only swappable part of the pipeline
+      base.py        the contract: complete_json + declared Capabilities
+      claude.py      Anthropic Messages API, official SDK
+      openai_compat.py  everything speaking /v1/chat/completions
+      presets.py     named endpoints: openai kimi glm ollama vllm openrouter
+    jobs/            knows nothing about HTTP
+      model.py       Job record, JobState, on-disk layout
+      store.py       persistence, accessors, the thread pool
+      worker.py      what a job actually runs
+    api/             endpoints only
+      __init__.py    create_app + the OpenAPI description
+      deps.py        shared dependencies and the media-root boundary
+      openapi.py     reusable failure declarations for the schema
+      schemas.py     pydantic wire contract
+      routers/       meta.py jobs.py plan.py outputs.py
+    cli/
+      parser.py      the argument surface
+      runner.py      preflight + the run flow
+  qatf.py            legacy shim for `python qatf.py`
+  tests/             smoke_{db,pipeline,llm,api}.py, load_api.py, score_transcript.py,
+                     verify_render.py, fixtures/, _harness.py
+                     api_full_flow.py  every endpoint against a RUNNING server and a
+                                       real video — the one test the in-process
+                                       fakes cannot stand in for
+                     sweep_asr.py      one stage-2 run per decode override, in Docker
+                     sweep_all.sh      drives sweep_asr.py across the sweep table
+  prompts/         vocab and fixup lists
+  Dockerfile       backend image; build context is qatf-backend/
+qatf-frontend/     the web UI. React + Vite + TS, served by nginx in Docker
+  src/api/         hand-written mirror of the wire contract + fetch client
+  src/pages/       JobsList, NewJob, JobDetail
+  src/components/  OptionsForm, PlanEditor, TranscriptEditor, ClipGrid, …
+  src/lib/rules.ts client-side mirrors of server rules (never the only line)
+  nginx.conf       serves the SPA, proxies /api/* -> qatf:8000 with prefix stripped
+docker-compose.yaml  one `docker compose up` starts backend (:8000) + frontend (:3000)
 docs/              human-facing reference — see "Documentation" below
 ```
 
@@ -97,6 +107,13 @@ functions that use them.
 ## Commands
 
 ```bash
+docker compose up                    # backend :8000 + web UI :3000
+cd qatf-frontend && npm run dev      # UI dev server; proxies /api to localhost:8000
+cd qatf-frontend && npm test         # vitest — the client-side rule mirrors
+```
+
+```bash
+cd qatf-backend
 pip install -e ".[all]"                       # ffmpeg must be on PATH
 # or pick one provider: pip install -e ".[api,anthropic]" / ".[api,openai]"
 export ANTHROPIC_API_KEY=...                  # or OPENAI_API_KEY / MOONSHOT_API_KEY / ZHIPU_API_KEY
@@ -124,13 +141,14 @@ returning 7 clips for `--clips 8` reads as the model finding nothing.
 ```bash
 
 # API
-uvicorn qatf.api:app --reload                 # or: qatf-serve / python -m qatf.api
+cd qatf-backend && uvicorn qatf.api:app --reload   # or: qatf-serve / python -m qatf.api
 
-# open-source provider, self-hosted
+# open-source provider, self-hosted (from the repo root — docker-compose.yaml lives there)
 docker compose --profile ollama up            # GLM-4-9B, easy path
 docker compose --profile vllm up              # GLM-4-9B, guided decoding
 
 # tests — no ffmpeg / GPU / API key / network needed
+cd qatf-backend
 python tests/smoke_pipeline.py                # seconds
 python tests/smoke_llm.py
 python tests/smoke_api.py
@@ -647,6 +665,25 @@ Deliberate, given the dependency budget. Know them before promising anything:
 `media_root` is a security boundary, not a convenience: without it a `POST /jobs`
 body naming `../../etc/passwd` would transcribe any file the process can read.
 Absolute paths must still resolve inside it.
+
+---
+
+## The web UI
+
+`qatf-frontend/` is a React SPA over the existing HTTP API — **purely additive;
+no UI feature may require a backend change**, the same philosophy as "a provider
+swap cannot affect cut accuracy". nginx serves the static build and proxies
+`/api/*` to the backend with the prefix stripped (trailing slash on
+`proxy_pass`), so the backend has no CORS and never learns a proxy exists.
+`client_max_body_size 0` + `proxy_request_buffering off` are load-bearing:
+uploads are multi-GB and the backend's `QATF_MAX_UPLOAD_MB` must stay the single
+authority on size.
+
+The UI enforces the core invariant by construction: the transcript editor has no
+timing inputs, `PUT /plan` is always sent with `snap: true`, and the saved
+response replaces the draft so the user sees where cuts actually landed.
+Client-side rule mirrors live in `src/lib/rules.ts` and are exactly that —
+mirrors for instant feedback; the server stays the authority on every one.
 
 ---
 
