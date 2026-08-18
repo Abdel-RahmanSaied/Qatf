@@ -12,7 +12,7 @@
 
 services:
   qatf:
-    build: .
+    build: ./qatf-backend
     ports: ["8000:8000"]
     environment:
       QATF_HOST: "0.0.0.0"
