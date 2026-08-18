@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_OPTIONS } from "../api/types";
-import { validateOptions } from "./rules";
+import { validateOptions, transcriptEditGuard } from "./rules";
+import type { WordModel } from "../api/types";
 
 describe("validateOptions", () => {
   it("accepts the defaults", () => {
@@ -30,5 +31,26 @@ describe("validateOptions", () => {
       expect(validateOptions({ ...DEFAULT_OPTIONS, resolution: r })).toEqual({});
     }
     expect(validateOptions({ ...DEFAULT_OPTIONS, resolution: "huge" }).resolution).toBeTruthy();
+  });
+});
+
+describe("transcriptEditGuard", () => {
+  const original: WordModel[] = [
+    { text: "هو", start: 204.11, end: 204.29 },
+    { text: "من", start: 204.29, end: 204.58 },
+  ];
+
+  it("allows a text-only correction", () => {
+    const edited = [original[0], { ...original[1], text: "مين" }];
+    expect(transcriptEditGuard(original, edited)).toBeNull();
+  });
+
+  it("refuses a changed word count", () => {
+    expect(transcriptEditGuard(original, [original[0]])).toMatch(/word count/);
+  });
+
+  it("refuses a retiming", () => {
+    const edited = [original[0], { ...original[1], start: 204.30 }];
+    expect(transcriptEditGuard(original, edited)).toMatch(/timing/);
   });
 });

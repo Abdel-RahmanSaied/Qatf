@@ -6,6 +6,7 @@ import { TERMINAL_STATES } from "../api/types";
 import type { JobResponse } from "../api/types";
 import { ClipGrid } from "../components/ClipGrid";
 import { StateBadge } from "../components/StateBadge";
+import { TranscriptEditor } from "../components/TranscriptEditor";
 import { useToast } from "../components/Toasts";
 import { formatAge } from "../lib/format";
 
@@ -97,7 +98,7 @@ export default function JobDetail() {
 
       {/* PlanEditor mounts here — Task 9 */}
 
-      {/* TranscriptEditor mounts here — Task 8 */}
+      <TranscriptEditor jobId={job.id} job={job} />
 
       {job.outputs.length > 0 && (
         <>
