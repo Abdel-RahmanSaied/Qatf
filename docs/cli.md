@@ -257,6 +257,7 @@ Frame rate is never forced. The source rate is preserved — see
 | `--plan FILE` | render a hand-edited plan; re-snaps by default |
 
 ```bash
+cd qatf-backend
 qatf talk.mov -o out/ --plan-only          # write out/plan.json
 $EDITOR out/plan.json
 qatf talk.mov -o out/ --plan out/plan.json # render exactly that
@@ -295,6 +296,7 @@ The invocation this project was built against — a 12-minute Egyptian-Arabic ta
 recorded in a moving car, 4K ProRes:
 
 ```bash
+cd qatf-backend
 qatf "متسلمش دماغك.mov" -o reels/ \
   --language ar \
   --clips 8 --min-len 28 --max-len 52 \

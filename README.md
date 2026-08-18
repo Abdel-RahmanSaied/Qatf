@@ -6,6 +6,7 @@ everything about *where* the cuts land is deterministic.
 قطف — *to pick, to harvest*.
 
 ```bash
+cd qatf-backend
 qatf talk.mov -o reels/ --clips 8 --language ar --denoise \
   --vocab-file prompts/ar-tech.txt --max-len 52
 ```
@@ -50,6 +51,7 @@ See [docs/providers.md](docs/providers.md).
 ## Install
 
 ```bash
+cd qatf-backend
 pip install -e ".[all]"          # api + every provider SDK
 pip install -e ".[api,anthropic]"  # or just the one you use
 ```
@@ -67,6 +69,14 @@ cp .env.example .env      # then add a provider key
 ## Quickstart
 
 ```bash
+docker compose up          # backend on :8000, web UI on http://localhost:3000
+```
+
+Or drive the pipeline directly from the CLI:
+
+```bash
+cd qatf-backend
+
 # see what it would cut, without spending render time
 qatf talk.mov -o out/ --plan-only
 
@@ -99,10 +109,10 @@ per-word corrections and the face-detection cache. It is keyed on the Whisper
 size and the forced language — passing `--language ar` after an English run
 re-transcribes rather than silently reusing the wrong transcript.
 
-Or run it as a service:
+Or run just the API, without Docker:
 
 ```bash
-uvicorn qatf.api:app --reload
+cd qatf-backend && uvicorn qatf.api:app --reload
 curl -X POST localhost:8000/jobs -H 'content-type: application/json' \
   -d '{"path": "talk.mov", "clips": 8, "language": "ar", "denoise": true}'
 ```
@@ -146,6 +156,7 @@ checked whether the boundaries `snap` depends on land where words actually start
 No CI. 592 checks run with no ffmpeg, GPU, API key, or network:
 
 ```bash
+cd qatf-backend
 python tests/smoke_db.py          #  23   the SQLite layer, in isolation
 python tests/smoke_pipeline.py    # 354
 python tests/smoke_llm.py         #  38
@@ -158,6 +169,7 @@ One suite needs ffmpeg, because the only honest way to verify a filtergraph is t
 render through it and measure the result:
 
 ```bash
+cd qatf-backend
 python tests/verify_render.py     #  11   renders clips, measures where the subject landed
 ```
 
