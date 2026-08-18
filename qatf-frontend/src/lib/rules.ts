@@ -1,6 +1,6 @@
 // Client-side mirrors of server rules — instant feedback only. The server
 // stays the authority; nothing here may be the ONLY place a rule lives.
-import type { JobOptions, WordModel } from "../api/types";
+import type { JobOptions, WordModel, ClipModel } from "../api/types";
 
 export type FieldErrors = Record<string, string>;
 
@@ -40,6 +40,22 @@ export function transcriptEditGuard(
     if (edited[i].start !== original[i].start || edited[i].end !== original[i].end) {
       return `timing changed at word ${i + 1} — timings are never editable`;
     }
+  }
+  return null;
+}
+
+/** Mirror of core.constants.DURATION_SLACK — the absolute allowance
+ * within_duration grants either side of the requested bounds. */
+export const DURATION_SLACK = 2.0;
+
+/** Warn when a hand-edited clip would fall outside what the pipeline keeps.
+ * Absolute slack, not proportional — that is a deliberate backend decision. */
+export function durationWarning(clip: ClipModel, maxLen: number): string | null {
+  const duration = clip.end - clip.start;
+  if (duration <= 0) return "end must be after start";
+  if (duration > maxLen + DURATION_SLACK) {
+    return `${duration.toFixed(1)}s exceeds max_len ${maxLen}s + ${DURATION_SLACK}s slack — ` +
+      "the render keeps it, but Shorts may reject it";
   }
   return null;
 }

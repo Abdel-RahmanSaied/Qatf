@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_OPTIONS } from "../api/types";
-import { validateOptions, transcriptEditGuard } from "./rules";
-import type { WordModel } from "../api/types";
+import { validateOptions, transcriptEditGuard, DURATION_SLACK, durationWarning } from "./rules";
+import type { WordModel, ClipModel } from "../api/types";
 
 describe("validateOptions", () => {
   it("accepts the defaults", () => {
@@ -52,5 +52,23 @@ describe("transcriptEditGuard", () => {
   it("refuses a retiming", () => {
     const edited = [original[0], { ...original[1], start: 204.30 }];
     expect(transcriptEditGuard(original, edited)).toMatch(/timing/);
+  });
+});
+
+describe("durationWarning", () => {
+  const clip = (start: number, end: number): ClipModel =>
+    ({ start, end, title: "t", hook: "", why: "", score: 0 });
+
+  it("accepts a clip inside max_len + slack", () => {
+    expect(durationWarning(clip(0, 52), 52)).toBeNull();
+    expect(durationWarning(clip(0, 52 + DURATION_SLACK), 52)).toBeNull();
+  });
+
+  it("warns beyond max_len + slack — the same absolute rule within_duration applies", () => {
+    expect(durationWarning(clip(0, 55), 52)).toMatch(/max_len/);
+  });
+
+  it("flags a non-positive duration as an error", () => {
+    expect(durationWarning(clip(30, 30), 52)).toMatch(/end/);
   });
 });
