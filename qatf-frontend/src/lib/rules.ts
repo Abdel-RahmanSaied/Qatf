@@ -1,6 +1,6 @@
 // Client-side mirrors of server rules — instant feedback only. The server
 // stays the authority; nothing here may be the ONLY place a rule lives.
-import type { JobOptions } from "../api/types";
+import type { JobOptions, WordModel } from "../api/types";
 
 export type FieldErrors = Record<string, string>;
 
@@ -24,4 +24,22 @@ export function validateOptions(o: JobOptions): FieldErrors {
     errors.resolution = "source, 1080p, 1440p, 4k, or WxH like 1080x1920";
   }
   return errors;
+}
+
+/** Mirror of PUT /jobs/{id}/transcript's contract: only text may differ.
+ * Timings come from the audio and are what every cut is snapped to. */
+export function transcriptEditGuard(
+  original: WordModel[],
+  edited: WordModel[],
+): string | null {
+  if (edited.length !== original.length) {
+    return `word count changed (${original.length} -> ${edited.length}) — ` +
+      "to split a word, put both words in its text instead";
+  }
+  for (let i = 0; i < original.length; i++) {
+    if (edited[i].start !== original[i].start || edited[i].end !== original[i].end) {
+      return `timing changed at word ${i + 1} — timings are never editable`;
+    }
+  }
+  return null;
 }
