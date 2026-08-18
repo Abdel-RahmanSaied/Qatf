@@ -6,6 +6,7 @@ import { TERMINAL_STATES } from "../api/types";
 import type { JobResponse } from "../api/types";
 import { ClipGrid } from "../components/ClipGrid";
 import { StateBadge } from "../components/StateBadge";
+import { PlanEditor } from "../components/PlanEditor";
 import { TranscriptEditor } from "../components/TranscriptEditor";
 import { useToast } from "../components/Toasts";
 import { formatAge } from "../lib/format";
@@ -96,7 +97,7 @@ export default function JobDetail() {
         )}
       </div>
 
-      {/* PlanEditor mounts here — Task 9 */}
+      <PlanEditor key={`${job.id}-${job.clips.length}`} jobId={job.id} job={job} onSaved={reload} />
 
       <TranscriptEditor jobId={job.id} job={job} />
 
