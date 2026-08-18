@@ -10,7 +10,7 @@ RUN apt-get update \
 # rendering host is the server, not the caller's machine.
 
 WORKDIR /app
-COPY pyproject.toml README.md* CLAUDE.md ./
+COPY pyproject.toml README.md ./
 COPY qatf ./qatf
 
 # [all] = api + every provider SDK. Use [api,anthropic] to keep the image small
