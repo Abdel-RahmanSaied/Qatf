@@ -25,7 +25,7 @@ nothing                          23      8                15
 Maps to faster-whisper's `hotwords`. Applies to the **whole file**.
 
 Write the terms **the way you want them spelled back**.
-[`prompts/ar-tech.txt`](../prompts/ar-tech.txt) is the working list — 30 terms,
+[`prompts/ar-tech.txt`](../qatf-backend/prompts/ar-tech.txt) is the working list — 30 terms,
 170 characters. A 38-term extension was tried and reverted; see the stage-2
 sweep below for why.
 

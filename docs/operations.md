@@ -38,7 +38,7 @@ cp .env.example .env
 
 `.env` is read from the working directory or any parent. **A real environment
 variable always wins** over a `.env` entry — see
-[`core/dotenv.py`](../qatf/core/dotenv.py). `.env` is gitignored; `.env.example`
+[`core/dotenv.py`](../qatf-backend/qatf/core/dotenv.py). `.env` is gitignored; `.env.example`
 is not.
 
 ---

@@ -18,8 +18,8 @@
 - **The class-name contract in this plan is binding.** CSS defines exactly these names; components use exactly these names. Neither side invents new ones without the other.
 - Every change must keep `npm run build` (`tsc --noEmit && vite build`) and `npm test` green.
 - Dark theme only. Quality floor, unannounced: responsive to 380px, visible `:focus-visible` rings, `prefers-reduced-motion: reduce` disables transitions/animations.
-- Work in `qatf-frontend/`. Windows host; use the Bash tool. Commit messages end with:
-  `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
+- Work in `qatf-frontend/`. Windows host; use the Bash tool.
+- **Commits carry no co-author or attribution trailer.**
 - **Honest data only.** The API gives no source-video duration. The harvest strip scales `0 → max(clip.end)` and labels both ends; nothing may imply a total duration we do not have.
 
 ---

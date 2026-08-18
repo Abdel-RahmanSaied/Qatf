@@ -20,14 +20,14 @@ flowchart LR
 
 | # | Module | Does | Model? | Deterministic? |
 | --- | --- | --- | --- | --- |
-| 1 | [`pipeline/audio.py`](../qatf/pipeline/audio.py) | demux to 16 kHz mono wav, optionally denoised | no | yes |
-| 2 | [`pipeline/asr.py`](../qatf/pipeline/asr.py) | transcribe with word-level timings | Whisper | no |
-| 2d | [`pipeline/health.py`](../qatf/pipeline/health.py) | find decoder damage — repetition loops (blanked) and impossible word timings (reported, not corrected) | no | yes |
-| 3 | [`pipeline/select.py`](../qatf/pipeline/select.py) | pick which passages become clips | **your LLM** | no |
-| 4 | [`pipeline/cuts.py`](../qatf/pipeline/cuts.py) | snap cut points onto word boundaries | no | yes |
-| 4b | [`pipeline/detect.py`](../qatf/pipeline/detect.py) | find faces (`--reframe track` only) | YuNet | no |
-| 4c | [`pipeline/framing.py`](../qatf/pipeline/framing.py) | solve those into a crop path | no | yes |
-| 5 | [`pipeline/captions.py`](../qatf/pipeline/captions.py) + [`encode.py`](../qatf/pipeline/encode.py) | ASS generation, reframe, burn, encode | no | yes |
+| 1 | [`pipeline/audio.py`](../qatf-backend/qatf/pipeline/audio.py) | demux to 16 kHz mono wav, optionally denoised | no | yes |
+| 2 | [`pipeline/asr.py`](../qatf-backend/qatf/pipeline/asr.py) | transcribe with word-level timings | Whisper | no |
+| 2d | [`pipeline/health.py`](../qatf-backend/qatf/pipeline/health.py) | find decoder damage — repetition loops (blanked) and impossible word timings (reported, not corrected) | no | yes |
+| 3 | [`pipeline/select.py`](../qatf-backend/qatf/pipeline/select.py) | pick which passages become clips | **your LLM** | no |
+| 4 | [`pipeline/cuts.py`](../qatf-backend/qatf/pipeline/cuts.py) | snap cut points onto word boundaries | no | yes |
+| 4b | [`pipeline/detect.py`](../qatf-backend/qatf/pipeline/detect.py) | find faces (`--reframe track` only) | YuNet | no |
+| 4c | [`pipeline/framing.py`](../qatf-backend/qatf/pipeline/framing.py) | solve those into a crop path | no | yes |
+| 5 | [`pipeline/captions.py`](../qatf-backend/qatf/pipeline/captions.py) + [`encode.py`](../qatf-backend/qatf/pipeline/encode.py) | ASS generation, reframe, burn, encode | no | yes |
 
 Stage 4b is the third place a model runs and the only vision one. It is split
 from 4c for the reason stage 3 is split from stage 4: *a face is here and that
@@ -121,8 +121,8 @@ cli  ───────→   pipeline  →  llm  →  core
 that something is **defined in the wrong package** — move the definition, don't
 add the import.
 
-The clearest example: `JobState` lives in [`jobs/model.py`](../qatf/jobs/model.py),
-not in [`api/schemas.py`](../qatf/api/schemas.py), precisely because of that
+The clearest example: `JobState` lives in [`jobs/model.py`](../qatf-backend/qatf/jobs/model.py),
+not in [`api/schemas.py`](../qatf-backend/qatf/api/schemas.py), precisely because of that
 arrow. The job lifecycle is a domain concept and `jobs` may not import from
 `api`. It still serialises correctly in responses because it is a `str` Enum.
 
@@ -412,7 +412,7 @@ hazard too: libass falls back silently, which is how you ship 50 clips in the
 wrong typeface.
 
 **2 · Tracking frames a face, not a speaker.** `--reframe track` exists and is
-verified by [`tests/verify_render.py`](../tests/verify_render.py), which renders
+verified by [`tests/verify_render.py`](../qatf-backend/tests/verify_render.py), which renders
 and measures where the subject landed. What is *not* built is the active-speaker
 model: every detection reports `speaking=0.0`, so stage 4c always takes its
 largest-face fallback and will frame the listener in a two-shot — on every tier,

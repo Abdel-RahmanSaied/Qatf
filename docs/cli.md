@@ -66,7 +66,7 @@ is far quicker if the quality bar allows.
 then decays — it looks excellent on a short clip and does nothing to a long one.
 
 Write vocabulary terms **the way you want them spelled back**.
-[`prompts/ar-tech.txt`](../prompts/ar-tech.txt) is the working Arabic list.
+[`prompts/ar-tech.txt`](../qatf-backend/prompts/ar-tech.txt) is the working Arabic list.
 
 Both share Whisper's 448-token context with decoding. Overrun it and
 faster-whisper dies with `ValueError: The maximum decoding length must be > 0`,

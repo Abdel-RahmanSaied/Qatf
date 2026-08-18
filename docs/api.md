@@ -460,7 +460,7 @@ cache are rows in a *separate* `qatf.db` inside each job's own `.work/`
 directory, so a job stays self-contained and deleting it does not touch any
 other job's data. See
 [quality.md](quality.md#the-sqlite-move-read-cost-roughly-doubled-and-stayed-inside-budget)
-for what the move cost and [`core/db.py`](../qatf/core/db.py) for the schema.
+for what the move cost and [`core/db.py`](../qatf-backend/qatf/core/db.py) for the schema.
 
 Rendered MP4s stay on the filesystem under `clips/` — SQLite is for records, not
 video. A pre-SQLite `job.json`, `words-<model>-<lang>.json`, `word-edits.json` or

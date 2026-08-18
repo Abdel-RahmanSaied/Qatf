@@ -103,7 +103,7 @@ software silently refuses.
 
 **Cause.** Missing `-tag:v hvc1`.
 
-**Fix.** `CODECS` in [`encode.py`](../qatf/pipeline/encode.py) sets it. **Do not
+**Fix.** `CODECS` in [`encode.py`](../qatf-backend/qatf/pipeline/encode.py) sets it. **Do not
 remove it.** If you are hand-rolling an ffmpeg command, add it yourself.
 
 ---
