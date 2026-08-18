@@ -503,7 +503,7 @@ everything cached in it — plus the job's row and cancel flag from the root
    scaling beyond one process needs that first.
 
 **The API has never run against a real video, a real GPU or a real API key.**
-Every stage boundary is exercised by `tests/smoke_api.py` (131 checks), which
+Every stage boundary is exercised by `tests/smoke_api.py` (154 checks), which
 fakes `pipeline.audio.run`, `pipeline.encode.run`, `pipeline.asr.transcribe` and
 `pipeline.select.pick_clips` — so it proves nothing about those four. The CLI has
 run the whole thing end to end; the server has not.

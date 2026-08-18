@@ -447,7 +447,7 @@ see pydantic in a hot path.
 ### The SQLite move: read cost roughly doubled, and stayed inside budget
 
 The in-memory job dict above is gone. It was removed (not merely bypassed) in
-the move to SQLite (`qatf/core/db.py`, `qatf/jobs/store.py`): `GET /jobs` and
+the move to SQLite (`qatf-backend/qatf/core/db.py`, `qatf-backend/qatf/jobs/store.py`): `GET /jobs` and
 `GET /jobs/{id}` now run a query plus a `json.loads` of the stored document,
 where they used to do a dict lookup. Measured with `tests/load_api.py`, three
 back-to-back runs:

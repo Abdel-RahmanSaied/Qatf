@@ -61,8 +61,12 @@ ffmpeg must be on `PATH`, or point `QATF_FFMPEG` at it. A GPU is optional —
 to CPU otherwise.
 
 ```bash
-cp .env.example .env      # then add a provider key
+cp ../.env.example ../.env   # then add a provider key
 ```
+
+`.env` belongs at the **repo root**, not in `qatf-backend/`: `docker-compose.yaml`
+reads provider keys from there, and `core/dotenv.py` walks upward from the working
+directory, so the CLI and the server both find a root `.env` too.
 
 ---
 
