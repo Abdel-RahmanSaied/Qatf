@@ -37,6 +37,15 @@ services:
     #     reservations:
     #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
 
+  # ---- web UI ---------------------------------------------------------
+  # Serves the SPA on :3000 and proxies /api/* to the qatf service, so the
+  # browser sees one origin and the backend needs no CORS. The backend still
+  # publishes :8000 for curl, /docs and the test suites.
+  frontend:
+    build: ./qatf-frontend
+    ports: ["3000:80"]
+    depends_on: [qatf]
+
   # ---- local open-source model, easy path -----------------------------
   # Then: QATF_LLM_PROVIDER=ollama QATF_LLM_BASE_URL=http://ollama:11434/v1
   ollama:
