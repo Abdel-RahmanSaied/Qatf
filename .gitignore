@@ -103,7 +103,14 @@ memory/
 # one of them is a photo of a person fetched at test time — neither belongs in
 # the repository. The YuNet weights under qatf/pipeline/assets/ DO belong there
 # and are deliberately not excluded here.
-tests/.render-check/
+qatf-backend/tests/.render-check/
 
 # stage-2 sweep transcripts — regenerate with tests/sweep_asr.py
 sweep-*.json
+run-sqlite/*
+
+# ---------------------------------------------------------------------------
+# frontend
+# ---------------------------------------------------------------------------
+node_modules/
+qatf-frontend/dist/
