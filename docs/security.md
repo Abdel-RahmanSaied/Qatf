@@ -32,14 +32,14 @@ same treatment.
 
 | Boundary | Enforced in | What it stops |
 | --- | --- | --- |
-| media root | [`api/deps.py`](../qatf/api/deps.py) `resolve_source` | `POST /jobs {"path": "../../etc/passwd"}` |
-| download path | [`api/deps.py`](../qatf/api/deps.py) `safe_output_path` | `GET /clips/../job.json` |
-| transcript cache path | [`pipeline/asr.py`](../qatf/pipeline/asr.py) `cache_path` | `language` escaping the work dir |
-| Whisper model name | [`api/schemas.py`](../qatf/api/schemas.py) + `asr.MODEL_SIZES` | the server fetching an arbitrary model repo |
-| ASS structure | [`pipeline/captions.py`](../qatf/pipeline/captions.py) `escape` / `safe_font` | caption text becoming subtitle directives |
-| filtergraph quoting | [`pipeline/encode.py`](../qatf/pipeline/encode.py) `filtergraph` | a path breaking out of `ass='...'` |
-| cut timings | [`pipeline/edits.py`](../qatf/pipeline/edits.py) `diff` | a text correction moving a cut |
-| numeric ranges | [`api/schemas.py`](../qatf/api/schemas.py) | `1e999` reaching ffmpeg as a duration |
+| media root | [`api/deps.py`](../qatf-backend/qatf/api/deps.py) `resolve_source` | `POST /jobs {"path": "../../etc/passwd"}` |
+| download path | [`api/deps.py`](../qatf-backend/qatf/api/deps.py) `safe_output_path` | `GET /clips/../job.json` |
+| transcript cache path | [`pipeline/asr.py`](../qatf-backend/qatf/pipeline/asr.py) `cache_path` | `language` escaping the work dir |
+| Whisper model name | [`api/schemas.py`](../qatf-backend/qatf/api/schemas.py) + `asr.MODEL_SIZES` | the server fetching an arbitrary model repo |
+| ASS structure | [`pipeline/captions.py`](../qatf-backend/qatf/pipeline/captions.py) `escape` / `safe_font` | caption text becoming subtitle directives |
+| filtergraph quoting | [`pipeline/encode.py`](../qatf-backend/qatf/pipeline/encode.py) `filtergraph` | a path breaking out of `ass='...'` |
+| cut timings | [`pipeline/edits.py`](../qatf-backend/qatf/pipeline/edits.py) `diff` | a text correction moving a cut |
+| numeric ranges | [`api/schemas.py`](../qatf-backend/qatf/api/schemas.py) | `1e999` reaching ffmpeg as a duration |
 | work volume | `JobOptions.clips` ≤ 50, `MAX_PLAN_CLIPS` = 100 | one request queuing thousands of encodes |
 
 Both path boundaries **resolve first and check second**, so they catch symlink

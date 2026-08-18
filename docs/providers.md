@@ -89,7 +89,7 @@ A rejected parameter is a `400`, not a graceful degrade:
 So `Capabilities` on each preset states what may be sent, and the abstraction
 never blanket-forwards a parameter.
 
-> **Adding a vendor should be a row in [`presets.py`](../qatf/llm/presets.py), not
+> **Adding a vendor should be a row in [`presets.py`](../qatf-backend/qatf/llm/presets.py), not
 > a subclass.** If it needs a subclass, the reason must be a real protocol
 > difference — not a different `base_url`.
 
