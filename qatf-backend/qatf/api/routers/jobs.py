@@ -105,10 +105,16 @@ async def create_from_upload(
 ) -> JobResponse:
     """Start a job from an uploaded video.
 
-    Streamed to disk in 1 MB chunks and checked against `QATF_MAX_UPLOAD_MB` as
-    it arrives, so an oversized upload is refused mid-stream rather than after
-    the whole file has landed. A failed upload takes its job record with it —
-    there is no half-written source left behind.
+    Copied into the job directory in 1 MB chunks and checked against
+    `QATF_MAX_UPLOAD_MB` as it goes, so an oversized upload never becomes a
+    stored source and takes its job record with it — there is no half-written
+    source left behind.
+
+    **The cap is not an ingress limit.** Declaring `file: UploadFile` makes
+    Starlette resolve the whole multipart body before this function runs,
+    spooling anything past 1 MB into a temp file, so the bytes have already
+    landed by the time the comparison happens. Bound the request size at
+    whatever fronts the server — see `docs/security.md`.
     """
     try:
         parsed = JobOptions(**json.loads(options or "{}"))

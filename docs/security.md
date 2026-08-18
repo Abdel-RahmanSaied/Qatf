@@ -168,10 +168,14 @@ before exposing this.
 **No authentication, authorisation, rate limiting or quota.** Any caller can read
 and modify any job. There is no per-user separation at all.
 
-**No request body size limit.** Starlette has none by default. Field-level caps
-bound the worst cases (`MAX_PLAN_CLIPS`, 200 000 words, `QATF_MAX_UPLOAD_MB` for
-multipart), but a large JSON body is still buffered. Set a limit at the reverse
-proxy.
+**No request body size limit.** Starlette has none by default, and neither front
+end adds one — the frontend's nginx sets `client_max_body_size 0` deliberately.
+Field-level caps bound what is *stored* (`MAX_PLAN_CLIPS`, 200 000 words), but
+they do not bound what is *received*: a large JSON body is buffered, and
+`QATF_MAX_UPLOAD_MB` is compared only after `UploadFile` has already spooled the
+whole multipart body to a temp file. An unbounded upload can therefore exhaust
+temp space before any check of ours runs. Set a real limit at whatever fronts
+this before exposing it.
 
 **`job.error` leaks server paths.** `CommandFailed` embeds the full ffmpeg
 command line and a stderr tail, and the worker records `str(exc)` on the job,
@@ -196,8 +200,19 @@ prefix stripped, so reaching the API through `:3000` instead of `:8000` changes
 nothing about who can call it — the gaps above apply identically either way.
 `client_max_body_size 0` and `proxy_request_buffering off` are deliberate:
 uploads are multi-GB, and the size check stays in FastAPI
-(`QATF_MAX_UPLOAD_MB`) as the single authority — nginx does not duplicate it,
-and a limit set there instead would just be a second, driftable number.
+(`QATF_MAX_UPLOAD_MB`) rather than being duplicated in nginx, where it would
+just be a second, driftable number.
+
+**But that check does not bound what reaches the disk.** `create_from_upload`
+declares `file: UploadFile`, so Starlette resolves the entire multipart body —
+spooling past 1 MB into a temp file — *before* the handler runs. The
+`QATF_MAX_UPLOAD_MB` comparison then happens while copying that already-landed
+file into the job directory. The endpoint's own docstring calling it "refused
+mid-stream" is wrong, and with no byte cap at the ingress an unbounded body can
+fill the container's temp space before any code of ours looks at it. This is
+**not new** — uvicorn on `:8000` had no limit either and the route was equally
+reachable — so it belongs with the known gaps below rather than being a cost of
+the proxy. Anything internet-facing needs a real limit in whatever fronts it.
 
 **`.env` discovery walks upward** to the filesystem root. On a shared host, a
 writable parent directory means arbitrary environment variables. Standard for

@@ -33,10 +33,12 @@ and it would break the rule that the CLI works without any of them.
 ### Configuration
 
 ```bash
-cp .env.example .env
+cp ../.env.example ../.env   # from qatf-backend/ — both files belong at the repo root
 ```
 
-`.env` is read from the working directory or any parent. **A real environment
+Keep `.env` at the repo root. `docker-compose.yaml` interpolates the provider keys
+from there, and because `.env` is read from the working directory **or any parent**,
+a root `.env` also serves the CLI and a server started from `qatf-backend/`. **A real environment
 variable always wins** over a `.env` entry — see
 [`core/dotenv.py`](../qatf-backend/qatf/core/dotenv.py). `.env` is gitignored; `.env.example`
 is not.
@@ -163,8 +165,9 @@ and `./media → /media:ro`, and sets `QATF_MEDIA_ROOT=/media` — so the media 
 is both the sandbox and a read-only mount. Provider keys pass through from your
 shell or `.env`.
 
-The GPU reservation block is on by default. **Drop it and set `device: cpu` if
-there is no GPU**, or the container will not start.
+The GPU reservation block ships **commented out**, so the stack starts on any
+host. Uncomment it to give the container a GPU — and only then, since Compose
+refuses to start the service when the reservation cannot be satisfied.
 
 ### The frontend service
 

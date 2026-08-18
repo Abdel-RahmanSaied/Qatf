@@ -676,8 +676,12 @@ swap cannot affect cut accuracy". nginx serves the static build and proxies
 `/api/*` to the backend with the prefix stripped (trailing slash on
 `proxy_pass`), so the backend has no CORS and never learns a proxy exists.
 `client_max_body_size 0` + `proxy_request_buffering off` are load-bearing:
-uploads are multi-GB and the backend's `QATF_MAX_UPLOAD_MB` must stay the single
-authority on size.
+uploads are multi-GB, so the size check stays in FastAPI
+(`QATF_MAX_UPLOAD_MB`) instead of being duplicated as a second, driftable
+number in nginx. Know what that check is worth: `UploadFile` makes Starlette
+spool the whole body to a temp file before the handler runs, so the limit is
+enforced *after* the bytes land, not mid-stream. Neither front end bounds
+ingress — see `docs/security.md`.
 
 The UI enforces the core invariant by construction: the transcript editor has no
 timing inputs, `PUT /plan` is always sent with `snap: true`, and the saved
