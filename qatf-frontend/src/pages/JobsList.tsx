@@ -77,7 +77,7 @@ export default function JobsList() {
                 <td className="muted">{job.error ?? job.message}</td>
                 <td className="muted">{formatAge(job.created_at)}</td>
                 <td className="row-actions">
-                  {!TERMINAL_STATES.has(job.state) && (
+                  {!TERMINAL_STATES.has(job.state) && job.state !== "planned" && (
                     <button className="btn" onClick={() => onCancel(job.id)}>cancel</button>
                   )}
                   <button
