@@ -1,6 +1,7 @@
 import { Link, Route, Routes } from "react-router-dom";
 import { ToastProvider } from "./components/Toasts";
 import JobsList from "./pages/JobsList";
+import NewJob from "./pages/NewJob";
 
 export default function App() {
   return (
@@ -16,7 +17,7 @@ export default function App() {
         <main>
           <Routes>
             <Route path="/" element={<JobsList />} />
-            <Route path="/new" element={<p>new job — Task 6</p>} />
+            <Route path="/new" element={<NewJob />} />
             <Route path="/jobs/:id" element={<p>job detail — Task 7</p>} />
           </Routes>
         </main>
