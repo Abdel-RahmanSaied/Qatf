@@ -37,7 +37,7 @@ export function TranscriptEditor({ jobId, job }: Props) {
   }
 
   function beginEdit(index: number) {
-    if (!transcript) return;
+    if (saving || !transcript) return;
     setEditing(index);
     setDraft(edits[index] ?? transcript.words[index].text);
   }
