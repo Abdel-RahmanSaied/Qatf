@@ -1,5 +1,10 @@
 # qatf (قطف)
 
+[![CI](https://github.com/Abdel-RahmanSaied/Qatf/actions/workflows/ci.yml/badge.svg)](https://github.com/Abdel-RahmanSaied/Qatf/actions/workflows/ci.yml)
+[![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 **Turn a long video into vertical short-form clips.** A model picks the moments;
 everything about *where* the cuts land is deterministic.
 
@@ -255,7 +260,7 @@ body naming `../../etc/passwd` would transcribe any file the process can read.
 
 ```text
 qatf-backend/        the pipeline, CLI and API — Python, no frontend knowledge
-  qatf/core/         config, SQLite, types, errors. imports (almost) nothing of ours
+  qatf/core/         config, SQLite, types, errors. imports nothing of ours
   qatf/pipeline/     the five stages, one module each
   qatf/llm/          stage 3 providers — the only swappable part
   qatf/jobs/         job records and the worker thread pool
@@ -276,11 +281,11 @@ api → jobs → pipeline → llm → core
 cli ───────→ pipeline → llm → core
 ```
 
-There is exactly one violation, and it is worth knowing about rather than
-papering over: `core/config.py` reaches into `llm.presets` (lazily, inside
-`Settings.model`) to report which model is active. It is the only backwards
-import in `core/`, and by this project's own rule the fix is to move that
-lookup out rather than keep the import.
+`smoke_pipeline.py` enforces this: it reads every module in `core/` as source
+text and fails on any import of a sibling package. Source text rather than
+`sys.modules`, because the violation it was written for was a *lazy* import
+inside a property body — deferred to call time, invisible in the import block,
+and absent from `sys.modules` until something happened to call it.
 
 ---
 
@@ -301,12 +306,14 @@ lookup out rather than keep the import.
 
 ## Testing
 
-There is no CI. **620 checks run with no ffmpeg, GPU, API key or network:**
+All of it runs on [CI](.github/workflows/ci.yml) for every push and pull
+request. **621 of the checks need no ffmpeg, GPU, API key or network**, so you
+can run them locally in seconds:
 
 ```bash
 cd qatf-backend
 python tests/smoke_db.py          #  23   the SQLite layer, in isolation
-python tests/smoke_pipeline.py    # 354   stages 1-5, escaping, caches, trust boundaries
+python tests/smoke_pipeline.py    # 355   stages 1-5, escaping, caches, trust boundaries
 python tests/smoke_llm.py         #  38   provider request shapes, with the SDK faked
 python tests/smoke_api.py         # 154   state machine, round trips, the OpenAPI document
 python tests/load_api.py          #  23   every endpoint under 24 threads, ~20s
@@ -372,10 +379,27 @@ gate. Read [security.md](docs/security.md) before exposing a port.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version: this codebase
-cares more about *why* a number is what it is than about the number, so a change
-to a default needs a measurement, and a change to a filtergraph or to caption
-generation needs a rendered frame somebody actually looked at.
+**Contributions are welcome — features and bug fixes both.** Start with
+[CONTRIBUTING.md](CONTRIBUTING.md); it lists
+[good first contributions](CONTRIBUTING.md#good-first-contributions) ranked by
+value per effort, and loudness normalisation at the top is close to a one-line
+filter add.
+
+The short version: this codebase cares more about *why* a number is what it is
+than about the number. So a change to a default needs a measurement, and a
+change to a filtergraph or to caption generation needs a rendered frame somebody
+actually looked at — ffprobe reporting correct dimensions is not sufficient, and
+there is a shipped bug proving it.
+
+Every push and pull request runs the full suite on
+[CI](.github/workflows/ci.yml): both Python versions, lint, all five backend
+suites, the frontend tests and type check, a real ffmpeg render verification,
+and the Docker build. Sign your commits off with `git commit -s` — that is the
+[DCO](https://developercertificate.org), certifying you wrote the code and can
+contribute it under Apache-2.0.
+
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+Security problems go to [SECURITY.md](SECURITY.md), not a public issue.
 
 ---
 
@@ -389,5 +413,16 @@ governorate one vowel away in Latin transliteration.
 
 ## Licence
 
-Currently unlicensed (`UNLICENSED` in `pyproject.toml`) — all rights reserved.
-Add a licence before distributing.
+**Apache-2.0** — see [LICENSE](LICENSE). Permissive: use it, modify it, ship it
+commercially. It also carries an explicit patent grant from every contributor,
+which MIT does not.
+
+One bundled third party: the YuNet face-detection weights used by
+`--reframe track` are MIT (Copyright 2020 Shiqi Yu), and `LICENSE.yunet` travels
+beside them. [NOTICE](NOTICE) covers attribution;
+[docs/licensing.md](docs/licensing.md) is the full dependency audit.
+
+**ffmpeg is a system dependency, invoked as a subprocess and never linked**, so
+its licence does not reach this source — but it *is* inside the Docker images
+built here, and that build is GPL. If you redistribute those images, comply with
+ffmpeg's terms for the build you shipped.

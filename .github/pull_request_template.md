@@ -11,10 +11,12 @@
 
 ### Checks
 
+- [ ] Commits are signed off (`git commit -s`) — CI enforces this
 - [ ] `python tests/smoke_pipeline.py`, `smoke_db.py`, `smoke_llm.py`, `smoke_api.py` pass from `qatf-backend/`
 - [ ] `ruff check .` clean
 - [ ] `npm test && npm run build` pass from `qatf-frontend/` (if the UI changed)
 - [ ] New behaviour has a check — ideally one that fails before this fix
+- [ ] Any code you did not write is compatible with Apache-2.0 and its origin is stated (no GPL/AGPL)
 
 ### Only if they apply
 

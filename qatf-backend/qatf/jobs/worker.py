@@ -19,6 +19,7 @@ from ..core.constants import DEFAULT_TRACK_TIER
 from ..core.errors import EmptyPlan, NoSpeechFound
 from ..core.types import Clip, Word, clips_from_dicts, clips_to_dicts
 from ..core.utils import log, probe_video
+from ..llm.presets import resolve_model
 from .model import JobState
 
 if TYPE_CHECKING:
@@ -210,7 +211,7 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
     store.checkpoint(job_id)
     # the store's settings, not the process-wide ones — see JobStore.__init__
     settings = store.settings
-    model = settings.model
+    model = resolve_model(settings.llm_provider, settings.llm_model)
     store.update(job_id, state=JobState.selecting.value,
                  message=f"[3/5] asking {settings.llm_provider}:{model} "
                          f"for {opts['clips']} clips")

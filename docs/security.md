@@ -248,5 +248,8 @@ In rough order of how much each buys you:
 
 ## Reporting
 
-This is a prototype with no CI and no release process. If you find something,
-open an issue — there is no embargo process to respect yet.
+This is a prototype with no release process, so there is no embargo to respect
+and no supported older version to backport to. **Report privately** — a GitHub
+security advisory on the repo, or the address in
+[`SECURITY.md`](../SECURITY.md), which also lists the gaps already known here so
+you can tell quickly whether you have found a new one.

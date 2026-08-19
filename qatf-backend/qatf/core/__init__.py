@@ -16,7 +16,7 @@ knows what HTTP is.
 
 from __future__ import annotations
 
-from .config import DEFAULT_MODEL, Settings, get_settings
+from .config import Settings, get_settings
 from .constants import (
     BLOCK_SECONDS,
     CAPTION_MAX_CHARS,
@@ -32,7 +32,7 @@ from .types import Clip, Transcript, Word, clips_from_dicts, clips_to_dicts
 from .utils import check_ffmpeg, ffmpeg_available, log, run, slugify, ts_ass, ts_human
 
 __all__ = [
-    "Settings", "get_settings", "DEFAULT_MODEL",
+    "Settings", "get_settings",
     "TARGET_W", "TARGET_H", "BLOCK_SECONDS", "CAPTION_MAX_WORDS", "CAPTION_MAX_CHARS",
     "SNAP_LEAD", "SNAP_TAIL", "VIDEO_SUFFIXES",
     "QatfError",

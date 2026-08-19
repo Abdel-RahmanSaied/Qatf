@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-DEFAULT_MODEL = "claude-sonnet-5"
+# No default model name lives here any more. `core` cannot see the preset
+# table (the arrows run `... -> llm -> core`), so any constant here is a second
+# copy that drifts silently — this one still said `claude-sonnet-5` long after
+# the Anthropic preset had moved to `claude-opus-5`, and nothing caught it
+# because the only reader was a fallback branch that never ran.
+# `llm.presets.resolve_model` is the single answer to "which model".
 
 
 def _int(env: Mapping[str, str], key: str, default: int) -> int:
@@ -55,17 +60,15 @@ class Settings:
     llm_max_tokens: int = 16000
     llm_timeout: float = 600.0
 
-    @property
-    def model(self) -> str:
-        """Back-compat: the old single-provider `model` field.
-
-        Reports the configured model, or the active preset's default when none
-        is set, so job messages and /healthz keep naming a real model."""
-        if self.llm_model:
-            return self.llm_model
-        from ..llm.presets import PRESETS
-        preset = PRESETS.get(self.llm_provider)
-        return preset.model if preset else DEFAULT_MODEL
+    # There is deliberately no `model` property here. Resolving "which model
+    # will actually be called" needs the preset table, and `core` may not
+    # import `llm` — the arrows run `... -> llm -> core`. That property used
+    # to do a lazy `from ..llm.presets import PRESETS` inside itself, which
+    # was the only backwards import in the whole of `core/` and made the
+    # layering rule this project states a lie. Use
+    # `llm.presets.resolve_model(settings.llm_provider, settings.llm_model)`
+    # instead; every caller is in `api`, `jobs` or `cli`, which may all import
+    # `llm` already.
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:

@@ -1,0 +1,148 @@
+# Every check a contributor can run locally, run on every push and PR.
+#
+# The design constraint that makes this cheap: the smoke suites need no ffmpeg,
+# no GPU, no API key and no network. That is a property worth protecting — if a
+# new test needs one of those, it belongs in the `render` job below, not here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to the same PR cancels the previous run rather than queueing.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject declares requires-python >= 3.10, so the floor is tested
+        # too. A change that quietly needs 3.12 syntax fails here, not in
+        # somebody's editor.
+        python: ["3.10", "3.12"]
+    defaults:
+      run:
+        working-directory: qatf-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: qatf-backend/pyproject.toml
+
+      - name: Install
+        # [all] pulls every provider SDK and the track extra, so smoke_llm
+        # can import the clients it fakes and verify_render's OpenCV path is
+        # importable. [dev] adds httpx and ruff.
+        run: pip install -e ".[all,dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: smoke_db
+        run: python tests/smoke_db.py
+
+      - name: smoke_pipeline
+        run: python tests/smoke_pipeline.py
+
+      - name: smoke_llm
+        run: python tests/smoke_llm.py
+
+      - name: smoke_api
+        run: python tests/smoke_api.py
+
+      - name: load_api
+        # Concurrency behaviour, and it asserts — it caught two regressions
+        # that no sequential test could see. Slower than the others (~20s) but
+        # worth a runner minute.
+        run: python tests/load_api.py
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: qatf-frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: qatf-frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        # `npm run build` is `tsc --noEmit && vite build`, so this is the
+        # type gate as well as the bundle.
+        run: npm run build
+
+  render:
+    name: render verification (needs ffmpeg)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: qatf-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: qatf-backend/pyproject.toml
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install
+        run: pip install -e ".[all,dev]"
+
+      - name: verify_render
+        # Renders real clips and measures where the subject actually landed —
+        # the only honest way to verify a filtergraph. Every fixture also
+        # renders a `crop` control and asserts the control FAILS, so a broken
+        # harness cannot pass by finding nothing.
+        #
+        # One fixture fetches a photo over the network and skips (rather than
+        # fails) if that is unavailable, so this job stays green offline.
+        run: python tests/verify_render.py
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the frontend image
+        # Fast, and it runs `tsc --noEmit && vite build` inside the image, so
+        # a Dockerfile that has drifted from the source is caught here.
+        run: docker build -t qatf-frontend:ci ./qatf-frontend
+
+      - name: Validate both compose files
+        run: |
+          docker compose -f docker-compose.yaml config -q
+          docker compose -f docker-compose.yaml -f docker-compose.dev.yaml config -q
+
+      # The backend image is deliberately NOT built here: it installs CUDA
+      # wheels and weighs over 6 GB, which is minutes of runner time on every
+      # PR for a Dockerfile that changes rarely. Build it in a release
+      # workflow, or locally, instead.

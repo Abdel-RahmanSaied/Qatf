@@ -2,6 +2,12 @@
   "name": "qatf-frontend",
   "private": true,
   "version": "0.1.0",
+  "description": "Web UI for qatf — submit a video, review the plan, watch the rendered clips. React + Vite + TypeScript, served by nginx.",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Abdel-Rahman Saied",
+    "email": "abdelrahmansaied080@gmail.com"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

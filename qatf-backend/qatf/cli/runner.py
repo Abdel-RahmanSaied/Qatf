@@ -16,6 +16,7 @@ from ..core.errors import QatfError
 from ..core.types import clips_from_dicts, clips_to_dicts
 from ..core.utils import log, probe_video, ts_human
 from ..llm import provider_from_settings
+from ..llm.presets import resolve_model
 
 
 def preflight(args: argparse.Namespace) -> str | None:
@@ -200,7 +201,10 @@ def run(args: argparse.Namespace) -> int:
         log("[4/5] re-snapping cuts to word boundaries")
         clips = [pipeline.snap(c, words, tail=tail) for c in clips]
     else:
-        log(f"[3/5] asking {get_settings().model} for {args.clips} clips")
+        settings = get_settings()
+        log(f"[3/5] asking "
+            f"{resolve_model(settings.llm_provider, settings.llm_model)} "
+            f"for {args.clips} clips")
         clips = pipeline.plan_clips(words, args.clips, args.min_len, args.max_len,
                                     timing_source=transcript.timing_source)
         log("[4/5] snapped cuts to word boundaries")

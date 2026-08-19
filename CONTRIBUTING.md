@@ -1,8 +1,15 @@
 # Contributing to qatf
 
-Thanks for looking. This is a working prototype with a small, opinionated
-codebase, and most of its rules exist because something went wrong once and the
-fix was written down. This page is the short version of those rules for humans.
+Thanks for looking — **features and bug fixes are both welcome.** This is a
+working prototype with a small, opinionated codebase, and most of its rules
+exist because something went wrong once and the fix was written down. This page
+is the short version of those rules for humans.
+
+If you want somewhere to start, jump to
+[good first contributions](#good-first-contributions). If you want to propose
+something larger, open an issue first — not for permission, but because a lot of
+this project's design is load-bearing in ways that are not obvious from the
+diff, and ten minutes of discussion can save a rewrite.
 `CLAUDE.md` is the same agreement written for agents editing the repo; it is
 longer and more specific, and it is the authority where the two disagree.
 
@@ -181,7 +188,71 @@ If you think one does, that is worth discussing in an issue first.
   records the measurement, the trap, or the reason the obvious approach was
   wrong. Look at recent commits for the register.
 - No attribution or co-author trailers.
+- **Sign off every commit: `git commit -s`.** Required, and CI enforces it.
 - Run both suites and `ruff check .` before you push.
+
+### Sign-off, and what it means
+
+The sign-off line `git commit -s` adds is the
+[Developer Certificate of Origin](https://developercertificate.org). It is you
+certifying that you wrote the contribution, or otherwise have the right to
+submit it, and that you are contributing it under this project's licence.
+
+```text
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+It uses your `git config user.name` and `user.email`, so set those to something
+real. Forgot on a branch you already pushed?
+
+```bash
+git rebase --signoff main
+git push --force-with-lease
+```
+
+There is no CLA and no paperwork beyond this.
+
+### Licence
+
+This project is **Apache-2.0** ([LICENSE](LICENSE)). Contributions are accepted
+under the same terms — Section 5 of the licence says so explicitly, and the
+sign-off is your acknowledgement of it. You keep the copyright in what you
+write; there is no assignment.
+
+Two things that follow, and are worth knowing before you open a PR:
+
+- **Do not paste in code you did not write** unless its licence is compatible
+  and you say where it came from. Apache-2.0 and MIT/BSD are fine with
+  attribution; **GPL and AGPL code cannot be accepted here**, because it would
+  relicense the project out from under everyone using it.
+- **The same applies to model weights and other binaries.** The one bundled
+  third-party artifact is the YuNet detector, and it is here specifically
+  because it is MIT — the obvious alternatives were rejected on licence grounds
+  (ultralytics/YOLO is AGPL-3.0; insightface/SCRFD ships MIT code with weights
+  licensed for non-commercial research only). If you propose a new model, its
+  *weights* licence is the first thing to check, not the code's.
+  [docs/licensing.md](docs/licensing.md) has the full audit.
+
+## Continuous integration
+
+Every push and pull request runs [CI](.github/workflows/ci.yml):
+
+| Job | What it runs |
+| --- | --- |
+| `backend` | `ruff` + all five suites, on Python 3.10 **and** 3.12 |
+| `frontend` | `npm test` and `npm run build` (which is the `tsc` type gate) |
+| `render` | `verify_render.py` with real ffmpeg installed |
+| `docker` | Builds the frontend image, validates both compose files |
+| `dco` | Every commit carries a sign-off |
+
+Everything except `render` and `docker` runs locally in seconds with no ffmpeg,
+GPU, key or network — so there is rarely a reason to discover a failure on CI
+rather than before you push. If a test you add needs one of those, it belongs in
+the `render` job, not in the smoke suites; keeping them dependency-free is a
+property worth protecting.
+
+The backend Docker image is deliberately not built on every PR: it installs CUDA
+wheels and weighs over 6 GB.
 
 ---
 
