@@ -114,3 +114,4 @@ run-sqlite/*
 # ---------------------------------------------------------------------------
 node_modules/
 qatf-frontend/dist/
+.playwrite-mcp/*
