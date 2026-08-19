@@ -115,3 +115,5 @@ run-sqlite/*
 node_modules/
 qatf-frontend/dist/
 .playwrite-mcp/*
+# browser-automation scratch (screenshots, page snapshots)
+.playwright-mcp/

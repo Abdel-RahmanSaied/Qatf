@@ -1,0 +1,61 @@
+{
+  "wireMagic": "pb3",
+  "pens": [{}],
+  "wsWinStyles": [{}],
+  "wpWinPositions": [{}],
+  "events": [
+    {
+      "tStartMs": 0,
+      "dDurationMs": 1000,
+      "id": 1,
+      "wpWinPosId": 1,
+      "wsWinStyleId": 1
+    },
+    {
+      "tStartMs": 1000,
+      "dDurationMs": 2200,
+      "wWinId": 1,
+      "segs": [
+        { "utf8": "السلام", "acAsrConf": 234 },
+        { "utf8": " ", "tOffsetMs": 380, "acAsrConf": 0 },
+        { "utf8": "عليكم", "tOffsetMs": 400, "acAsrConf": 218 },
+        { "utf8": " ", "tOffsetMs": 880, "acAsrConf": 0 },
+        { "utf8": "يا", "tOffsetMs": 900, "acAsrConf": 241 }
+      ]
+    },
+    {
+      "tStartMs": 2600,
+      "dDurationMs": 10,
+      "wWinId": 1,
+      "aAppend": 1,
+      "segs": [{ "utf8": "\n" }]
+    },
+    {
+      "tStartMs": 2600,
+      "dDurationMs": 2100,
+      "wWinId": 1,
+      "segs": [
+        { "utf8": "أصدقاء", "acAsrConf": 205 },
+        { "utf8": " ", "tOffsetMs": 680, "acAsrConf": 0 },
+        { "utf8": "واحد", "tOffsetMs": 700, "acAsrConf": 252 }
+      ]
+    },
+    {
+      "tStartMs": 4100,
+      "dDurationMs": 10,
+      "wWinId": 1,
+      "aAppend": 1,
+      "segs": [{ "utf8": "\n" }]
+    },
+    {
+      "tStartMs": 4100,
+      "dDurationMs": 1900,
+      "wWinId": 1,
+      "segs": [
+        { "utf8": "اثنين", "acAsrConf": 199 },
+        { "utf8": " ", "tOffsetMs": 530, "acAsrConf": 0 },
+        { "utf8": "خلاص", "tOffsetMs": 550, "acAsrConf": 243 }
+      ]
+    }
+  ]
+}

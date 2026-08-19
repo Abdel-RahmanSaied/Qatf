@@ -742,7 +742,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   with a seeded transcript cache standing in for stage 2 and `--plan` for stage
   3). Output is 1080x1920, 30fps, yuv420p, audio intact, captions burned in.
 - Both filtergraphs (`crop`, `blur`) produce 1080x1920 output with correct duration
-- `tests/verify_render.py` (10 checks without OpenCV, more with it): the `track`
+- `tests/verify_render.py` (11 checks without OpenCV, 19 with it): the `track`
   path rendered through real ffmpeg and measured — the tracked render holds the
   subject in every probed frame and the `crop` control provably loses it. Plus
   stage 4b's decoder, which needs ffmpeg but **not** OpenCV and so runs where
@@ -954,7 +954,7 @@ Measured on the real 12-minute Arabic file, first three clips:
 01-clip.ass   28 cues, 22 overlapping pairs   e.g. 5.74-9.31 vs 9.19-10.57
 02-clip.ass   26 cues, 20 overlapping pairs
 03-clip.ass   30 cues, 29 overlapping pairs
-              71 of 83 consecutive pairs — 85%
+              71 of 81 consecutive pairs — 88%
 ```
 
 It hits **LTR as well as RTL**: the highlight path holds each word until the next
