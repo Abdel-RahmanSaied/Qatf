@@ -1,0 +1,52 @@
+qatf (قطف)
+Copyright 2026 Abdel-Rahman Saied
+
+This product includes software developed by Abdel-Rahman Saied and the qatf
+contributors, licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Bundled third-party material
+--------------------------------------------------------------------------------
+
+YuNet face detection weights
+    qatf-backend/qatf/pipeline/assets/face_detection_yunet_2023mar.onnx
+
+    MIT License. Copyright (c) 2020 Shiqi Yu <shiqi.yu@gmail.com>
+    The full licence text travels with the file, at
+    qatf-backend/qatf/pipeline/assets/LICENSE.yunet, and must be kept
+    alongside any copy of the weights.
+
+    Used only by `--reframe track` (stage 4b). YuNet was chosen over the
+    obvious alternatives specifically because of licensing: ultralytics/YOLO
+    is AGPL-3.0, and insightface/SCRFD ships MIT code with weights licensed
+    for non-commercial research only. Both would restrict what anyone can do
+    with this project.
+
+--------------------------------------------------------------------------------
+Runtime dependencies (not bundled — installed separately)
+--------------------------------------------------------------------------------
+
+No dependency licence conflicts with this Apache-2.0 release. Dependencies are
+installed from their own distributions rather than vendored here, so their terms
+travel with them, not with this source. `docs/licensing.md` carries the
+per-package audit — including the weak-copyleft packages (MPL-2.0) and the
+binaries described next, neither of which constrains this release.
+
+**Copyleft reaches this project as binaries, not as source.** Three places, and
+all three matter only to someone REDISTRIBUTING a build rather than using the
+source:
+
+- **The Docker images** built from this repository bundle a GPL-licensed ffmpeg
+  from the base distribution.
+- **The `av` (PyAV) wheel**, a dependency of faster-whisper and therefore
+  present in every install, bundles an LGPL-v3 FFmpeg build together with
+  `libx264` and `libx265`, which are GPL-2.0-or-later.
+- **The `opencv-python-headless` wheel** (the `track` extra) bundles its own
+  LGPL ffmpeg.
+
+qatf itself invokes ffmpeg as a SUBPROCESS and never links against it, so none
+of this extends to this source. If you redistribute an image or a bundle that
+CONTAINS these binaries, comply with their terms for the build you shipped.
+
+Whisper model weights are downloaded at runtime by faster-whisper and are not
+part of this repository.
