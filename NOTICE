@@ -1,0 +1,41 @@
+qatf (قطف)
+Copyright 2026 Abdel-Rahman Saied
+
+This product includes software developed by Abdel-Rahman Saied and the qatf
+contributors, licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Bundled third-party material
+--------------------------------------------------------------------------------
+
+YuNet face detection weights
+    qatf-backend/qatf/pipeline/assets/face_detection_yunet_2023mar.onnx
+
+    MIT License. Copyright (c) 2020 Shiqi Yu <shiqi.yu@gmail.com>
+    The full licence text travels with the file, at
+    qatf-backend/qatf/pipeline/assets/LICENSE.yunet, and must be kept
+    alongside any copy of the weights.
+
+    Used only by `--reframe track` (stage 4b). YuNet was chosen over the
+    obvious alternatives specifically because of licensing: ultralytics/YOLO
+    is AGPL-3.0, and insightface/SCRFD ships MIT code with weights licensed
+    for non-commercial research only. Both would restrict what anyone can do
+    with this project.
+
+--------------------------------------------------------------------------------
+Runtime dependencies (not bundled — installed separately)
+--------------------------------------------------------------------------------
+
+All Python and JavaScript dependencies are permissively licensed (MIT, BSD,
+Apache-2.0 or Unlicense) and are installed from their own distributions rather
+than vendored here. `docs/licensing.md` carries the current audit.
+
+ffmpeg is a SYSTEM dependency, invoked as a subprocess and never linked, so its
+licence does not extend to this source. It does, however, extend to any image or
+bundle you distribute that CONTAINS an ffmpeg build — including the Docker images
+built from this repository, whose base distribution ships a GPL-licensed ffmpeg.
+If you redistribute those images, comply with ffmpeg's terms for the build you
+shipped.
+
+Whisper model weights are downloaded at runtime by faster-whisper and are not
+part of this repository.

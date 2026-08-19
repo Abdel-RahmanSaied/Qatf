@@ -313,8 +313,9 @@ python tests/load_api.py          #  23 checks, ~20s
 ruff check .
 ```
 
-**Every suite must stay green, and new behaviour gets a check.** There is no CI,
-so this is the only gate there is.
+**Every suite must stay green, and new behaviour gets a check.** CI runs all of
+them on every push and pull request, but they run locally in seconds — there is
+rarely a reason to find out from CI rather than before you push.
 
 `load_api.py` is a load *test*, not a benchmark: it asserts and exits non-zero.
 It found two things a sequential suite could not — `/healthz` spawning a process

@@ -8,8 +8,26 @@ version = "0.4.0"
 description = "Harvest the parts of a long video worth watching — vertical shorts with burned-in captions."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "UNLICENSED" }
+license = "Apache-2.0"
+authors = [
+    { name = "Abdel-Rahman Saied", email = "abdelrahmansaied080@gmail.com" },
+]
 keywords = ["video", "shorts", "captions", "whisper", "ffmpeg", "arabic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Natural Language :: Arabic",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Multimedia :: Video",
+]
 
 # The pipeline itself. ffmpeg is a system dependency and must be on PATH.
 # No provider SDK here: stage 3's provider is chosen at runtime, so its client

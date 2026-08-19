@@ -1,0 +1,50 @@
+# Checks that every commit in a pull request carries a Signed-off-by line.
+#
+# The sign-off is the contributor certifying they wrote the code and can
+# license it under Apache-2.0 — see the Developer Certificate of Origin at
+# https://developercertificate.org. `git commit -s` adds it; `git rebase
+# --signoff main` fixes a branch that forgot.
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole PR range plus its base, so every commit can be read.
+          fetch-depth: 0
+
+      - name: Every commit is signed off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=0
+          # --no-merges: a merge commit is not authored content, and asking a
+          # contributor to sign off on GitHub's own merge is noise.
+          for commit in $(git rev-list --no-merges "$BASE".."$HEAD"); do
+            if ! git log -1 --format='%B' "$commit" | grep -qiE '^Signed-off-by: .+ <.+@.+>'; then
+              echo "::error::missing Signed-off-by: $(git log -1 --format='%h %s' "$commit")"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo ""
+            echo "Add sign-offs to the commits above:"
+            echo "  git rebase --signoff ${BASE}"
+            echo "  git push --force-with-lease"
+            echo ""
+            echo "Signing off certifies you wrote the code and can contribute it"
+            echo "under Apache-2.0. See https://developercertificate.org"
+            exit 1
+          fi
+          echo "All commits signed off."

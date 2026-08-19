@@ -3,7 +3,7 @@
 Turns a long video into vertical short-form clips. Python, wrapping ffmpeg +
 faster-whisper + Claude, with a CLI and a FastAPI job server over one pipeline.
 
-**Status: working prototype, not production.** No CI. Treat everything below
+**Status: working prototype, not production.** Treat everything below
 marked UNVERIFIED as unknown rather than working.
 
 Inherits the global `~/.claude/CLAUDE.md` conventions. This file only covers what is
@@ -1082,10 +1082,16 @@ Neither is warranted yet.
 - **Pipeline logic goes in `qatf/pipeline/`, one stage per module.** If you find
   yourself computing a timestamp in a router or in `cli/runner.py`, it is in the
   wrong file. Front ends parse input, report progress, and set exit codes.
-- **Respect the layer arrows.** `api -> jobs -> pipeline -> core`, and `core`
-  imports nothing of ours. An import that points the other way is the signal that
-  something is defined in the wrong package — move the definition, don't add the
-  import.
+- **Respect the layer arrows.** `api -> jobs -> pipeline -> llm -> core`, and
+  `core` imports nothing of ours. An import that points the other way is the
+  signal that something is defined in the wrong package — move the definition,
+  don't add the import. **A lazy import inside a function body is still a
+  dependency**: `Settings.model` hid `from ..llm.presets import PRESETS` in a
+  property for months while this file claimed core imported nothing, because
+  nothing reads an import that is not in the import block. It is now
+  `llm.presets.resolve_model`, and `smoke_pipeline.py` greps every module in
+  `core/` as source text — not `sys.modules`, which a deferred import is absent
+  from until something calls it.
 - Deliberate failures raise `QatfError` subclasses. Bare `RuntimeError` escaping
   the pipeline means something was not thought through.
 - **Adding a provider is a row in `presets.py`.** If it needs a subclass, the

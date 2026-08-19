@@ -45,6 +45,11 @@ _GPT4 = Capabilities(
     context_tokens=128_000,
 )
 
+#: Named only when the configured provider key matches no preset, which
+#: `provider_for` refuses anyway — so this exists purely so a progress line or
+#: a health check can still print something true instead of raising.
+FALLBACK_MODEL = CLAUDE_DEFAULT
+
 PRESETS: dict[str, Preset] = {
     "anthropic": Preset(
         key="anthropic", factory=ClaudeProvider, model=CLAUDE_DEFAULT,
@@ -125,6 +130,26 @@ def describe() -> list[dict]:
         }
         for p in PRESETS.values()
     ]
+
+
+def resolve_model(provider: str, configured: str | None = None) -> str:
+    """The model that will actually be called, for reporting.
+
+    `configured` wins; otherwise the preset's default; otherwise
+    `FALLBACK_MODEL`, so an unknown provider key still names a real model
+    rather than crashing a progress line or a health check.
+
+    This lives here rather than on `Settings` because `core` may not import
+    `llm` — the arrows run `... -> llm -> core`. It used to be a property on
+    `Settings` doing a lazy `from ..llm.presets import PRESETS` inside itself,
+    which was the only backwards import in `core/` and quietly made the
+    layering rule a lie. Callers are all in `api`, `jobs` and `cli`, every one
+    of which may already import `llm`.
+    """
+    if configured:
+        return configured
+    preset = PRESETS.get(provider)
+    return preset.model if preset else FALLBACK_MODEL
 
 
 def with_overrides(preset: Preset, *, model: str | None = None,

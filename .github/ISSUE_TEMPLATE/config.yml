@@ -6,6 +6,6 @@ contact_links:
   - name: Troubleshooting, indexed by symptom
     url: https://github.com/Abdel-RahmanSaied/Qatf/blob/main/docs/troubleshooting.md
     about: Most failures here look correct in every file. Check whether yours is a known trap first.
-  - name: Security
-    url: https://github.com/Abdel-RahmanSaied/Qatf/blob/main/docs/security.md
-    about: The trust model and the known gaps. Please report new security problems privately, not as a public issue.
+  - name: Report a security problem
+    url: https://github.com/Abdel-RahmanSaied/Qatf/security/advisories/new
+    about: Privately, via a GitHub security advisory — never as a public issue. Read SECURITY.md first; several gaps are already known and documented.

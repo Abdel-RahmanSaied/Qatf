@@ -9,6 +9,7 @@ from ...core.config import Settings
 from ...core.errors import QatfError
 from ...core.utils import ffmpeg_available
 from ...llm import describe, provider_from_settings
+from ...llm.presets import resolve_model
 from ...pipeline import cuda_device_count, resolve_device
 from ..deps import get_settings
 from ..schemas import Health, ProviderInfo
@@ -57,7 +58,7 @@ def healthz(settings: Settings = Depends(get_settings)) -> Health:
     return Health(
         status="ok" if (ffmpeg_ok and llm_ready) else "degraded",
         version=__version__,
-        model=settings.model,
+        model=resolve_model(settings.llm_provider, settings.llm_model),
         ffmpeg=ffmpeg_ok,
         media_root=str(settings.media_root),
         max_workers=settings.workers,

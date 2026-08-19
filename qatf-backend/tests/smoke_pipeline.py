@@ -1546,4 +1546,35 @@ def _cli_free_of(name: str, index: int) -> None:
 _cli_free_of("pydantic", 0)
 _cli_free_of("fastapi", 1)
 
+section("layering — core imports nothing of ours")
+# `api -> jobs -> pipeline -> llm -> core`, and core sits at the bottom. Both
+# CLAUDE.md and the README state that core imports nothing of ours, and for a
+# long time that was simply false: `Settings.model` did a lazy
+# `from ..llm.presets import PRESETS` inside the property body, which is a
+# backwards import that no reader of the import block at the top of the file
+# would ever see. A lazy import is still a dependency; it just hides from
+# inspection until it runs.
+#
+# Source text, not sys.modules: the whole point is to catch an import that is
+# deferred to call time, and a deferred import is absent from sys.modules
+# precisely when nobody has called the function yet.
+_CORE_DIR = Path(__file__).resolve().parent.parent / "qatf" / "core"
+_SIBLINGS = ("pipeline", "llm", "jobs", "api", "cli")
+_core_offenders: list[str] = []
+for _path in sorted(_CORE_DIR.glob("*.py")):
+    for _lineno, _line in enumerate(
+            _path.read_text(encoding="utf-8").splitlines(), start=1):
+        _stripped = _line.strip()
+        if _stripped.startswith("#"):
+            continue
+        for _sib in _SIBLINGS:
+            # `from ..llm...` / `from qatf.llm...` / `import qatf.llm...`
+            if (f"from ..{_sib}" in _stripped
+                    or f"from qatf.{_sib}" in _stripped
+                    or f"import qatf.{_sib}" in _stripped):
+                _core_offenders.append(f"{_path.name}:{_lineno}: {_stripped}")
+
+check("no module in qatf/core imports a sibling package, at any indent level",
+      _core_offenders == [], "; ".join(_core_offenders))
+
 raise SystemExit(report())
