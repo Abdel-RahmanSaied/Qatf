@@ -103,7 +103,7 @@ software silently refuses.
 
 **Cause.** Missing `-tag:v hvc1`.
 
-**Fix.** `CODECS` in [`encode.py`](../qatf/pipeline/encode.py) sets it. **Do not
+**Fix.** `CODECS` in [`encode.py`](../qatf-backend/qatf/pipeline/encode.py) sets it. **Do not
 remove it.** If you are hand-rolling an ffmpeg command, add it yourself.
 
 ---
@@ -170,6 +170,43 @@ count** — four 12-character words at 82 px is wider than 1080 px. `group_words
 enforces both limits (`CAPTION_MAX_WORDS` 4, `CAPTION_MAX_CHARS` 22).
 
 Both bugs pass every dimension check. Only a rendered frame catches them.
+
+---
+
+## Two captions are on screen at once
+
+**Symptom.** For a few frames, the upcoming caption sits above the one still
+showing. Easiest to catch by scrubbing a rendered clip frame by frame; it is
+invisible in the `.ass` file, which reads as entirely correct.
+
+**Cause.** `LAST_WORD_HOLD` (0.12 s) is added to the end of every caption line
+and nothing clamps it against the next line's start. On continuous speech the
+next line almost always begins inside that window, so two `Dialogue:` events are
+live at once and libass stacks them.
+
+**Measured** on the real 12-minute Arabic file, first three clips:
+
+```text
+01-clip.ass   28 cues, 22 overlapping pairs   e.g. 5.74-9.31 vs 9.19-10.57
+02-clip.ass   26 cues, 20 overlapping pairs
+03-clip.ass   30 cues, 29 overlapping pairs
+```
+
+That is 71 overlapping pairs out of 81 consecutive ones — the overwhelming
+majority of hand-offs. It hits **LTR as well as RTL**: within a chunk the
+highlight path holds each word until the next word starts, but the last word of
+every chunk still takes the unclamped `+ LAST_WORD_HOLD`.
+
+**Status: unfixed**, and the fix is a product decision rather than a one-liner:
+
+- Clamping a cue's end to the next cue's start removes the hold wherever speech
+  is continuous, so captions become gap-free hand-offs.
+- Holding the line and pushing the *next* cue later trades the overlap for a
+  brief gap with no caption at all.
+
+Pick one deliberately. Nothing anywhere currently asserts that consecutive cues
+are disjoint — a cue-timing assertion in `smoke_pipeline.py` would have caught
+this without a render, and adding one belongs with whichever fix lands.
 
 ---
 

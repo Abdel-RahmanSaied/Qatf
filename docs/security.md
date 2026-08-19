@@ -32,14 +32,14 @@ same treatment.
 
 | Boundary | Enforced in | What it stops |
 | --- | --- | --- |
-| media root | [`api/deps.py`](../qatf/api/deps.py) `resolve_source` | `POST /jobs {"path": "../../etc/passwd"}` |
-| download path | [`api/deps.py`](../qatf/api/deps.py) `safe_output_path` | `GET /clips/../job.json` |
-| transcript cache path | [`pipeline/asr.py`](../qatf/pipeline/asr.py) `cache_path` | `language` escaping the work dir |
-| Whisper model name | [`api/schemas.py`](../qatf/api/schemas.py) + `asr.MODEL_SIZES` | the server fetching an arbitrary model repo |
-| ASS structure | [`pipeline/captions.py`](../qatf/pipeline/captions.py) `escape` / `safe_font` | caption text becoming subtitle directives |
-| filtergraph quoting | [`pipeline/encode.py`](../qatf/pipeline/encode.py) `filtergraph` | a path breaking out of `ass='...'` |
-| cut timings | [`pipeline/edits.py`](../qatf/pipeline/edits.py) `diff` | a text correction moving a cut |
-| numeric ranges | [`api/schemas.py`](../qatf/api/schemas.py) | `1e999` reaching ffmpeg as a duration |
+| media root | [`api/deps.py`](../qatf-backend/qatf/api/deps.py) `resolve_source` | `POST /jobs {"path": "../../etc/passwd"}` |
+| download path | [`api/deps.py`](../qatf-backend/qatf/api/deps.py) `safe_output_path` | `GET /clips/../job.json` |
+| transcript cache path | [`pipeline/asr.py`](../qatf-backend/qatf/pipeline/asr.py) `cache_path` | `language` escaping the work dir |
+| Whisper model name | [`api/schemas.py`](../qatf-backend/qatf/api/schemas.py) + `asr.MODEL_SIZES` | the server fetching an arbitrary model repo |
+| ASS structure | [`pipeline/captions.py`](../qatf-backend/qatf/pipeline/captions.py) `escape` / `safe_font` | caption text becoming subtitle directives |
+| filtergraph quoting | [`pipeline/encode.py`](../qatf-backend/qatf/pipeline/encode.py) `filtergraph` | a path breaking out of `ass='...'` |
+| cut timings | [`pipeline/edits.py`](../qatf-backend/qatf/pipeline/edits.py) `diff` | a text correction moving a cut |
+| numeric ranges | [`api/schemas.py`](../qatf-backend/qatf/api/schemas.py) | `1e999` reaching ffmpeg as a duration |
 | work volume | `JobOptions.clips` ≤ 50, `MAX_PLAN_CLIPS` = 100 | one request queuing thousands of encodes |
 
 Both path boundaries **resolve first and check second**, so they catch symlink
@@ -168,10 +168,14 @@ before exposing this.
 **No authentication, authorisation, rate limiting or quota.** Any caller can read
 and modify any job. There is no per-user separation at all.
 
-**No request body size limit.** Starlette has none by default. Field-level caps
-bound the worst cases (`MAX_PLAN_CLIPS`, 200 000 words, `QATF_MAX_UPLOAD_MB` for
-multipart), but a large JSON body is still buffered. Set a limit at the reverse
-proxy.
+**No request body size limit.** Starlette has none by default, and neither front
+end adds one — the frontend's nginx sets `client_max_body_size 0` deliberately.
+Field-level caps bound what is *stored* (`MAX_PLAN_CLIPS`, 200 000 words), but
+they do not bound what is *received*: a large JSON body is buffered, and
+`QATF_MAX_UPLOAD_MB` is compared only after `UploadFile` has already spooled the
+whole multipart body to a temp file. An unbounded upload can therefore exhaust
+temp space before any check of ours runs. Set a real limit at whatever fronts
+this before exposing it.
 
 **`job.error` leaks server paths.** `CommandFailed` embeds the full ffmpeg
 command line and a stderr tail, and the worker records `str(exc)` on the job,
@@ -189,6 +193,26 @@ known CVEs in it. Pin a digest and rebuild on a schedule.
 **`docker compose up` publishes `8000:8000`** — with `QATF_HOST=0.0.0.0`, that is
 an unauthenticated API on every interface. Bind to `127.0.0.1:8000:8000` unless
 something is fronting it.
+
+**The frontend's nginx proxy is not a new trust boundary.** It forwards
+`/api/*` to the same unauthenticated `qatf` service on the same host with the
+prefix stripped, so reaching the API through `:3000` instead of `:8000` changes
+nothing about who can call it — the gaps above apply identically either way.
+`client_max_body_size 0` and `proxy_request_buffering off` are deliberate:
+uploads are multi-GB, and the size check stays in FastAPI
+(`QATF_MAX_UPLOAD_MB`) rather than being duplicated in nginx, where it would
+just be a second, driftable number.
+
+**But that check does not bound what reaches the disk.** `create_from_upload`
+declares `file: UploadFile`, so Starlette resolves the entire multipart body —
+spooling past 1 MB into a temp file — *before* the handler runs. The
+`QATF_MAX_UPLOAD_MB` comparison then happens while copying that already-landed
+file into the job directory. The endpoint's own docstring calling it "refused
+mid-stream" is wrong, and with no byte cap at the ingress an unbounded body can
+fill the container's temp space before any code of ours looks at it. This is
+**not new** — uvicorn on `:8000` had no limit either and the route was equally
+reachable — so it belongs with the known gaps below rather than being a cost of
+the proxy. Anything internet-facing needs a real limit in whatever fronts it.
 
 **`.env` discovery walks upward** to the filesystem root. On a shared host, a
 writable parent directory means arbitrary environment variables. Standard for
@@ -224,5 +248,8 @@ In rough order of how much each buys you:
 
 ## Reporting
 
-This is a prototype with no CI and no release process. If you find something,
-open an issue — there is no embargo process to respect yet.
+This is a prototype with no release process, so there is no embargo to respect
+and no supported older version to backport to. **Report privately** — a GitHub
+security advisory on the repo, or the address in
+[`SECURITY.md`](../SECURITY.md), which also lists the gaps already known here so
+you can tell quickly whether you have found a new one.

@@ -3,7 +3,7 @@
 Turns a long video into vertical short-form clips. Python, wrapping ffmpeg +
 faster-whisper + Claude, with a CLI and a FastAPI job server over one pipeline.
 
-**Status: working prototype, not production.** No CI. Treat everything below
+**Status: working prototype, not production.** Treat everything below
 marked UNVERIFIED as unknown rather than working.
 
 Inherits the global `~/.claude/CLAUDE.md` conventions. This file only covers what is
@@ -17,56 +17,66 @@ Every module lives in a subpackage. Only `__init__.py` and `__main__.py` sit
 loose at the package top level.
 
 ```text
-qatf/
-  core/            depends on nothing. imports no pipeline, no jobs, no HTTP
-    config.py      Settings, read from the environment once
-    constants.py   product decisions (9:16, caption budget, snap margins)
-    db.py          the only module that imports sqlite3 — WAL, thread-local
-                   connections, PRAGMA-versioned migrations
-    dotenv.py      .env parser; the real environment always wins
-    errors.py      QatfError hierarchy, each carrying its HTTP status
-    types.py       Word, Transcript, Clip — plain dataclasses
-    utils.py       subprocess, timestamps, slugs, logging
-  pipeline/        the five stages, one module each. the ONLY pipeline logic
-    fetch.py       0.  url -> local file        yt-dlp, owns the url allowlist
-    audio.py       1.  demux                    ffmpeg
-    asr.py         2.  transcribe + word times  faster-whisper
-    subs.py        2'. caption track -> words   pure, ALTERNATIVE to asr.py
-    fixups.py      2b. substitutions by value   text only, never timestamps
-    edits.py       2c. corrections by position  text only, never timestamps
-    health.py      2d. loop repair + timing flags  text only, never timestamps
-    select.py      3.  pick clips               the configured provider
-    cuts.py        4.  snap to word bounds      deterministic
-    detect.py      4b. find faces               OpenCV, cached against the video
-    framing.py     4c. solve the crop path      deterministic
-    captions.py    5a. ASS generation           deterministic
-    encode.py      5b. reframe + burn + encode  ffmpeg
-  llm/             stage 3 providers — the only swappable part of the pipeline
-    base.py        the contract: complete_json + declared Capabilities
-    claude.py      Anthropic Messages API, official SDK
-    openai_compat.py  everything speaking /v1/chat/completions
-    presets.py     named endpoints: openai kimi glm ollama vllm openrouter
-  jobs/            knows nothing about HTTP
-    model.py       Job record, JobState, on-disk layout
-    store.py       persistence, accessors, the thread pool
-    worker.py      what a job actually runs
-  api/             endpoints only
-    __init__.py    create_app + the OpenAPI description
-    deps.py        shared dependencies and the media-root boundary
-    openapi.py     reusable failure declarations for the schema
-    schemas.py     pydantic wire contract
-    routers/       meta.py jobs.py plan.py outputs.py
-  cli/
-    parser.py      the argument surface
-    runner.py      preflight + the run flow
-qatf.py            legacy shim for `python qatf.py`
-tests/             smoke_{db,pipeline,llm,api}.py, load_api.py, score_transcript.py,
-                   verify_render.py, fixtures/, _harness.py
-                   api_full_flow.py  every endpoint against a RUNNING server and a
-                                     real video — the one test the in-process
-                                     fakes cannot stand in for
-                   sweep_asr.py      one stage-2 run per decode override, in Docker
-                   sweep_all.sh      drives sweep_asr.py across the sweep table
+qatf-backend/      the Python pipeline, CLI and API — everything below lives here
+  qatf/
+    core/            depends on nothing. imports no pipeline, no jobs, no HTTP
+      config.py      Settings, read from the environment once
+      constants.py   product decisions (9:16, caption budget, snap margins)
+      db.py          the only module that imports sqlite3 — WAL, thread-local
+                     connections, PRAGMA-versioned migrations
+      dotenv.py      .env parser; the real environment always wins
+      errors.py      QatfError hierarchy, each carrying its HTTP status
+      types.py       Word, Transcript, Clip — plain dataclasses
+      utils.py       subprocess, timestamps, slugs, logging
+    pipeline/        the five stages, one module each. the ONLY pipeline logic
+      fetch.py       0.  url -> local file        yt-dlp, owns the url allowlist
+      audio.py       1.  demux                    ffmpeg
+      asr.py         2.  transcribe + word times  faster-whisper
+      subs.py        2'. caption track -> words   pure, ALTERNATIVE to asr.py
+      fixups.py      2b. substitutions by value   text only, never timestamps
+      edits.py       2c. corrections by position  text only, never timestamps
+      health.py      2d. loop repair + timing flags  text only, never timestamps
+      select.py      3.  pick clips               the configured provider
+      cuts.py        4.  snap to word bounds      deterministic
+      detect.py      4b. find faces               OpenCV, cached against the video
+      framing.py     4c. solve the crop path      deterministic
+      captions.py    5a. ASS generation           deterministic
+      encode.py      5b. reframe + burn + encode  ffmpeg
+    llm/             stage 3 providers — the only swappable part of the pipeline
+      base.py        the contract: complete_json + declared Capabilities
+      claude.py      Anthropic Messages API, official SDK
+      openai_compat.py  everything speaking /v1/chat/completions
+      presets.py     named endpoints: openai kimi glm ollama vllm openrouter
+    jobs/            knows nothing about HTTP
+      model.py       Job record, JobState, on-disk layout
+      store.py       persistence, accessors, the thread pool
+      worker.py      what a job actually runs
+    api/             endpoints only
+      __init__.py    create_app + the OpenAPI description
+      deps.py        shared dependencies and the media-root boundary
+      openapi.py     reusable failure declarations for the schema
+      schemas.py     pydantic wire contract
+      routers/       meta.py jobs.py plan.py outputs.py
+    cli/
+      parser.py      the argument surface
+      runner.py      preflight + the run flow
+  qatf.py            legacy shim for `python qatf.py`
+  tests/             smoke_{db,pipeline,llm,api}.py, load_api.py, score_transcript.py,
+                     verify_render.py, fixtures/, _harness.py
+                     api_full_flow.py  every endpoint against a RUNNING server and a
+                                       real video — the one test the in-process
+                                       fakes cannot stand in for
+                     sweep_asr.py      one stage-2 run per decode override, in Docker
+                     sweep_all.sh      drives sweep_asr.py across the sweep table
+  prompts/         vocab and fixup lists
+  Dockerfile       backend image; build context is qatf-backend/
+qatf-frontend/     the web UI. React + Vite + TS, served by nginx in Docker
+  src/api/         hand-written mirror of the wire contract + fetch client
+  src/pages/       JobsList, NewJob, JobDetail
+  src/components/  OptionsForm, PlanEditor, TranscriptEditor, ClipGrid, …
+  src/lib/rules.ts client-side mirrors of server rules (never the only line)
+  nginx.conf       serves the SPA, proxies /api/* -> qatf:8000 with prefix stripped
+docker-compose.yaml  one `docker compose up` starts backend (:8000) + frontend (:3000)
 docs/              human-facing reference — see "Documentation" below
 ```
 
@@ -97,6 +107,13 @@ functions that use them.
 ## Commands
 
 ```bash
+docker compose up                    # backend :8000 + web UI :3000
+cd qatf-frontend && npm run dev      # UI dev server; proxies /api to localhost:8000
+cd qatf-frontend && npm test         # vitest — the client-side rule mirrors
+```
+
+```bash
+cd qatf-backend
 pip install -e ".[all]"                       # ffmpeg must be on PATH
 # or pick one provider: pip install -e ".[api,anthropic]" / ".[api,openai]"
 export ANTHROPIC_API_KEY=...                  # or OPENAI_API_KEY / MOONSHOT_API_KEY / ZHIPU_API_KEY
@@ -124,13 +141,14 @@ returning 7 clips for `--clips 8` reads as the model finding nothing.
 ```bash
 
 # API
-uvicorn qatf.api:app --reload                 # or: qatf-serve / python -m qatf.api
+cd qatf-backend && uvicorn qatf.api:app --reload   # or: qatf-serve / python -m qatf.api
 
-# open-source provider, self-hosted
+# open-source provider, self-hosted (from the repo root — docker-compose.yaml lives there)
 docker compose --profile ollama up            # GLM-4-9B, easy path
 docker compose --profile vllm up              # GLM-4-9B, guided decoding
 
 # tests — no ffmpeg / GPU / API key / network needed
+cd qatf-backend
 python tests/smoke_pipeline.py                # seconds
 python tests/smoke_llm.py
 python tests/smoke_api.py
@@ -650,6 +668,71 @@ Absolute paths must still resolve inside it.
 
 ---
 
+## The web UI
+
+`qatf-frontend/` is a React SPA over the existing HTTP API — **purely additive;
+no UI feature may require a backend change**, the same philosophy as "a provider
+swap cannot affect cut accuracy". nginx serves the static build and proxies
+`/api/*` to the backend with the prefix stripped, so the backend has no CORS and
+never learns a proxy exists.
+
+**The prefix strip is written out, not implicit.** `proxy_pass` names the
+upstream through a variable (`set $qatf_upstream qatf`) with a `resolver`,
+because a literal name is resolved once at config load and cached forever: one
+`docker compose up -d --build qatf` gives the backend a new IP and every call
+502s until the *frontend* is restarted too. Measured — old config 502, new 200,
+against a backend moved 172.18.0.2 → .5. A variable in `proxy_pass` also
+disables nginx's implicit URI rewriting, so the `rewrite ^/api/(.*)$ /$1 break`
+above it is what strips the prefix now. Both halves are load-bearing; change one
+and the backend starts seeing `/api/jobs`, which is a 404.
+`client_max_body_size 0` + `proxy_request_buffering off` are load-bearing:
+uploads are multi-GB, so the size check stays in FastAPI
+(`QATF_MAX_UPLOAD_MB`) instead of being duplicated as a second, driftable
+number in nginx. Know what that check is worth: `UploadFile` makes Starlette
+spool the whole body to a temp file before the handler runs, so the limit is
+enforced *after* the bytes land, not mid-stream. Neither front end bounds
+ingress — see `docs/security.md`.
+
+The UI enforces the core invariant by construction: the transcript editor has no
+timing inputs, `PUT /plan` is always sent with `snap: true`, and the saved
+response replaces the draft so the user sees where cuts actually landed.
+Client-side rule mirrors live in `src/lib/rules.ts` and are exactly that —
+mirrors for instant feedback; the server stays the authority on every one. A
+mirror may only ever be *looser* than the server by accident, never stricter:
+stricter refuses input the server would accept, which reads as a broken UI with
+no error to explain it. `RUNNING_STATES` in `src/api/types.ts` exists for the
+same reason — three components had each hand-rolled "is this job running?"
+differently, and one of them locked the plan editor on failed jobs the API
+would have let you fix.
+
+### Design system
+
+One dark theme, warm rather than blue-gray, and the tokens at the top of
+`styles.css` are the whole palette: two accents with fixed jobs — saffron for
+action and picked spans, olive for done. `styles.css` is the ONLY stylesheet;
+components carry class names and no inline styles, the single exception being a
+percentage computed at runtime (the harvest strip's spans, the upload progress
+fill), which cannot live in a stylesheet.
+
+The **harvest strip** is the signature element and it is honest by
+construction: the API exposes no source-video duration, so the track spans
+`0 → max(clip.end)` with both ends labelled and a caption saying the source may
+run longer. Do not "improve" it by assuming a total. Same discipline in
+`StageTimeline`: `fetching` renders struck-through for a non-URL job rather than
+green, because drawing a stage that never ran as completed is the timeline
+lying about the one thing it exists to report.
+
+### Live reload
+
+`docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up`
+bind-mounts source into both containers — Vite HMR for the frontend,
+`uvicorn --reload` for the backend, no rebuild until a dependency changes. See
+`docs/operations.md` for the four details that make it work (the `dev` image
+target, `QATF_API_TARGET`, the pinned `--reload-dir`, and the anonymous
+`node_modules` volume).
+
+---
+
 ## Verification status
 
 Be honest about this in any session. It is the difference between a demo and a tool.
@@ -659,7 +742,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   with a seeded transcript cache standing in for stage 2 and `--plan` for stage
   3). Output is 1080x1920, 30fps, yuv420p, audio intact, captions burned in.
 - Both filtergraphs (`crop`, `blur`) produce 1080x1920 output with correct duration
-- `tests/verify_render.py` (10 checks without OpenCV, more with it): the `track`
+- `tests/verify_render.py` (11 checks without OpenCV, 19 with it): the `track`
   path rendered through real ffmpeg and measured — the tracked render holds the
   subject in every probed frame and the `crop` control provably loses it. Plus
   stage 4b's decoder, which needs ffmpeg but **not** OpenCV and so runs where
@@ -871,7 +954,7 @@ Measured on the real 12-minute Arabic file, first three clips:
 01-clip.ass   28 cues, 22 overlapping pairs   e.g. 5.74-9.31 vs 9.19-10.57
 02-clip.ass   26 cues, 20 overlapping pairs
 03-clip.ass   30 cues, 29 overlapping pairs
-              71 of 83 consecutive pairs — 85%
+              71 of 81 consecutive pairs — 88%
 ```
 
 It hits **LTR as well as RTL**: the highlight path holds each word until the next
@@ -999,10 +1082,16 @@ Neither is warranted yet.
 - **Pipeline logic goes in `qatf/pipeline/`, one stage per module.** If you find
   yourself computing a timestamp in a router or in `cli/runner.py`, it is in the
   wrong file. Front ends parse input, report progress, and set exit codes.
-- **Respect the layer arrows.** `api -> jobs -> pipeline -> core`, and `core`
-  imports nothing of ours. An import that points the other way is the signal that
-  something is defined in the wrong package — move the definition, don't add the
-  import.
+- **Respect the layer arrows.** `api -> jobs -> pipeline -> llm -> core`, and
+  `core` imports nothing of ours. An import that points the other way is the
+  signal that something is defined in the wrong package — move the definition,
+  don't add the import. **A lazy import inside a function body is still a
+  dependency**: `Settings.model` hid `from ..llm.presets import PRESETS` in a
+  property for months while this file claimed core imported nothing, because
+  nothing reads an import that is not in the import block. It is now
+  `llm.presets.resolve_model`, and `smoke_pipeline.py` greps every module in
+  `core/` as source text — not `sys.modules`, which a deferred import is absent
+  from until something calls it.
 - Deliberate failures raise `QatfError` subclasses. Bare `RuntimeError` escaping
   the pipeline means something was not thought through.
 - **Adding a provider is a row in `presets.py`.** If it needs a subclass, the

@@ -1,6 +1,7 @@
 # HTTP API
 
 ```bash
+cd qatf-backend
 uvicorn qatf.api:app --reload      # or: qatf-serve, or: python -m qatf.api
 ```
 
@@ -459,7 +460,7 @@ cache are rows in a *separate* `qatf.db` inside each job's own `.work/`
 directory, so a job stays self-contained and deleting it does not touch any
 other job's data. See
 [quality.md](quality.md#the-sqlite-move-read-cost-roughly-doubled-and-stayed-inside-budget)
-for what the move cost and [`core/db.py`](../qatf/core/db.py) for the schema.
+for what the move cost and [`core/db.py`](../qatf-backend/qatf/core/db.py) for the schema.
 
 Rendered MP4s stay on the filesystem under `clips/` — SQLite is for records, not
 video. A pre-SQLite `job.json`, `words-<model>-<lang>.json`, `word-edits.json` or
@@ -502,7 +503,7 @@ everything cached in it — plus the job's row and cancel flag from the root
    scaling beyond one process needs that first.
 
 **The API has never run against a real video, a real GPU or a real API key.**
-Every stage boundary is exercised by `tests/smoke_api.py` (131 checks), which
+Every stage boundary is exercised by `tests/smoke_api.py` (154 checks), which
 fakes `pipeline.audio.run`, `pipeline.encode.run`, `pipeline.asr.transcribe` and
 `pipeline.select.pick_clips` — so it proves nothing about those four. The CLI has
 run the whole thing end to end; the server has not.

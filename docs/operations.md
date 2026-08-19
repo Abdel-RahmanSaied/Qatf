@@ -8,6 +8,7 @@ anything real.
 ## Install
 
 ```bash
+cd qatf-backend
 pip install -e ".[all]"              # api + every provider SDK
 pip install -e ".[api,anthropic]"    # or just the one you use
 pip install -e ".[api,openai]"       # also drives kimi, glm, vllm, ollama, openrouter
@@ -32,12 +33,14 @@ and it would break the rule that the CLI works without any of them.
 ### Configuration
 
 ```bash
-cp .env.example .env
+cp ../.env.example ../.env   # from qatf-backend/ — both files belong at the repo root
 ```
 
-`.env` is read from the working directory or any parent. **A real environment
+Keep `.env` at the repo root. `docker-compose.yaml` interpolates the provider keys
+from there, and because `.env` is read from the working directory **or any parent**,
+a root `.env` also serves the CLI and a server started from `qatf-backend/`. **A real environment
 variable always wins** over a `.env` entry — see
-[`core/dotenv.py`](../qatf/core/dotenv.py). `.env` is gitignored; `.env.example`
+[`core/dotenv.py`](../qatf-backend/qatf/core/dotenv.py). `.env` is gitignored; `.env.example`
 is not.
 
 ---
@@ -45,6 +48,7 @@ is not.
 ## GPU
 
 ```bash
+cd qatf-backend
 qatf talk.mov -o out/                  # --device auto is the default
 curl -s localhost:8000/healthz | jq '{cuda_devices, transcribe_device}'
 ```
@@ -146,18 +150,74 @@ tuning. See [quality.md](quality.md#render-performance).
 
 ## Docker
 
+`docker-compose.yaml` sits at the repo root, alongside `qatf-backend/` and
+`qatf-frontend/` — run these from the root, not from either package directory.
+
 ```bash
 docker compose up qatf                    # hosted provider
 docker compose --profile ollama up        # + local GLM-4-9B via Ollama
 docker compose --profile vllm up          # + local GLM-4-9B via vLLM (needs a GPU)
+docker compose up                         # backend + web UI together
 ```
 
-The `qatf` service maps `./qatf-data → /data` and `./media → /media:ro`, and sets
-`QATF_MEDIA_ROOT=/media` — so the media root is both the sandbox and a read-only
-mount. Provider keys pass through from your shell or `.env`.
+The `qatf` service builds from `./qatf-backend` and maps `./qatf-data → /data`
+and `./media → /media:ro`, and sets `QATF_MEDIA_ROOT=/media` — so the media root
+is both the sandbox and a read-only mount. Provider keys pass through from your
+shell or `.env`.
 
-The GPU reservation block is on by default. **Drop it and set `device: cpu` if
-there is no GPU**, or the container will not start.
+The GPU reservation block ships **commented out**, so the stack starts on any
+host. Uncomment it to give the container a GPU — and only then, since Compose
+refuses to start the service when the reservation cannot be satisfied.
+
+### The frontend service
+
+`frontend` builds from `./qatf-frontend` and publishes the web UI on `:3000`; it
+`depends_on: [qatf]` but does not gate on the backend being healthy, only
+started. nginx serves the static build and reverse-proxies `/api/*` to the
+`qatf` service on the compose network, so the browser only ever talks to one
+origin. **The UI adds no auth of its own** — it is the same unauthenticated
+trust model as the API itself (see [security.md](security.md)); whatever you put
+in front of `:3000` (or `:8000`, if exposed directly) is the only gate either
+way.
+
+### Live reload while developing
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up
+```
+
+`docker-compose.dev.yaml` bind-mounts the source into both containers, so a file
+saved on the host takes effect without an image rebuild:
+
+| | how the change lands | rebuild needed? |
+| --- | --- | --- |
+| `qatf-frontend/src/**` | Vite dev server, hot module replacement | no |
+| `qatf-backend/qatf/**` | `uvicorn --reload` restarts the app | no |
+| `package-lock.json`, `pyproject.toml` | dependency change | **yes** |
+
+Four details that are load-bearing rather than incidental:
+
+- The frontend image gains a `dev` target that stops after `npm ci` and runs
+  the Vite dev server; the published port stays `:3000` (mapped to Vite's 5173)
+  so the URL does not change between modes.
+- Inside the frontend container `localhost` is that container, not the backend,
+  so the dev overlay sets `QATF_API_TARGET=http://qatf:8000` and
+  `vite.config.ts` reads it. The `/api` prefix is stripped by the Vite proxy
+  exactly as nginx strips it in production.
+- The backend mount is **read-only** and `--reload-dir` is pinned to
+  `/app/qatf`. Watching `/data` instead would restart the server every time a
+  job wrote a record or a rendered clip — most painfully, mid-render.
+- An anonymous volume covers `/app/node_modules`. Without it the host directory
+  (or its absence) shadows what `npm ci` installed in the image and the
+  container starts with no dependencies at all.
+
+Bind mounts on Windows and WSL do not deliver inotify events into a container,
+so Vite is configured to poll. That is why saving a file is picked up in about a
+second rather than instantly.
+
+**This overlay is for development only.** It runs a file watcher and an
+unminified dev server; plain `docker compose up` still starts the production
+stack.
 
 ### Pointing at a local model
 
@@ -181,6 +241,7 @@ does fit one 16–24 GB GPU quantised, which is why both local profiles pull it.
 ## Running the server
 
 ```bash
+cd qatf-backend
 uvicorn qatf.api:app --reload      # development
 qatf-serve                         # reads QATF_HOST / QATF_PORT
 python -m qatf.api                 # same
@@ -243,6 +304,7 @@ interface.
 Seconds to run. No ffmpeg, GPU, API key or network needed.
 
 ```bash
+cd qatf-backend
 python tests/smoke_db.py          #  23 checks
 python tests/smoke_pipeline.py    # 354 checks
 python tests/smoke_llm.py         #  38 checks
@@ -251,8 +313,9 @@ python tests/load_api.py          #  23 checks, ~20s
 ruff check .
 ```
 
-**Every suite must stay green, and new behaviour gets a check.** There is no CI,
-so this is the only gate there is.
+**Every suite must stay green, and new behaviour gets a check.** CI runs all of
+them on every push and pull request, but they run locally in seconds — there is
+rarely a reason to find out from CI rather than before you push.
 
 `load_api.py` is a load *test*, not a benchmark: it asserts and exits non-zero.
 It found two things a sequential suite could not — `/healthz` spawning a process
@@ -261,6 +324,7 @@ thresholds exist to stop both coming back. Raise `--jobs` and `--concurrency` to
 push harder:
 
 ```bash
+cd qatf-backend
 python tests/load_api.py --jobs 500 --concurrency 48 --rounds 8
 ```
 

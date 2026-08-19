@@ -25,7 +25,7 @@ nothing                          23      8                15
 Maps to faster-whisper's `hotwords`. Applies to the **whole file**.
 
 Write the terms **the way you want them spelled back**.
-[`prompts/ar-tech.txt`](../prompts/ar-tech.txt) is the working list — 30 terms,
+[`prompts/ar-tech.txt`](../qatf-backend/prompts/ar-tech.txt) is the working list — 30 terms,
 170 characters. A 38-term extension was tried and reverted; see the stage-2
 sweep below for why.
 
@@ -447,7 +447,7 @@ see pydantic in a hot path.
 ### The SQLite move: read cost roughly doubled, and stayed inside budget
 
 The in-memory job dict above is gone. It was removed (not merely bypassed) in
-the move to SQLite (`qatf/core/db.py`, `qatf/jobs/store.py`): `GET /jobs` and
+the move to SQLite (`qatf-backend/qatf/core/db.py`, `qatf-backend/qatf/jobs/store.py`): `GET /jobs` and
 `GET /jobs/{id}` now run a query plus a `json.loads` of the stored document,
 where they used to do a dict lookup. Measured with `tests/load_api.py`, three
 back-to-back runs:

@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to contribute
+    url: https://github.com/Abdel-RahmanSaied/Qatf/blob/main/CONTRIBUTING.md
+    about: Setup, the rules a change has to satisfy, and a list of good first contributions.
+  - name: Troubleshooting, indexed by symptom
+    url: https://github.com/Abdel-RahmanSaied/Qatf/blob/main/docs/troubleshooting.md
+    about: Most failures here look correct in every file. Check whether yours is a known trap first.
+  - name: Report a security problem
+    url: https://github.com/Abdel-RahmanSaied/Qatf/security/advisories/new
+    about: Privately, via a GitHub security advisory — never as a public issue. Read SECURITY.md first; several gaps are already known and documented.
