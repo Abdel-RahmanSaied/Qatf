@@ -183,7 +183,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         summary="Harvest the parts of a long video worth watching.",
         description=DESCRIPTION,
         openapi_tags=TAGS,
-        license_info={"name": "MIT", "identifier": "MIT"},
+        # Served over the network, so this is the one licence declaration a
+        # generated client or a scanner reads instead of a file. It said MIT
+        # while everything else said Apache-2.0; smoke_api.py now pins it.
+        license_info={"name": "Apache-2.0", "identifier": "Apache-2.0"},
         lifespan=lifespan,
         swagger_ui_parameters={
             # the operation list is short enough to show whole, and a caller

@@ -1577,4 +1577,22 @@ for _path in sorted(_CORE_DIR.glob("*.py")):
 check("no module in qatf/core imports a sibling package, at any indent level",
       _core_offenders == [], "; ".join(_core_offenders))
 
+section("packaging — the wheel carries the licence it claims")
+# `license = "Apache-2.0"` in pyproject.toml is a metadata CLAIM. Sections 4(a)
+# and 4(d) of that licence require the artifact to carry the licence text and
+# the NOTICE, and hatchling resolves `license-files` relative to the project
+# root — qatf-backend/ — not the repo root. So these copies exist, and a copy
+# that drifts from its original is worse than no copy: the wheel would ship
+# terms that differ from the ones the repository publishes.
+_BACKEND = Path(__file__).resolve().parent.parent
+_REPO = _BACKEND.parent
+for _name in ("LICENSE", "NOTICE"):
+    _local, _root = _BACKEND / _name, _REPO / _name
+    if not check(f"qatf-backend/{_name} exists for the wheel to bundle",
+                 _local.is_file()):
+        continue
+    check(f"qatf-backend/{_name} is byte-identical to the repo root's",
+          _local.read_bytes() == _root.read_bytes(),
+          f"{_name} has drifted — copy the root file over it")
+
 raise SystemExit(report())

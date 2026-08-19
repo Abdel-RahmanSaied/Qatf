@@ -307,15 +307,15 @@ and absent from `sys.modules` until something happened to call it.
 ## Testing
 
 All of it runs on [CI](.github/workflows/ci.yml) for every push and pull
-request. **621 of the checks need no ffmpeg, GPU, API key or network**, so you
+request. **626 of the checks need no ffmpeg, GPU, API key or network**, so you
 can run them locally in seconds:
 
 ```bash
 cd qatf-backend
 python tests/smoke_db.py          #  23   the SQLite layer, in isolation
-python tests/smoke_pipeline.py    # 355   stages 1-5, escaping, caches, trust boundaries
+python tests/smoke_pipeline.py    # 359   stages 1-5, escaping, caches, trust boundaries
 python tests/smoke_llm.py         #  38   provider request shapes, with the SDK faked
-python tests/smoke_api.py         # 154   state machine, round trips, the OpenAPI document
+python tests/smoke_api.py         # 155   state machine, round trips, the OpenAPI document
 python tests/load_api.py          #  23   every endpoint under 24 threads, ~20s
 ruff check .
 
@@ -329,7 +329,7 @@ render through it and measure the result:
 
 ```bash
 cd qatf-backend
-python tests/verify_render.py     #  11 without OpenCV, 19 with it
+python tests/verify_render.py     #  19 with OpenCV, 11 without
 ```
 
 The count depends on your install: the `track` extra (included in `[all]`) pulls

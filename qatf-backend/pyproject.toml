@@ -9,6 +9,17 @@ description = "Harvest the parts of a long video worth watching — vertical sho
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+# LICENSE and NOTICE are COPIES of the ones at the repo root, kept here because
+# this directory is the Python project root: hatchling evaluates these globs
+# relative to this file, so without local copies a wheel would declare
+# Apache-2.0 and ship no licence text at all — exactly what §4(a) and §4(d) of
+# that licence require it to carry.
+#
+# `../LICENSE` was tried first and is worse than it looks: it builds, but the
+# path inside the wheel comes out as `dist-info/licenses/../LICENSE`, which
+# escapes its own directory on extraction. Copies, with smoke_pipeline.py
+# asserting they stay byte-identical to the root originals.
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     { name = "Abdel-Rahman Saied", email = "abdelrahmansaied080@gmail.com" },
 ]
@@ -86,7 +97,12 @@ all = [
 ]
 dev = [
     "httpx>=0.27",
-    "ruff>=0.6",
+    # Pinned to a minor series, not `>=`: `ruff check .` is a blocking CI gate,
+    # and ruff adds rules to the selected E/F/I/UP/B/SIM sets in most minor
+    # releases. Unpinned, a ruff release between two PRs turns the second one
+    # red on code its author never touched. Bumping it is then its own PR, with
+    # the new rule's fallout in its own diff — which is where it belongs.
+    "ruff~=0.16.1",
 ]
 
 [project.scripts]

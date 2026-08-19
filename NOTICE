@@ -26,16 +26,27 @@ YuNet face detection weights
 Runtime dependencies (not bundled — installed separately)
 --------------------------------------------------------------------------------
 
-All Python and JavaScript dependencies are permissively licensed (MIT, BSD,
-Apache-2.0 or Unlicense) and are installed from their own distributions rather
-than vendored here. `docs/licensing.md` carries the current audit.
+No dependency licence conflicts with this Apache-2.0 release. Dependencies are
+installed from their own distributions rather than vendored here, so their terms
+travel with them, not with this source. `docs/licensing.md` carries the
+per-package audit — including the weak-copyleft packages (MPL-2.0) and the
+binaries described next, neither of which constrains this release.
 
-ffmpeg is a SYSTEM dependency, invoked as a subprocess and never linked, so its
-licence does not extend to this source. It does, however, extend to any image or
-bundle you distribute that CONTAINS an ffmpeg build — including the Docker images
-built from this repository, whose base distribution ships a GPL-licensed ffmpeg.
-If you redistribute those images, comply with ffmpeg's terms for the build you
-shipped.
+**Copyleft reaches this project as binaries, not as source.** Three places, and
+all three matter only to someone REDISTRIBUTING a build rather than using the
+source:
+
+- **The Docker images** built from this repository bundle a GPL-licensed ffmpeg
+  from the base distribution.
+- **The `av` (PyAV) wheel**, a dependency of faster-whisper and therefore
+  present in every install, bundles an LGPL-v3 FFmpeg build together with
+  `libx264` and `libx265`, which are GPL-2.0-or-later.
+- **The `opencv-python-headless` wheel** (the `track` extra) bundles its own
+  LGPL ffmpeg.
+
+qatf itself invokes ffmpeg as a SUBPROCESS and never links against it, so none
+of this extends to this source. If you redistribute an image or a bundle that
+CONTAINS these binaries, comply with their terms for the build you shipped.
 
 Whisper model weights are downloaded at runtime by faster-whisper and are not
 part of this repository.
