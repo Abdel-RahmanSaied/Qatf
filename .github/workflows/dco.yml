@@ -17,8 +17,9 @@ jobs:
   check:
     name: sign-off
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # The whole PR range plus its base, so every commit can be read.
           fetch-depth: 0
@@ -28,10 +29,24 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          missing=0
+          set -euo pipefail
+
+          # Assign FIRST, loop second. `for c in $(git rev-list ...)` swallows a
+          # git failure: the substitution yields an empty list, the loop body
+          # never runs, and the job reports "all signed off" having examined
+          # nothing — a gate that goes green on zero work, which is worse than
+          # no gate because branch protection then trusts it. `set -e` does not
+          # catch a substitution used as a for-word-list, but it does catch an
+          # assignment, whose exit status is the substitution's.
+          #
           # --no-merges: a merge commit is not authored content, and asking a
           # contributor to sign off on GitHub's own merge is noise.
-          for commit in $(git rev-list --no-merges "$BASE".."$HEAD"); do
+          commits=$(git rev-list --no-merges "$BASE".."$HEAD")
+
+          missing=0
+          examined=0
+          for commit in $commits; do
+            examined=$((examined + 1))
             if ! git log -1 --format='%B' "$commit" | grep -qiE '^Signed-off-by: .+ <.+@.+>'; then
               echo "::error::missing Signed-off-by: $(git log -1 --format='%h %s' "$commit")"
               missing=1
@@ -47,4 +62,5 @@ jobs:
             echo "under Apache-2.0. See https://developercertificate.org"
             exit 1
           fi
-          echo "All commits signed off."
+          # Say how many, so a green tick can never hide an empty run.
+          echo "All $examined commit(s) signed off."

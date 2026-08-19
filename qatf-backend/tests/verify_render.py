@@ -31,6 +31,7 @@ what byte-for-byte frame diffs did to a caption test.
 
 from __future__ import annotations
 
+import http.client
 import os
 import shutil
 import subprocess
@@ -297,11 +298,25 @@ else:
                       f"({len(body)} bytes, starts {body[:8]!r})")
             else:
                 FACE_CACHE.write_bytes(body)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError,
+                http.client.HTTPException) as exc:
+            # HTTPException, not just OSError: http.client.IncompleteRead — a
+            # truncated read part-way through the download — derives from
+            # HTTPException and would otherwise escape as a traceback rather
+            # than the intended skip.
             print(f"  SKIP  could not fetch the test face ({exc})")
 
     if not FACE_CACHE.exists():
-        pass
+        # A skip here means the ONLY fixture that exercises YuNet, the
+        # detection-against-ground-truth score and the face-cache-key checks
+        # did not run — and `report()` counts passes and failures, not skips,
+        # so the suite exits 0 and reads as a clean run. Offline that is the
+        # right behaviour; on CI it is the job silently not testing the feature
+        # it exists for, so CI sets QATF_REQUIRE_FIXTURES and gets a failure.
+        if os.environ.get("QATF_REQUIRE_FIXTURES"):
+            check("fixture B ran (QATF_REQUIRE_FIXTURES is set)", False,
+                  f"the test face is unavailable at {FACE_CACHE} and could not "
+                  f"be fetched — the whole stage-4b detection path was skipped")
     else:
         FACE_W = 300
         # the detector put the face centre at 0.4729 of the headshot's width

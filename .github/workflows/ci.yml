@@ -23,6 +23,7 @@ jobs:
   backend:
     name: backend (${{ matrix.python }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -34,9 +35,9 @@ jobs:
       run:
         working-directory: qatf-backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -65,20 +66,30 @@ jobs:
 
       - name: load_api
         # Concurrency behaviour, and it asserts — it caught two regressions
-        # that no sequential test could see. Slower than the others (~20s) but
-        # worth a runner minute.
-        run: python tests/load_api.py
+        # that no sequential test could see.
+        #
+        # 8 threads, not the default 24: the suite's latency budgets were
+        # measured on a 16-core machine and its own header calls them
+        # "generous enough not to flake on a loaded laptop". A 2-4 vCPU shared
+        # runner is not a loaded laptop — 24 threads there queue an order of
+        # magnitude worse, and a p99 budget blown by contention reads exactly
+        # like a real concurrency regression in somebody's unrelated PR. The
+        # two assertions that caught real bugs are throughput- and
+        # marginal-cost-shaped, not thread-count-shaped, so they survive the
+        # smaller profile intact.
+        run: python tests/load_api.py --concurrency 8
 
   frontend:
     name: frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: qatf-frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -98,13 +109,14 @@ jobs:
   render:
     name: render verification (needs ffmpeg)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: qatf-backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -112,6 +124,20 @@ jobs:
 
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Cache the face fixture
+        # verify_render's fixture B needs a photo of a real face, fetched once
+        # and cached under ~/.cache/qatf. A runner is always cold, so without
+        # this every PR re-fetches it from an external host — and on a 403,
+        # a rate-limit or a captive response the suite SKIPS and the job still
+        # goes green. Fixture B is the ONLY thing that exercises YuNet, the
+        # detection-against-ground-truth score, and the face-cache-key checks,
+        # so a silent skip is the job quietly not testing the feature it exists
+        # for. QATF_REQUIRE_FIXTURES below turns that skip into a failure.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/qatf
+          key: qatf-face-fixture-v1
 
       - name: Install
         run: pip install -e ".[all,dev]"
@@ -122,15 +148,19 @@ jobs:
         # renders a `crop` control and asserts the control FAILS, so a broken
         # harness cannot pass by finding nothing.
         #
-        # One fixture fetches a photo over the network and skips (rather than
-        # fails) if that is unavailable, so this job stays green offline.
+        # QATF_REQUIRE_FIXTURES makes an unavailable fixture a FAILURE here,
+        # while it stays a skip for a contributor working offline. Without it
+        # this job can pass having exercised none of the detector.
+        env:
+          QATF_REQUIRE_FIXTURES: "1"
         run: python tests/verify_render.py
 
   docker:
     name: docker build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build the frontend image
         # Fast, and it runs `tsc --noEmit && vite build` inside the image, so

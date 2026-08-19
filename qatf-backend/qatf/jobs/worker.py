@@ -1,4 +1,4 @@
-﻿"""What a job actually runs.
+"""What a job actually runs.
 
 Module-level functions taking the store, rather than methods on it: this is the
 only place that knows the stage order, and keeping it out of `store.py` means

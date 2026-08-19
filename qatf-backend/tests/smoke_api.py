@@ -157,6 +157,16 @@ with TestClient(app) as client:
     # in every generated client, and an undeclared error status becomes a case
     # the client has no type for.
     spec = app.openapi()
+
+    # The licence the API SERVES. It is the only licence declaration in the
+    # repo that goes out over the network — into every generated client and
+    # every scanner that reads /openapi.json — and it sat at "MIT" while
+    # LICENSE, NOTICE, pyproject.toml, package.json and the README all said
+    # Apache-2.0. Nothing could have caught that but an assertion here.
+    check("the served OpenAPI licence matches the project's",
+          spec.get("info", {}).get("license", {}).get("identifier") == "Apache-2.0",
+          str(spec.get("info", {}).get("license")))
+
     ops = [(p, m, op) for p, item in spec["paths"].items()
            for m, op in item.items()]
     check("every operation has a summary",
