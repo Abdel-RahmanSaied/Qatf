@@ -1,73 +1,1226 @@
+/* ============================================================================
+   qatf — warm editorial dark design system
+   The only stylesheet in the app. Components add no CSS of their own.
+   Selectors stay flat (single class, no type-selector nesting) so specificity
+   never cancels a utility.
+   ========================================================================= */
+
 :root {
-  --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e9ef;
-  --muted: #9aa3b2; --accent: #e0b64c; --danger: #e05c5c; --ok: #4cc38a;
-  --info: #5ca8e0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* ground: warm brown-black, deliberately NOT blue-gray */
+  --ink:          #14100C;
+  --ink-raised:   #1E1813;
+  --ink-sunken:   #0D0A07;
+  --line:         #2E261D;
+  --line-strong:  #43382B;
+
+  /* text */
+  --parchment:    #F2E8D8;
+  --muted:        #9A8B77;
+  --dim:          #6B5F4F;
+
+  /* accents — two, not one */
+  --saffron:      #E8A33D;   /* harvest: primary action, brand, picked spans */
+  --saffron-dim:  #7A5518;
+  --sabr:         #6E8F6B;   /* done: earthy olive, deliberately desaturated */
+  --clay:         #C4573F;   /* failure */
+  --sky:          #6B8CAF;   /* in-progress / info */
+
+  --radius:       10px;
+  --radius-sm:    6px;
+  --gap:          1rem;
+  --shadow:       0 1px 0 rgba(242,232,216,.04), 0 8px 24px rgba(0,0,0,.45);
+
+  --font-ui:      "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-ar:      "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --font-brand:   "Aref Ruqaa", "IBM Plex Sans Arabic", serif;
+
+  color-scheme: dark;
 }
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); }
-.app { max-width: 1100px; margin: 0 auto; padding: 0 1rem 4rem; }
-.topbar { display: flex; justify-content: space-between; align-items: center;
-  padding: 1rem 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
-.topbar nav { display: flex; gap: 1rem; align-items: center; }
-.brand { font-weight: 700; font-size: 1.2rem; color: var(--text); text-decoration: none; }
-.brand-ar { color: var(--accent); }
-a { color: var(--info); text-decoration: none; }
-a:hover { text-decoration: underline; }
-h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-.btn { display: inline-block; padding: 0.4rem 0.9rem; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text);
-  cursor: pointer; font-size: 0.9rem; }
+
+/* ---------------------------------------------------------------- reset --- */
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--parchment);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* NOTE: no `overflow-x: hidden` on body, deliberately. Hiding overflow does not
+   meet "no horizontal overflow" — it clips whatever overflows out of reach and
+   makes the failure invisible to a screenshot pass. It also turns body into a
+   scroll container, which is a footgun for the sticky topbar and sticky bars.
+   The one element wider than the viewport (`.plan`) scrolls inside `.card-body`. */
+
+/* Arabic content carries its own face wherever it appears. `dir="auto"` is
+   listed because an attribute selector matches the literal value, never the
+   direction the browser resolves: an Arabic clip title typed into a
+   `dir="auto"` input would otherwise fall through to a Latin-only face. */
+[dir="rtl"],
+[dir="auto"],
+[lang="ar"] { font-family: var(--font-ar); }
+
+h1, h2, h3, h4 { margin: 0 0 .5rem; line-height: 1.25; font-weight: 600; }
+h1 { font-size: 1.5rem; letter-spacing: -.01em; }
+/* The one real jump in the scale: a bare h2 is a page SECTION heading (the
+   clips count), the loudest thing on the page. Every heading that belongs to a
+   surface carries `.card-title` or `.fieldset-title`, both single-class rules
+   that win over this type selector, so nothing inside a card is affected. */
+h2 {
+  font-size: 1.75rem;
+  letter-spacing: -.015em;
+  color: var(--parchment);
+  margin: 2.25rem 0 .75rem;
+}
+h3 { font-size: .95rem; }
+p  { margin: 0 0 .75rem; }
+
+/* Links rest neutral. Saffron is the harvest accent — action, brand, picked
+   spans — and it only reads as a signature while it stays scarce; making every
+   anchor saffron spent it on download links and drained the strip. */
+a {
+  color: var(--parchment);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+a:hover { color: var(--saffron); text-decoration-color: var(--saffron); }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
+
+img, video { max-width: 100%; }
+
+::selection { background: var(--saffron-dim); color: var(--parchment); }
+
+/* Every interactive element, one ring. */
+:focus-visible {
+  outline: 2px solid var(--saffron);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ------------------------------------------------------------ scrollbar --- */
+
+* { scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
+
+/* ================================================================== shell === */
+
+.app {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 1rem 5rem;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .9rem 0 .8rem;
+  margin-bottom: 1.75rem;
+  background: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: .55rem;
+  text-decoration: none;
+  color: inherit;
+  line-height: 1;
+}
+.brand:hover { text-decoration: none; }
+
+.brand-ar {
+  font-family: var(--font-brand);
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--saffron);
+  line-height: 1;
+  /* the one flourish: let the ruqaa sit properly on the baseline */
+  padding-bottom: .1em;
+}
+
+.brand-latin {
+  font-size: .72rem;
+  font-weight: 500;
+  letter-spacing: .18em;
+  text-transform: lowercase;
+  color: var(--dim);
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+}
+
+.nav-link {
+  padding: .35rem .7rem;
+  border-radius: var(--radius-sm);
+  font-size: .88rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: color .15s ease, background-color .15s ease, border-color .15s ease;
+}
+.nav-link:hover { color: var(--parchment); background: var(--ink-raised); text-decoration: none; }
+.nav-link.active { color: var(--saffron); border-color: var(--line); background: var(--ink-raised); }
+
+.page { display: block; }
+
+.page-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin-bottom: 1.25rem;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .85rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+.back-link:hover { color: var(--parchment); text-decoration: none; }
+
+/* ================================================================ buttons === */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .45rem .9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-raised);
+  color: var(--parchment);
+  font-family: inherit;
+  font-size: .88rem;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
 .btn:hover { border-color: var(--muted); text-decoration: none; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #1a1503; font-weight: 600; }
-.btn-danger { color: var(--danger); }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
-th { color: var(--muted); font-weight: 500; }
-.badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
-  font-size: 0.78rem; font-weight: 600; }
-.badge-running { background: #21384d; color: var(--info); }
-.badge-done { background: #1d3a2d; color: var(--ok); }
-.badge-planned { background: #3d3420; color: var(--accent); }
-.badge-failed { background: #422225; color: var(--danger); }
-.badge-cancelled { background: #2a2f3a; color: var(--muted); }
-.panel { background: var(--panel); border: 1px solid var(--border);
-  border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-.banner { border-radius: 8px; padding: 0.6rem 1rem; margin: 0.75rem 0; font-size: 0.88rem; }
-.banner-warn { background: #3d3420; color: var(--accent); }
-.banner-error { background: #422225; color: var(--danger); }
-.banner-info { background: #21384d; color: var(--info); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--line-strong); }
+
+.btn-primary {
+  background: var(--saffron);
+  border-color: var(--saffron);
+  color: #1B1305;
+  font-weight: 600;
+}
+.btn-primary:hover { background: #F2B252; border-color: #F2B252; }
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.btn-ghost:hover { background: var(--ink-raised); border-color: var(--line); color: var(--parchment); }
+
+.btn-danger {
+  color: var(--clay);
+  border-color: var(--line-strong);
+  background: transparent;
+}
+.btn-danger:hover { border-color: var(--clay); background: rgba(196,87,63,.08); }
+
+.btn-sm {
+  padding: .25rem .6rem;
+  font-size: .8rem;
+  border-radius: 5px;
+}
+
+/* ================================================================== chips === */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-bottom: 1.25rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .28rem .7rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: .82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background-color .15s ease;
+}
+.chip:hover { color: var(--parchment); border-color: var(--line-strong); }
+.chip.active {
+  color: var(--saffron);
+  border-color: var(--saffron-dim);
+  background: rgba(232,163,61,.08);
+}
+
+.chip-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .74rem;
+  color: var(--muted);
+}
+.chip.active .chip-count { color: var(--saffron); }
+
+/* ================================================================== state === */
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .82rem;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex: none;
+}
+
+.state--running { color: var(--sky); }
+.state--running .state-dot {
+  background: var(--sky);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+.state--planned { color: var(--saffron); }
+.state--planned .state-dot { background: var(--saffron); }
+
+.state--done { color: var(--sabr); }
+.state--done .state-dot { background: var(--sabr); }
+
+.state--failed { color: var(--clay); }
+.state--failed .state-dot { background: var(--clay); }
+
+.state--cancelled { color: var(--dim); }
+.state--cancelled .state-dot { background: var(--dim); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1;  box-shadow: 0 0 0 0 rgba(107,140,175,.45); }
+  50%      { opacity: .6; box-shadow: 0 0 0 4px rgba(107,140,175,0); }
+}
+
+/* =============================================================== surfaces === */
+/* Three levels, deliberately not one recipe:
+   FLAT   — the primary content of a page sits directly on `--ink` with no
+            border at all: `.clip`, `.words`, `.panel`. Nothing frames the thing
+            the reader came for.
+   RAISED — `--ink-raised` + a `--line` hairline for secondary and meta blocks:
+            `.card`, `.fieldset`, `.job-row`, `.toast`.
+   DASHED — `.empty` and `.dropzone`, which are invitations rather than content.
+   `--shadow` belongs to elements that genuinely float over content: the sticky
+   bar and the toast stack. It is not a decoration for resting surfaces. */
+
+.card {
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin: 1rem 0;
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-bottom: .75rem;
+}
+
+.card-title {
+  margin: 0;
+  font-size: .95rem;
+  font-weight: 600;
+  color: var(--parchment);
+}
+
+.card-sub {
+  margin: 0;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+/* The plan table cannot narrow past its inputs, so the CARD scrolls, never the
+   page — the quality floor is no horizontal overflow on the document. */
+.card-body {
+  display: block;
+  overflow-x: auto;
+}
+
+/* Flat: the source picker is what the new-job page is FOR, so it does not sit
+   in a raised box competing with the option cards below it. */
+.panel {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin: 1rem 0;
+}
+
+/* =============================================================== job list === */
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: start;
+  padding: .85rem;
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.job-row:hover { border-color: var(--line-strong); }
+
+.job-thumb {
+  width: 84px;
+  aspect-ratio: 9 / 16;
+  background: #000;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+.job-thumb video,
+.job-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* colour comes from an inherited `.job-thumb` default, so adding a `.state--*`
+   modifier to this element wins without a compound selector */
+.job-thumb-glyph {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.job-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+
+.job-id {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .9rem;
+  font-weight: 500;
+  color: var(--parchment);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.job-id:hover { color: var(--saffron); text-decoration: none; }
+
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem .9rem;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+.job-msg {
+  font-size: .82rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-actions {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+@media (max-width: 560px) {
+  .job-row {
+    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-areas:
+      "thumb main"
+      "actions actions";
+  }
+  .job-thumb   { grid-area: thumb; width: 64px; }
+  .job-main    { grid-area: main; }
+  .job-actions { grid-area: actions; justify-content: flex-start; }
+}
+
+/* ========================================================== harvest strip === */
+/* The signature element: where in the source the good parts were picked. */
+
+.strip {
+  display: block;
+  margin: .6rem 0 .25rem;
+}
+
+/* No `overflow: hidden` here: it clipped the spans' outer ring on all four
+   sides, so the one decorative detail the signature element has never rendered
+   and two adjacent picks read as one block. `HarvestStrip` clamps each span's
+   geometry to the track instead, which is where the arithmetic already lives. */
+.strip-track {
+  position: relative;
+  height: 10px;
+  background: var(--ink-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.strip-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--saffron);
+  border-radius: var(--radius-sm);
+  /* the specified glow, plus a dark hairline just outside it: the saffron ring
+     alone is invisible against a neighbour of the same colour, and separating
+     two touching picks is the whole job of this element. The second layer is
+     the track's own colour, so it shows only where spans meet. */
+  box-shadow: 0 0 0 1px rgba(232,163,61,.35), 0 0 0 2px var(--ink-sunken);
+  transition: filter .15s ease;
+}
+.strip-span:hover { filter: brightness(1.15); }
+
+.strip-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: .3rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .72rem;
+  color: var(--muted);
+}
+
+.strip.is-mini { margin: .35rem 0 0; }
+.strip.is-mini .strip-track { height: 6px; }
+.strip.is-mini .strip-scale { display: none; }
+
+/* =========================================================== stage timeline === */
+
+.timeline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  margin: 1rem 0 1.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-step {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .4rem;
+  min-width: 0;
+  text-align: center;
+  color: var(--dim);
+  font-size: .74rem;
+}
+/* the connecting hairline, drawn from each step to the previous one */
+.timeline-step::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 50%;
+  left: -50%;
+  height: 1px;
+  background: var(--line);
+}
+.timeline-step:first-child::before { display: none; }
+
+.timeline-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+/* The DOT carries the --dim "not reached yet" signal; the label is a word the
+   reader has to read, so it never drops below --muted. */
+.timeline-label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.timeline-step.is-done { color: var(--sabr); }
+.timeline-step.is-done::before { background: var(--sabr); }
+.timeline-step.is-done .timeline-label { color: var(--sabr); }
+
+.timeline-step.is-current { color: var(--saffron); }
+.timeline-step.is-current .timeline-label { color: var(--parchment); font-weight: 600; }
+
+/* Skipped: a stage that never ran for this job (fetching, on anything but a
+   URL source). A HOLLOW dot, so it cannot be mistaken at a glance for either a
+   filled "done" dot or a filled "not yet" one — the shape carries the meaning,
+   not just the colour. */
+.timeline-step.is-skipped { color: var(--dim); }
+.timeline-step.is-skipped .timeline-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--dim);
+}
+.timeline-step.is-skipped .timeline-label {
+  color: var(--dim);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+@media (max-width: 640px) {
+  .timeline-label { display: none; }
+  .timeline-step { gap: 0; }
+}
+
+/* ========================================================= empty / loading === */
+
+/* An invitation, not content: dashed and flat, so it never reads as a card. */
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  background: transparent;
+}
+
+.empty-title {
+  margin: 0 0 .35rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--parchment);
+}
+
+.empty-body {
+  margin: 0 auto 1rem;
+  max-width: 42ch;
+  font-size: .88rem;
+  color: var(--muted);
+}
+
+.skeleton {
+  background: var(--ink-raised);
+  border-radius: var(--radius-sm);
+  background-image: linear-gradient(90deg, var(--ink-raised) 0%, var(--line) 50%, var(--ink-raised) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-row {
+  height: 116px;
+  margin-bottom: .75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-raised);
+  background-image: linear-gradient(90deg, var(--ink-raised) 0%, var(--line) 50%, var(--ink-raised) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .skeleton-row { background-image: none; background: var(--ink-raised); }
+}
+
+/* ================================================================== forms === */
+
+.field { margin: .8rem 0; }
+
+.field-label {
+  display: block;
+  margin-bottom: .25rem;
+  font-size: .8rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Read-me copy, never `--dim`: this carries every measured piece of guidance in
+   the form ("use 52, not 60"), and --dim is ~2.8:1 on a raised surface. */
+.field-help {
+  margin-top: .2rem;
+  font-size: .76rem;
+  color: var(--muted);
+}
+
+.field-error {
+  margin-top: .2rem;
+  font-size: .78rem;
+  color: var(--clay);
+}
+
+.fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-raised);
+  padding: .9rem 1.1rem 1.1rem;
+  margin: 1rem 0;
+  min-width: 0;
+}
+
+.fieldset-title {
+  margin: 0 0 .6rem;
+  padding: 0;
+  font-size: .78rem;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.5rem; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 1.5rem; }
+
+@media (max-width: 720px) {
+  .grid-2,
+  .grid-3 { grid-template-columns: minmax(0, 1fr); }
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin: .55rem 0;
+  font-size: .85rem;
+  color: var(--parchment);
+  cursor: pointer;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  padding: .45rem .95rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: .88rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color .15s ease, background-color .15s ease;
+}
+.tab:hover { color: var(--parchment); }
+.tab.active {
+  color: var(--saffron);
+  background: var(--ink-raised);
+  border-color: var(--line);
+}
+
+/* base controls — flat type selectors so any class above still wins */
+input,
+select,
+textarea {
+  width: 100%;
+  padding: .45rem .6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-sunken);
+  color: var(--parchment);
+  font-family: inherit;
+  font-size: .88rem;
+  transition: border-color .15s ease;
+}
+input:hover,
+select:hover,
+textarea:hover { border-color: var(--muted); }
+input::placeholder,
+textarea::placeholder { color: var(--dim); }
+/* A full reset, not just `width`: the rule above puts padding, a border, a
+   background and a 6px radius on EVERY input, and Chrome applies all four to a
+   checkbox — a 13px control floating inside a 10px rounded box. `color-scheme:
+   dark` on :root already renders the native control correctly. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 0;
+  accent-color: var(--saffron);
+  cursor: pointer;
+}
+input[type="file"] { padding: .35rem; }
+textarea { line-height: 1.6; resize: vertical; }
+
+label {
+  display: block;
+  margin: .7rem 0 .2rem;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 1rem 0;
+  padding: .5rem 1rem 1rem;
+  min-width: 0;
+}
+
+legend {
+  padding: 0 .4rem;
+  font-size: .8rem;
+  color: var(--dim);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .86rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: .5rem .6rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: .76rem;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+/* definition grid for job metadata */
+.dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: .4rem 1rem;
+  margin: 0;
+  font-size: .85rem;
+}
+
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ================================================================= upload === */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  min-height: 140px;
+  padding: 1.5rem;
+  text-align: center;
+  border: 2px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--ink-raised);
+  color: var(--parchment);
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.dropzone:hover { border-color: var(--muted); }
+
+.dropzone.is-dragging {
+  border-color: var(--saffron);
+  background: rgba(232,163,61,.06);
+}
+
+.dropzone-hint {
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+.file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .4rem .35rem .75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-sunken);
+  font-size: .82rem;
+  color: var(--parchment);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--ink-sunken);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  margin: .5rem 0;
+}
+.progress > div {
+  height: 100%;
+  background: var(--saffron);
+  transition: width .2s ease;
+}
+
+/* ============================================================= sticky bar === */
+
+.sticky-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin-top: 1rem;
+  padding: .75rem 1rem;
+  background: var(--ink-raised);
+  border-top: 1px solid var(--line-strong);
+  border-radius: 0 0 var(--radius) var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.sticky-bar-status {
+  font-size: .84rem;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.sticky-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+/* ================================================================== clips === */
+
+.clips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 1rem;
+}
+
+/* FLAT. The clips are the thing the whole pipeline exists to produce, so they
+   sit on the page ground with nothing framing them — a card around each one
+   would make them look like five more meta blocks. */
+.clip {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  transition: transform .15s ease;
+}
+.clip:hover { transform: translateY(-2px); }
+.clip:hover .clip-video { border-color: var(--line-strong); }
+
+.clip-video {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: block;
+  transition: border-color .15s ease;
+}
+
+.clip-name {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .78rem;
+  color: var(--parchment);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .25rem .6rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .74rem;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clip:hover { transform: none; }
+}
+
+/* =================================================================== plan === */
+
+.plan {
+  width: 100%;
+  min-width: 34rem;
+  border-collapse: collapse;
+  font-size: .85rem;
+}
+
+.plan-num {
+  width: 6rem;
+  min-width: 4.5rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.plan-warn {
+  color: var(--clay);
+  font-size: .78rem;
+}
+
+/* ============================================================= transcript === */
+
+.transcript-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem 1.5rem;
+  padding: .75rem 0 1rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1rem;
+}
+
+.transcript-stat {
+  display: flex;
+  align-items: baseline;
+  gap: .4rem;
+  font-size: .8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.words {
+  font-family: var(--font-ar);
+  line-height: 2.2;
+  font-size: 1.05rem;
+  padding: .25rem 0;
+}
+
+.word {
+  font-family: var(--font-ar);
+  padding: .1rem .25rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color .12s ease;
+}
+.word:hover { background: var(--line); }
+
+/* never a filled block — an underline keeps RTL text readable */
+.word.is-edited {
+  color: var(--parchment);
+  box-shadow: inset 0 -2px 0 var(--saffron);
+}
+
+.word-input {
+  display: inline-block;
+  width: 8rem;
+  padding: .1rem .3rem;
+  font-family: var(--font-ar);
+  font-size: 1rem;
+}
+
+/* =============================================================== feedback === */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: .6rem .9rem;
+  margin: .75rem 0;
+  font-size: .85rem;
+  background: var(--ink-raised);
+  color: var(--parchment);
+}
+
+/* A warning is not an action: it keeps a saffron-dim edge for the signal and
+   parchment text for the copy, so the accent is not spent on a paragraph. */
+.banner-warn  { border-color: var(--saffron-dim); background: rgba(232,163,61,.05); color: var(--parchment); }
+.banner-error { border-color: var(--clay);        background: rgba(196,87,63,.09);  color: var(--clay); }
+.banner-info  { border-color: var(--line-strong); background: rgba(107,140,175,.08); color: var(--sky); }
+
+.toasts {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  max-width: min(26rem, calc(100vw - 2rem));
+}
+
+.toast {
+  padding: .7rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-raised);
+  color: var(--parchment);
+  font-size: .86rem;
+  box-shadow: var(--shadow);
+}
+
+.toast-error { border-color: var(--clay); }
+.toast-ok    { border-color: var(--sabr); }
+
+/* ================================================================ utility === */
+
+/* ONE rule for the mono face, and it carries no `font-size`.
+   `.mono` used to set `.85em`, which silently beat `.page-title` — both are
+   single-class selectors, `.mono` came 900 lines later, and the job-id heading
+   on two pages rendered at 12.75px. A utility must never decide a block's size.
+   The two utilities are also identical on purpose: they disagreed before, so a
+   `.tnum` number and a `.mono` number in the same sentence did not match. */
+.mono,
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The optical correction Plex Mono needs against Plex Sans, applied only to
+   inline runs. A span is inline by definition, so this can reach a numeral
+   inside a sentence and can never reach a heading or a block of help text —
+   which is exactly how `.field-help.mono` ended up LARGER than its own copy. */
+span.mono,
+span.tnum { font-size: .93em; }
+
 .muted { color: var(--muted); }
-.mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; }
-label { display: block; margin: 0.7rem 0 0.2rem; font-size: 0.85rem; color: var(--muted); }
-input, select, textarea { width: 100%; padding: 0.45rem 0.6rem; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
-input[type="checkbox"] { width: auto; }
-fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 1rem 0; padding: 0.5rem 1rem 1rem; }
-legend { color: var(--muted); font-size: 0.85rem; padding: 0 0.4rem; }
-.field-error { color: var(--danger); font-size: 0.8rem; margin-top: 0.2rem; }
-.help { color: var(--muted); font-size: 0.78rem; margin-top: 0.15rem; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
-.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 1.5rem; }
-.tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-.tab { padding: 0.45rem 1rem; border-radius: 6px 6px 0 0; cursor: pointer;
-  border: 1px solid var(--border); border-bottom: none; background: var(--bg); color: var(--muted); }
-.tab.active { background: var(--panel); color: var(--text); }
-.toasts { position: fixed; bottom: 1rem; right: 1rem; display: flex;
-  flex-direction: column; gap: 0.5rem; z-index: 10; max-width: 26rem; }
-.toast { padding: 0.7rem 1rem; border-radius: 8px; font-size: 0.88rem;
-  border: 1px solid var(--border); background: var(--panel); }
-.toast-error { border-color: var(--danger); }
-.toast-ok { border-color: var(--ok); }
-.progress { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin: 0.5rem 0; }
-.progress > div { height: 100%; background: var(--accent); transition: width 0.2s; }
-.clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
-.clip-card video { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 9 / 16; }
-.words { line-height: 2.1; max-height: 24rem; overflow-y: auto; padding: 0.5rem; }
-.word { padding: 0.1rem 0.2rem; border-radius: 4px; cursor: pointer; }
-.word:hover { background: var(--border); }
-.word.edited { background: #3d3420; color: var(--accent); }
-.word-input { width: 8rem; display: inline-block; padding: 0.1rem 0.3rem; }
-.row-actions { display: flex; gap: 0.3rem; }
-.plan-table input { min-width: 5rem; }
+.dim   { color: var(--dim); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ======================================================= narrow viewports === */
+
+@media (max-width: 420px) {
+  body { font-size: 14px; }
+  .app { padding: 0 .75rem 4rem; }
+  .brand-ar { font-size: 1.6rem; }
+  .page-title { font-size: 1.2rem; }
+  h2 { font-size: 1.35rem; }
+  .clips { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .dl { grid-template-columns: minmax(0, 1fr); gap: .1rem; }
+  .dl dt { margin-top: .5rem; }
+}
+
+/* ========================================================= reduced motion === */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

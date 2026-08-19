@@ -180,6 +180,45 @@ trust model as the API itself (see [security.md](security.md)); whatever you put
 in front of `:3000` (or `:8000`, if exposed directly) is the only gate either
 way.
 
+### Live reload while developing
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up
+```
+
+`docker-compose.dev.yaml` bind-mounts the source into both containers, so a file
+saved on the host takes effect without an image rebuild:
+
+| | how the change lands | rebuild needed? |
+| --- | --- | --- |
+| `qatf-frontend/src/**` | Vite dev server, hot module replacement | no |
+| `qatf-backend/qatf/**` | `uvicorn --reload` restarts the app | no |
+| `package-lock.json`, `pyproject.toml` | dependency change | **yes** |
+
+Four details that are load-bearing rather than incidental:
+
+- The frontend image gains a `dev` target that stops after `npm ci` and runs
+  the Vite dev server; the published port stays `:3000` (mapped to Vite's 5173)
+  so the URL does not change between modes.
+- Inside the frontend container `localhost` is that container, not the backend,
+  so the dev overlay sets `QATF_API_TARGET=http://qatf:8000` and
+  `vite.config.ts` reads it. The `/api` prefix is stripped by the Vite proxy
+  exactly as nginx strips it in production.
+- The backend mount is **read-only** and `--reload-dir` is pinned to
+  `/app/qatf`. Watching `/data` instead would restart the server every time a
+  job wrote a record or a rendered clip — most painfully, mid-render.
+- An anonymous volume covers `/app/node_modules`. Without it the host directory
+  (or its absence) shadows what `npm ci` installed in the image and the
+  container starts with no dependencies at all.
+
+Bind mounts on Windows and WSL do not deliver inotify events into a container,
+so Vite is configured to poll. That is why saving a file is picked up in about a
+second rather than instantly.
+
+**This overlay is for development only.** It runs a file watcher and an
+unminified dev server; plain `docker compose up` still starts the production
+stack.
+
 ### Pointing at a local model
 
 ```bash

@@ -32,6 +32,21 @@ describe("validateOptions", () => {
     }
     expect(validateOptions({ ...DEFAULT_OPTIONS, resolution: "huge" }).resolution).toBeTruthy();
   });
+
+  it("normalises resolution the way parse_resolution does", () => {
+    // The server strips and lowercases before matching, so refusing these
+    // would reject input it accepts.
+    for (const r of ["4K", " 1080p ", "SOURCE", "1080X1920"]) {
+      expect(validateOptions({ ...DEFAULT_OPTIONS, resolution: r })).toEqual({});
+    }
+  });
+
+  it("enforces the language max_length the schema also enforces", () => {
+    // Matches LANGUAGE_RE (subtag chain) but exceeds the 32-char cap.
+    const long = "en-AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD";
+    expect(long.length).toBeGreaterThan(32);
+    expect(validateOptions({ ...DEFAULT_OPTIONS, language: long }).language).toBeTruthy();
+  });
 });
 
 describe("transcriptEditGuard", () => {

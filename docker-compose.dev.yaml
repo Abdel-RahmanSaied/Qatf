@@ -1,0 +1,67 @@
+# Live-reload overlay. Source is bind-mounted into both containers, so editing
+# a file on the host takes effect immediately — no image rebuild, no restart.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up
+#
+# or, once, so you can just type `docker compose up`:
+#
+#   export COMPOSE_FILE=docker-compose.yaml:docker-compose.dev.yaml   # bash
+#   $env:COMPOSE_FILE = "docker-compose.yaml;docker-compose.dev.yaml" # PowerShell
+#
+# Rebuild the images only when a DEPENDENCY changes — package-lock.json, or
+# pyproject.toml. Application code never needs one here.
+#
+# This is a development overlay and it is not safe to expose: `--reload` runs a
+# file watcher, and the frontend is an unminified dev server. `docker compose
+# up` without `-f` still starts the production stack from docker-compose.yaml.
+
+services:
+  qatf:
+    # The image installs the package with `pip install -e .`, so the tree at
+    # /app/qatf IS the imported package — overlaying it with the host's is
+    # enough, no reinstall. Read-only: uvicorn needs to watch these files, not
+    # write them, and a container that cannot edit your source cannot surprise
+    # you.
+    volumes:
+      - ./qatf-backend/qatf:/app/qatf:ro
+      - ./qatf-data:/data
+      - ./media:/media:ro
+    # --reload-dir keeps the watcher off /data, which fills with job records,
+    # transcripts and rendered clips while the server runs. Watching that
+    # directory would restart the server every time a job wrote a file — most
+    # cruelly, mid-render.
+    command: >
+      uvicorn qatf.api:app
+      --host 0.0.0.0 --port 8000
+      --reload --reload-dir /app/qatf
+    environment:
+      # Reload replaces the process on every edit, so a second worker would be
+      # racing a restart. One is also the production default, for the GPU
+      # reason documented in CLAUDE.md.
+      QATF_WORKERS: "1"
+
+  frontend:
+    build:
+      context: ./qatf-frontend
+      target: dev
+    # Vite serves on 5173; the published port stays 3000 so the URL you use
+    # does not change between dev and production.
+    ports: ["3000:5173"]
+    volumes:
+      # The source, live. NOT read-only: Vite writes its dependency-optimizer
+      # cache under node_modules/.vite.
+      - ./qatf-frontend/src:/app/src
+      - ./qatf-frontend/index.html:/app/index.html
+      - ./qatf-frontend/vite.config.ts:/app/vite.config.ts
+      - ./qatf-frontend/tsconfig.json:/app/tsconfig.json
+      # Anonymous volume, and it is load-bearing: without it a host
+      # node_modules/ (or its absence) would shadow the one `npm ci` installed
+      # in the image, and the container would start with no dependencies at
+      # all. Mounting src/ rather than the whole directory keeps that blast
+      # radius small.
+      - /app/node_modules
+    environment:
+      # localhost inside this container is this container. The backend answers
+      # on the compose service name.
+      QATF_API_TARGET: "http://qatf:8000"
+    depends_on: [qatf]

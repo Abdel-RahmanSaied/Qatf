@@ -5,6 +5,13 @@ import type { JobOptions, WordModel, ClipModel } from "../api/types";
 export type FieldErrors = Record<string, string>;
 
 const LANGUAGE_RE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+/** schemas.py caps `language` at 32 characters as well as matching the pattern.
+ * A long chain of subtags satisfies the regex alone. */
+const LANGUAGE_MAX = 32;
+/** `parse_resolution` strips and lowercases before matching, so `  4K ` is
+ * valid server-side. A mirror that refuses it rejects input the server accepts,
+ * which is the one direction a mirror is allowed to be wrong in but still
+ * makes the UI feel broken. Normalise the same way before testing. */
 const RESOLUTION_RE = /^(source|1080p|1440p|4k|\d{2,5}x\d{2,5})$/;
 
 export function validateOptions(o: JobOptions): FieldErrors {
@@ -17,10 +24,11 @@ export function validateOptions(o: JobOptions): FieldErrors {
   }
   if (o.crf < 0 || o.crf > 51) errors.crf = "between 0 and 51";
   if (o.per_line < 1 || o.per_line > 8) errors.per_line = "between 1 and 8";
-  if (o.language !== null && !LANGUAGE_RE.test(o.language)) {
+  if (o.language !== null
+      && (!LANGUAGE_RE.test(o.language) || o.language.length > LANGUAGE_MAX)) {
     errors.language = "a language tag like ar or en-US";
   }
-  if (!RESOLUTION_RE.test(o.resolution)) {
+  if (!RESOLUTION_RE.test(o.resolution.trim().toLowerCase())) {
     errors.resolution = "source, 1080p, 1440p, 4k, or WxH like 1080x1920";
   }
   return errors;

@@ -673,8 +673,18 @@ Absolute paths must still resolve inside it.
 `qatf-frontend/` is a React SPA over the existing HTTP API — **purely additive;
 no UI feature may require a backend change**, the same philosophy as "a provider
 swap cannot affect cut accuracy". nginx serves the static build and proxies
-`/api/*` to the backend with the prefix stripped (trailing slash on
-`proxy_pass`), so the backend has no CORS and never learns a proxy exists.
+`/api/*` to the backend with the prefix stripped, so the backend has no CORS and
+never learns a proxy exists.
+
+**The prefix strip is written out, not implicit.** `proxy_pass` names the
+upstream through a variable (`set $qatf_upstream qatf`) with a `resolver`,
+because a literal name is resolved once at config load and cached forever: one
+`docker compose up -d --build qatf` gives the backend a new IP and every call
+502s until the *frontend* is restarted too. Measured — old config 502, new 200,
+against a backend moved 172.18.0.2 → .5. A variable in `proxy_pass` also
+disables nginx's implicit URI rewriting, so the `rewrite ^/api/(.*)$ /$1 break`
+above it is what strips the prefix now. Both halves are load-bearing; change one
+and the backend starts seeing `/api/jobs`, which is a 404.
 `client_max_body_size 0` + `proxy_request_buffering off` are load-bearing:
 uploads are multi-GB, so the size check stays in FastAPI
 (`QATF_MAX_UPLOAD_MB`) instead of being duplicated as a second, driftable
@@ -687,7 +697,39 @@ The UI enforces the core invariant by construction: the transcript editor has no
 timing inputs, `PUT /plan` is always sent with `snap: true`, and the saved
 response replaces the draft so the user sees where cuts actually landed.
 Client-side rule mirrors live in `src/lib/rules.ts` and are exactly that —
-mirrors for instant feedback; the server stays the authority on every one.
+mirrors for instant feedback; the server stays the authority on every one. A
+mirror may only ever be *looser* than the server by accident, never stricter:
+stricter refuses input the server would accept, which reads as a broken UI with
+no error to explain it. `RUNNING_STATES` in `src/api/types.ts` exists for the
+same reason — three components had each hand-rolled "is this job running?"
+differently, and one of them locked the plan editor on failed jobs the API
+would have let you fix.
+
+### Design system
+
+One dark theme, warm rather than blue-gray, and the tokens at the top of
+`styles.css` are the whole palette: two accents with fixed jobs — saffron for
+action and picked spans, olive for done. `styles.css` is the ONLY stylesheet;
+components carry class names and no inline styles, the single exception being a
+percentage computed at runtime (the harvest strip's spans, the upload progress
+fill), which cannot live in a stylesheet.
+
+The **harvest strip** is the signature element and it is honest by
+construction: the API exposes no source-video duration, so the track spans
+`0 → max(clip.end)` with both ends labelled and a caption saying the source may
+run longer. Do not "improve" it by assuming a total. Same discipline in
+`StageTimeline`: `fetching` renders struck-through for a non-URL job rather than
+green, because drawing a stage that never ran as completed is the timeline
+lying about the one thing it exists to report.
+
+### Live reload
+
+`docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up`
+bind-mounts source into both containers — Vite HMR for the frontend,
+`uvicorn --reload` for the backend, no rebuild until a dependency changes. See
+`docs/operations.md` for the four details that make it work (the `dev` image
+target, `QATF_API_TARGET`, the pinned `--reload-dir`, and the anonymous
+`node_modules` volume).
 
 ---
 

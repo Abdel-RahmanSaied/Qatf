@@ -1,3 +1,5 @@
+import type { JobState } from "../api/types";
+
 export function formatAge(iso: string, now: Date = new Date()): string {
   const seconds = Math.floor((now.getTime() - new Date(iso).getTime()) / 1000);
   if (seconds < 60) return "just now";
@@ -22,4 +24,20 @@ export function formatSeconds(s: number): string {
   const seconds = Math.floor(rest / 100);
   const cs = rest % 100;
   return `${minutes}:${String(seconds).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+/** The seven pipeline stages a job walks, in order. `fetching` only occurs on
+ * a URL-sourced job, but it keeps its slot so the timeline never re-flows. */
+export const STAGES: readonly JobState[] = [
+  "queued", "fetching", "extracting", "transcribing", "selecting", "planned", "rendering",
+];
+
+/** How far along `state` is: the index into STAGES, `STAGES.length` for done,
+ * and -1 for a state that is not on the happy path (failed, cancelled).
+ * Derived from the state alone — never from the progress message, which is
+ * free text and would break the moment the worker's wording changes. */
+export function stageIndex(state: JobState): number {
+  if (state === "done") return STAGES.length;
+  if (state === "failed" || state === "cancelled") return -1;
+  return STAGES.indexOf(state);
 }
