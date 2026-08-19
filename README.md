@@ -76,6 +76,14 @@ directory, so the CLI and the server both find a root `.env` too.
 docker compose up          # backend on :8000, web UI on http://localhost:3000
 ```
 
+Working on the code? Use the live-reload overlay instead — it bind-mounts your
+source into both containers, so an edit takes effect immediately and you only
+rebuild when a dependency changes:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up
+```
+
 Or drive the pipeline directly from the CLI:
 
 ```bash

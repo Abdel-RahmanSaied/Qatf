@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAge, formatBytes, formatSeconds } from "./format";
+import { formatAge, formatBytes, formatSeconds, STAGES, stageIndex } from "./format";
 
 describe("formatAge", () => {
   const now = new Date("2026-08-18T12:00:00Z");
@@ -25,5 +25,23 @@ describe("formatSeconds", () => {
   it("renders M:SS.cc", () => {
     expect(formatSeconds(184.32)).toBe("3:04.32");
     expect(formatSeconds(59.999)).toBe("1:00.00"); // carry, same trap as ts_ass
+  });
+});
+
+describe("stageIndex", () => {
+  it("orders the happy path", () => {
+    expect(stageIndex("queued")).toBe(0);
+    expect(stageIndex("transcribing")).toBe(3);
+    expect(stageIndex("rendering")).toBe(6);
+  });
+  it("puts done past the last stage", () => {
+    expect(stageIndex("done")).toBe(STAGES.length);
+  });
+  it("returns -1 for states off the happy path", () => {
+    expect(stageIndex("failed")).toBe(-1);
+    expect(stageIndex("cancelled")).toBe(-1);
+  });
+  it("covers every stage exactly once", () => {
+    expect(new Set(STAGES).size).toBe(STAGES.length);
   });
 });

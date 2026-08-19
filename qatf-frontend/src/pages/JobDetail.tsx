@@ -2,12 +2,13 @@ import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, cancelJob, getJob, renderJob } from "../api/client";
 import { usePolling } from "../api/poll";
-import { TERMINAL_STATES } from "../api/types";
+import { RUNNING_STATES, TERMINAL_STATES } from "../api/types";
 import type { JobResponse } from "../api/types";
 import { ClipGrid } from "../components/ClipGrid";
+import { HarvestStrip } from "../components/HarvestStrip";
+import { StageTimeline } from "../components/StageTimeline";
 import { StateBadge } from "../components/StateBadge";
 import { PlanEditor } from "../components/PlanEditor";
-import { TranscriptEditor } from "../components/TranscriptEditor";
 import { useToast } from "../components/Toasts";
 import { formatAge } from "../lib/format";
 
@@ -55,58 +56,156 @@ export default function JobDetail() {
   }
 
   if (missing) {
-    return <p>No such job. <Link to="/">Back to jobs.</Link></p>;
+    return (
+      <div className="page">
+        <div className="empty">
+          <p className="empty-title">No such job</p>
+          <p className="empty-body">
+            It was deleted, or the id in the address is wrong.
+          </p>
+          <Link to="/" className="btn">Back to jobs</Link>
+        </div>
+      </div>
+    );
   }
-  if (!job) return <p className="muted">loading…</p>;
 
-  const running = !TERMINAL_STATES.has(job.state) && job.state !== "planned";
+  if (!job) {
+    return (
+      <div className="page">
+        <div className="skeleton-row" />
+      </div>
+    );
+  }
+
+  const running = RUNNING_STATES.has(job.state);
   const canRender = job.clips.length > 0 && !running;
 
   return (
-    <div>
-      <h1>
-        <span className="mono">{job.id}</span> <StateBadge state={job.state} />
-      </h1>
-      {unreachable && (
-        <div className="banner banner-error">Connection lost — retrying.</div>
-      )}
-      <div className="panel">
-        <div>{job.error ?? job.message}</div>
-        <div className="muted">
-          source: {job.source}{job.url ? <> · <span className="mono">{job.url}</span></> : null}
-          {" · created "}{formatAge(job.created_at)}
-          {" · updated "}{formatAge(job.updated_at)}
-        </div>
-        <div className="muted">
-          {job.language ? `language: ${job.language} · ` : ""}
-          {job.device ? `transcribed on: ${job.device} · ` : ""}
-          {job.word_count > 0 ? `${job.word_count} words` : "no transcript yet"}
-          {job.transcript_cached ? " (cached)" : ""}
-        </div>
-        <div className="row-actions" style={{ marginTop: "0.6rem" }}>
-          {running && <button className="btn" onClick={onCancel}>cancel</button>}
+    <div className="page">
+      <div className="page-head">
+        <Link to="/" className="back-link">← Jobs</Link>
+        <h1 className="page-title mono">{job.id}</h1>
+        <StateBadge state={job.state} />
+        <div className="row">
+          {running && <button className="btn" onClick={onCancel}>Cancel job</button>}
           {canRender && (
-            <button className="btn btn-primary" onClick={onRender}
-              title="encodes the current plan; replaces any previous outputs">
-              {job.outputs.length > 0 ? "re-render" : "render"}
+            <button
+              className="btn btn-primary"
+              onClick={onRender}
+              title="Encodes the current plan. Any previous outputs are replaced."
+            >
+              {job.outputs.length > 0 ? "Re-render clips" : "Render clips"}
             </button>
           )}
         </div>
-        {canRender && job.outputs.length > 0 && (
-          <div className="help">Re-rendering replaces the previous outputs.</div>
-        )}
       </div>
 
-      <PlanEditor key={`${job.id}-${job.clips.length}`} jobId={job.id} job={job} onSaved={reload} />
+      {unreachable && (
+        <div className="banner banner-error">Connection lost — retrying.</div>
+      )}
 
-      <TranscriptEditor jobId={job.id} job={job} />
+      <StageTimeline state={job.state} source={job.source} />
 
+      {job.state === "failed" && (
+        <div className="banner banner-error">{job.error ?? "The job failed."}</div>
+      )}
+      {job.state !== "failed" && job.message && (
+        <p className="muted">{job.message}</p>
+      )}
+
+      {/* CLIPS FIRST. They are what the pipeline exists to produce, so nothing
+          — least of all a six-row provenance table — goes above them. The meta
+          card sits at the bottom with the other secondary blocks. */}
       {job.outputs.length > 0 && (
         <>
-          <h2>clips {job.state === "rendering" ? "(rendering…)" : ""}</h2>
-          <ClipGrid outputs={job.outputs} />
+          <h2>
+            {job.outputs.length} clip{job.outputs.length === 1 ? "" : "s"}
+            {job.state === "rendering" ? " — still rendering" : ""}
+          </h2>
+          {canRender && (
+            <p className="muted">Re-rendering replaces every clip below.</p>
+          )}
+          <ClipGrid outputs={job.outputs} clips={job.clips} />
         </>
       )}
+
+      {job.clips.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h2 className="card-title">Where the picks sit</h2>
+            <p className="card-sub">
+              Spans within the picked range — the source may run longer.
+            </p>
+          </div>
+          <HarvestStrip clips={job.clips} />
+        </div>
+      )}
+
+      {/* The key forces exactly ONE remount: the transition from "no plan yet"
+          to "a plan arrived", which is when the editor's lazily-seeded draft
+          must be re-seeded. Keying on the clip COUNT remounted it on every save
+          that added or removed a clip too, which threw away the "these are the
+          snapped boundaries" notice at the moment it matters most. */}
+      <PlanEditor
+        key={`${job.id}-${job.clips.length === 0 ? "empty" : "seeded"}`}
+        jobId={job.id}
+        job={job}
+        onSaved={reload}
+      />
+
+      {job.word_count > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <h2 className="card-title">Transcript</h2>
+            <p className="card-sub">
+              <span className="tnum">{job.word_count}</span> words
+              {job.language ? ` · ${job.language}` : ""}
+              {job.transcript_cached ? " · cached" : ""}
+            </p>
+          </div>
+          <p className="muted">
+            Correct a misheard word and the captions change. Timings never move,
+            so a correction can never shift a cut.
+          </p>
+          <Link className="btn" to={`/jobs/${job.id}/transcript`}>Edit transcript</Link>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-head">
+          <h2 className="card-title">Provenance</h2>
+          <p className="card-sub">Where this job came from and what ran it.</p>
+        </div>
+        <dl className="dl">
+          <dt>Source</dt>
+          <dd>
+            {job.source}
+            {job.source === "youtube" && job.url
+              ? <> · <span className="mono">{job.url}</span></>
+              : null}
+          </dd>
+
+          <dt>Transcribed on</dt>
+          <dd>{job.device ?? "not transcribed yet"}</dd>
+
+          <dt>Language</dt>
+          <dd>{job.language ?? "not detected yet"}</dd>
+
+          <dt>Words</dt>
+          <dd>
+            {job.word_count > 0
+              ? <><span className="tnum">{job.word_count}</span>
+                  {job.transcript_cached ? " (from the transcript cache)" : ""}</>
+              : "no transcript yet"}
+          </dd>
+
+          <dt>Created</dt>
+          <dd>{formatAge(job.created_at)}</dd>
+
+          <dt>Updated</dt>
+          <dd>{formatAge(job.updated_at)}</dd>
+        </dl>
+      </div>
     </div>
   );
 }

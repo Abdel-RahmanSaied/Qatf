@@ -8,6 +8,17 @@ export type JobState =
 export const TERMINAL_STATES: ReadonlySet<JobState> =
   new Set<JobState>(["done", "failed", "cancelled"]);
 
+/** States in which a worker holds the job — the mirror of `RUNNING_STATES` in
+ * qatf-backend/qatf/jobs/model.py, and the set every mutating endpoint refuses.
+ *
+ * It is listed rather than derived from TERMINAL_STATES because `planned` is
+ * neither running nor terminal: the job is parked for review. Three components
+ * had each hand-rolled that distinction differently, which is how a mirror
+ * drifts out of step with the server it mirrors. */
+export const RUNNING_STATES: ReadonlySet<JobState> = new Set<JobState>([
+  "queued", "fetching", "extracting", "transcribing", "selecting", "rendering",
+]);
+
 export const JOB_STATES: readonly JobState[] = [
   "queued", "fetching", "extracting", "transcribing", "selecting",
   "planned", "rendering", "done", "failed", "cancelled",
