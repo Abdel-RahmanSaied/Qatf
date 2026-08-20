@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from qatf import pipeline
 from qatf.core import utils
 from qatf.core.constants import CAPTION_MAX_CHARS, TARGET_H, TARGET_W
 from qatf.core.errors import (
+    CaptionLanguageInvalid,
     DetectorNotAvailable,
     ModelResponseError,
     SeedTooLong,
@@ -281,6 +283,87 @@ check("is_url tells a URL from a path", fetch.is_url("https://youtu.be/x") is Tr
 check("a Windows drive letter is a PATH, not a scheme",
       fetch.is_url(r"C:\videos\talk.mov") is False)
 check("a bare relative path is not a url", fetch.is_url("talks/keynote.mov") is False)
+
+section("caption languages — yt-dlp fullmatches each entry as a REGEX, not a glob")
+# yt-dlp's `orderedSet_from_options` runs `re.compile(val, re.I).fullmatch` over
+# the available track list, so a glob-shaped entry is not a loose match — it is a
+# crash inside `extract_info`, which takes the VIDEO download down with it, not
+# just the captions. `*-orig` ("nothing to repeat at position 0") cost three
+# failed jobs whose only report was "could not fetch the video: ValueError".
+#
+# The language-less branch is the one that had never executed: with a language
+# given, both entries are literal strings that happen to be valid regexes, so
+# every earlier end-to-end run took the working path.
+_TRACKS = ["ar", "ar-orig", "en", "en-orig", "en-US", "fr", "es-419"]
+
+
+def _compiles(pattern: str) -> bool:
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    return True
+
+
+def _yt_dlp_selects(langs: list[str], available: list[str]) -> list[str]:
+    """What yt-dlp's `orderedSet_from_options(..., use_regex=True)` would keep."""
+    return [t for L in langs for t in available if re.compile(L, re.I).fullmatch(t)]
+
+
+for _lang, _want in [(None, "ar-orig"), ("ar", "ar-orig"), ("en", "en-orig")]:
+    _langs = fetch.caption_languages(_lang)
+    _bad = [L for L in _langs if not _compiles(L)]
+    check(f"every entry for language={_lang!r} compiles as a regex",
+          not _bad, f"{_langs} -> uncompilable: {_bad}")
+    check(f"language={_lang!r} still selects the original ASR track",
+          _want in _yt_dlp_selects(_langs, _TRACKS) if not _bad else False,
+          str(_langs))
+
+# The whole reason `-orig` is asked for first: YouTube publishes the ASR output
+# as `ar-orig` alongside ~200 machine translations, one of which is also `ar`.
+_any_orig = fetch.caption_languages(None)
+check("with no language given, only ORIGINAL tracks match — never a translation",
+      all(t.endswith("-orig") for t in _yt_dlp_selects(_any_orig, _TRACKS))
+      if all(_compiles(L) for L in _any_orig) else False,
+      str(_yt_dlp_selects(_any_orig, _TRACKS)) if all(
+          _compiles(L) for L in _any_orig) else "did not compile")
+
+# The API constrains `language` to a tag shape; the CLI does not, so a regex
+# metacharacter reaches this function raw. It must be refused AS OUR OWN
+# malformed request (422) and never dressed as the far end refusing us (502) —
+# `caption_languages` is called while building the options dict, outside
+# `download`'s blanket except, so the class survives to the caller.
+for _meta in ("(", "*", "[", "a["):
+    raises(f"a regex metacharacter in language is refused ({_meta!r})",
+           CaptionLanguageInvalid, fetch.caption_languages, _meta)
+
+# The QUIET half, and the worse one. These all compile, so a compile-only check
+# waves them through: `.*` fullmatches every published track, so stage 2' would
+# caption from one of ~200 machine translations instead of the original ASR —
+# wrong words AND wrong cut points, with nothing in any log to say so.
+for _wild in (".*", ".*-orig", "ar|en", "a.", "[a-z][a-z]"):
+    raises(f"a language that would match tracks it should not is refused "
+           f"({_wild!r})", CaptionLanguageInvalid, fetch.caption_languages, _wild)
+
+for _tag in ("ar", "en", "pt-BR", "es-419", "zh-Hant"):
+    check(f"a real language tag is still accepted ({_tag!r})",
+          fetch.caption_languages(_tag) == [f"{_tag}-orig", _tag])
+
+# One rule, one definition. The wire contract and the enforcement must not be
+# able to drift apart: a schema LOOSER than the pipeline turns a documented,
+# accepted value into a job that 202s and then dies on a worker thread, and a
+# schema STRICTER than the pipeline refuses input the pipeline would have taken.
+# Source text, not an import — smoke_pipeline.py may not pull in pydantic.
+_SCHEMAS = (Path(__file__).resolve().parent.parent
+            / "qatf" / "api" / "schemas.py").read_text(encoding="utf-8")
+check("the language pattern is defined once, in core, and referenced by the schema",
+      "LANGUAGE_TAG_PATTERN" in _SCHEMAS and "[A-Za-z]{2,3}" not in _SCHEMAS,
+      "schemas.py has re-hardcoded the pattern instead of importing it")
+
+check("the refusal names the allowed shape and never echoes the tag back",
+      all(_meta not in str(_capture(CaptionLanguageInvalid,
+                                    fetch.caption_languages, _meta))
+          for _meta in ("(", "[")))
 
 section("ffmpeg binary resolution")
 # For hosts where ffmpeg exists but is not on PATH. Overriding the binary is

@@ -20,7 +20,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..core.constants import CAPTION_MAX_WORDS, DEFAULT_TRACK_TIER
+from ..core.constants import (
+    CAPTION_MAX_WORDS,
+    DEFAULT_TRACK_TIER,
+    LANGUAGE_TAG_PATTERN,
+)
 from ..jobs.model import RUNNING_STATE_VALUES, RUNNING_STATES, JobState
 
 # encode holds no heavy imports, so naming these at module level costs nothing
@@ -152,8 +156,11 @@ class JobOptions(BaseModel):
         description="e.g. ar, en. omit to autodetect",
         examples=["ar"],
         # a language tag, not free text: this value is part of the transcript
-        # cache FILENAME, and "../../x" there escapes the work directory
-        pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+        # cache FILENAME, and "../../x" there escapes the work directory. It
+        # also reaches yt-dlp as a regex — see the constant. Stated here for the
+        # generated client; ENFORCED in pipeline/fetch.py, which is the layer
+        # that owns the risk and the one the CLI also goes through.
+        pattern=LANGUAGE_TAG_PATTERN,
         max_length=32,
     )
     denoise: bool = Field(
