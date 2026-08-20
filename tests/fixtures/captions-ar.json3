@@ -1,0 +1,30 @@
+{
+  "wireMagic": "pb3",
+  "pens": [{}],
+  "wsWinStyles": [{}],
+  "wpWinPositions": [{}],
+  "events": [
+    {"tStartMs": 0, "dDurationMs": 60000, "id": 1, "wpWinPosId": 1, "wsWinStyleId": 1},
+
+    {"tStartMs": 1000, "dDurationMs": 3000, "wWinId": 1, "segs": [
+      {"utf8": "السلام"},
+      {"utf8": " "},
+      {"utf8": "عليكم", "tOffsetMs": 400},
+      {"utf8": "يا", "tOffsetMs": 900}
+    ]},
+
+    {"tStartMs": 2400, "dDurationMs": 2000, "wWinId": 1, "aAppend": 1, "segs": [
+      {"utf8": "\n"}
+    ]},
+
+    {"tStartMs": 4000, "dDurationMs": 3000, "wWinId": 1, "segs": [
+      {"utf8": "أصدقاء"},
+      {"utf8": "واحد", "tOffsetMs": 500},
+      {"utf8": "اثنين", "tOffsetMs": 1200}
+    ]},
+
+    {"tStartMs": 8000, "dDurationMs": 1500, "wWinId": 1, "segs": [
+      {"utf8": "خلاص"}
+    ]}
+  ]
+}

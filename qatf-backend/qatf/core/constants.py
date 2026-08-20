@@ -52,6 +52,21 @@ YOUTUBE_HOSTS = frozenset({
     "music.youtube.com", "youtu.be", "www.youtu.be",
 })
 
+#: The shape a caller-supplied language tag must have. A BOUNDARY, and it
+#: guards two different sinks that would each be happy with different garbage:
+#:
+#: - the transcript cache FILENAME, where `../../x` escapes the work directory
+#: - yt-dlp's `subtitleslangs`, where every entry is fullmatched as a REGEX, so
+#:   `(` crashes stage 0 outright and `.*` silently matches EVERY caption track
+#:   — handing stage 2' a machine translation in place of the original ASR
+#:
+#: Letters, digits and hyphens only, so nothing here is a metacharacter and
+#: nothing is a path separator. It lives in `core` because both front ends must
+#: agree: `api/schemas.py` states it on the wire, `pipeline/fetch.py` enforces
+#: it where the risk actually is, and the CLI gets the check for free. Copied
+#: into a second place it is a rule that will disagree with itself.
+LANGUAGE_TAG_PATTERN = r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+
 #: How far outside [min_len, max_len] a clip may still land, in SECONDS.
 #:
 #: Absolute rather than proportional, because what stage 4 adds is absolute:

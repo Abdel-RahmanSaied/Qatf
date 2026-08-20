@@ -101,9 +101,32 @@ class SourceNotFetchable(QatfError):
 
     Distinct from `UnsupportedSourceUrl` on purpose: one is us refusing, the
     other is the far end — private video, region block, removed, rate limit.
-    502 because the failure is upstream, not in the request."""
+    502 because the failure is upstream, not in the request.
+
+    It means ONLY the far end. A malformed request of our own construction must
+    not arrive wearing this class — see `CaptionLanguageInvalid`."""
 
     status_code = 502
+
+
+class CaptionLanguageInvalid(QatfError):
+    """A caption language tag cannot be handed to yt-dlp as a regex.
+
+    yt-dlp fullmatches every `subtitleslangs` entry — `re.compile(v).fullmatch`
+    — so a tag carrying regex metacharacters is not a loose match but a crash,
+    raised inside `extract_info` and therefore taking the VIDEO download with it,
+    not merely the captions.
+
+    422 rather than 500 because the reachable trigger is caller input: the API
+    constrains `language` to a tag shape, but the CLI does not, so `--language
+    '('` arrives here raw. Same reasoning as `asr.cache_path` slugifying
+    `language` itself — the risk belongs to the code doing the work, and the
+    schema is a second line rather than the line.
+
+    Carries no value in its message, for the reason `api/__init__.py` documents:
+    a rejected string echoed into an error body is reflected caller content."""
+
+    status_code = 422
 
 
 # -- stage 4b --------------------------------------------------------------

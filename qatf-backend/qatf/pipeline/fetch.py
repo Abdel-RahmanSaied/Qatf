@@ -23,12 +23,18 @@ parsing half is pinned offline in `smoke_pipeline.py` from a fixture.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from ..core.constants import YOUTUBE_HOSTS
-from ..core.errors import FetcherNotAvailable, SourceNotFetchable, UnsupportedSourceUrl
+from ..core.constants import LANGUAGE_TAG_PATTERN, YOUTUBE_HOSTS
+from ..core.errors import (
+    CaptionLanguageInvalid,
+    FetcherNotAvailable,
+    SourceNotFetchable,
+    UnsupportedSourceUrl,
+)
 from ..core.utils import log
 
 #: Caption formats we can actually parse. `json3` is the only one carrying
@@ -145,10 +151,46 @@ def caption_languages(language: str | None) -> list[str]:
     not a guarantee — asking for the original first means never silently
     transcribing a round-trip translation.
 
-    With no language given, `*-orig` takes whatever the original was."""
-    if not language:
-        return ["*-orig"]
-    return [f"{language}-orig", language]
+    With no language given, `.*-orig` takes whatever the original was.
+
+    **Every entry is a REGEX, not a glob.** yt-dlp's `orderedSet_from_options`
+    runs `re.compile(entry, re.I).fullmatch` over the available track list, so
+    the wildcard is `.*` and not `*`. That distinction is not cosmetic: `*-orig`
+    raises `re.error("nothing to repeat")` inside `extract_info`, which fails the
+    VIDEO download too — captions are requested on the same call — and surfaced
+    only as `SourceNotFetchable: could not fetch the video: ValueError`.
+
+    So the entries are compiled HERE, before yt-dlp is handed anything. Checking
+    at the boundary that builds them means a malformed tag can never masquerade
+    as the far end refusing us, and it fails in the offline suite rather than on
+    a worker thread six weeks later.
+
+    Two checks, and they catch genuinely different things:
+
+    - The caller's tag must BE a tag. `.*` compiles perfectly and fullmatches
+      every published track, so stage 2' would be handed one of ~200 machine
+      translations instead of the original ASR — wrong captions, wrong cut
+      points, and nothing in any log to say so. A crash is the loud failure
+      here; this is the quiet one, and it is the worse of the two.
+    - The entries we then BUILD must compile. That is not redundant with the
+      first check: `.*-orig` is ours, not the caller's, and the whole reason
+      this function is documented at such length is that a previous version of
+      that literal did not compile."""
+    if language is not None and not re.fullmatch(LANGUAGE_TAG_PATTERN, language):
+        raise CaptionLanguageInvalid(
+            "the caption language must be a plain language tag — letters, "
+            "digits and hyphens, as in 'ar' or 'pt-BR'")
+
+    langs = [".*-orig"] if not language else [f"{language}-orig", language]
+    for entry in langs:
+        try:
+            re.compile(entry)
+        except re.error as exc:                   # pragma: no cover — belt and braces
+            raise CaptionLanguageInvalid(
+                "the caption language must be a plain language tag — letters, "
+                "digits and hyphens, as in 'ar' or 'pt-BR'"
+            ) from exc
+    return langs
 
 
 def download(url: str, dest: Path, *, language: str | None = None,
@@ -183,8 +225,19 @@ def download(url: str, dest: Path, *, language: str | None = None,
     except FetcherNotAvailable:
         raise
     except Exception as exc:                  # noqa: BLE001 — yt-dlp raises many types
-        # The URL passed our allowlist, so this is the far end saying no:
+        # The URL passed our allowlist, so this SHOULD be the far end saying no:
         # private, removed, region-locked, rate-limited. Distinct from a refusal.
+        #
+        # It once wasn't, and the comment claiming otherwise cost three jobs and
+        # an afternoon: a malformed `subtitleslangs` of our own making raised
+        # here too, and reporting only the type name left "ValueError" as the
+        # entire diagnosis. That is why the options are validated as they are
+        # BUILT, above and in `caption_languages`, rather than being left for
+        # this clause to mischaracterise. Keep new option-shape checks up there.
+        #
+        # The message stays type-only on purpose: yt-dlp puts the URL in its own
+        # error text, and this string reaches an HTTP client. The full traceback
+        # is logged server-side, which is where it belongs.
         raise SourceNotFetchable(f"could not fetch the video: {type(exc).__name__}") from exc
 
     video = _one_media_file(dest)
