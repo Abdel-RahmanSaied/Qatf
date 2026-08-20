@@ -53,10 +53,19 @@ services:
     image: ollama/ollama:latest
     ports: ["11434:11434"]
     volumes: ["ollama:/root/.ollama"]
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    # Ollama derives num_ctx from available VRAM — 4096 on a 12GB card — and
+    # TRUNCATES a longer prompt silently
+    # rather than erroring. The stage-3 prompt is a whole transcript in ~12s
+    # blocks — 2596 Arabic words — so the default would hand the model half a
+    # video and read as poor selection rather than a lost prompt. The `fits`
+    # check in select.py cannot catch this: it measures against the preset's
+    # declared 128000, which is the MODEL's limit, not this server's setting.
+    environment:
+      OLLAMA_CONTEXT_LENGTH: "${OLLAMA_CONTEXT_LENGTH:-32768}"
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
 
   # One-shot: pull the model so the first clip request isn't a cold download.
   ollama-pull:
