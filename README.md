@@ -27,6 +27,7 @@ docker compose up      # web UI on :3000, API on :8000
 - [The CLI](#the-cli)
 - [The HTTP API](#the-http-api)
 - [Configuration](#configuration)
+- [Running with a different model](#running-with-a-different-model)
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
 - [Testing](#testing)
@@ -253,6 +254,106 @@ QATF_FFMPEG=... QATF_FFPROBE=...
 
 `media_root` is a security boundary, not a convenience: without it a `POST /jobs`
 body naming `../../etc/passwd` would transcribe any file the process can read.
+
+---
+
+## Running with a different model
+
+Stage 3 is the only model call in the pipeline, and it is swappable without
+touching code. Two environment variables do it:
+
+| | |
+| --- | --- |
+| `QATF_LLM_PROVIDER` | which **preset** — the endpoint, its protocol, and the structured-output tier it honours |
+| `QATF_LLM_MODEL` | which **model at that endpoint**. Blank means the preset's default |
+
+[`docs/providers.md`](docs/providers.md) is the matrix — default model per
+preset, key env var, and which of the three output tiers each honours. What
+follows is the runnable half.
+
+Settings are read **once at startup**, so every change below needs a restart:
+
+```bash
+docker compose up -d qatf              # Docker
+# or restart qatf-serve / uvicorn
+```
+
+Confirm it took with `GET /healthz`, which reports `llm_provider`, the resolved
+`model` and `llm_ready`.
+
+### Hosted
+
+```bash
+# Anthropic — the best tier on offer: constrained decoding, prompt caching
+QATF_LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI
+QATF_LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+
+# OpenRouter — one key, many models; the cheapest way to A/B two providers
+QATF_LLM_PROVIDER=openrouter
+QATF_LLM_MODEL=anthropic/claude-opus-5
+OPENROUTER_API_KEY=sk-or-...
+
+# Moonshot Kimi, Zhipu GLM
+QATF_LLM_PROVIDER=kimi    MOONSHOT_API_KEY=...
+QATF_LLM_PROVIDER=glm     ZHIPU_API_KEY=...
+```
+
+Reach for `anthropic` rather than `openrouter` when the model is Claude: routing
+Claude through an OpenAI-compatible shim costs schema-constrained output,
+adaptive thinking, and prompt caching of the transcript prefix.
+
+### Local — no key, no per-run cost
+
+```bash
+docker compose --profile ollama up -d
+docker compose exec ollama ollama pull qwen3:14b
+
+# .env
+QATF_LLM_PROVIDER=ollama
+QATF_LLM_MODEL=qwen3:14b
+QATF_LLM_BASE_URL=http://ollama:11434/v1
+```
+
+`QATF_LLM_BASE_URL` is **not optional under Docker**. The preset defaults to
+`http://localhost:11434/v1`, and inside the qatf container `localhost` is qatf.
+
+vLLM in place of Ollama buys real `json_schema`, because it supports guided
+decoding:
+
+```bash
+docker compose --profile vllm up -d
+QATF_LLM_PROVIDER=vllm
+QATF_LLM_BASE_URL=http://vllm:8000/v1
+```
+
+### Handing a container a GPU
+
+Every `deploy:` block in `docker-compose.yaml` ships commented out. Uncomment
+the one under `ollama` or `vllm` for stage 3, or the one under `qatf` for
+faster-whisper. `GET /healthz` reports `cuda_devices` and `transcribe_device`,
+so you can tell whether a job will run on a GPU *before* submitting an hour of
+audio.
+
+### Four things that bite
+
+1. **Blank `QATF_LLM_BASE_URL` when moving off a local server**, or every
+   provider you select afterwards keeps pointing at it.
+2. **Only variables named in the compose `environment:` block reach the
+   container.** `QATF_LLM_MAX_TOKENS`, `QATF_LLM_EFFORT` and `QATF_LLM_TIMEOUT`
+   are not wired through by default — set one in `.env` and nothing happens
+   until you add the line.
+3. **Ollama derives its default context from available VRAM — 4096 tokens on a
+   12 GB card — and truncates a longer prompt silently** rather than erroring.
+   A whole transcript overruns that, and `select.py`'s `fits()` check cannot
+   catch it: `fits` measures against the preset's declared limit, which is the
+   *model's* capacity, not the server's setting. `OLLAMA_CONTEXT_LENGTH` in
+   `docker-compose.yaml` exists for this.
+4. **GLM-4-9B at BF16 needs ~18–19 GB.** The `vllm` profile as shipped will not
+   load on a 12 GB card — use a quantised model, or `ollama`.
 
 ---
 
