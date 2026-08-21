@@ -160,6 +160,47 @@ Worth recording, because it is most of the surface:
 
 ---
 
+## Editable server settings
+
+`PUT /settings` can change the stage-3 provider, model and base URL at runtime.
+Three deliberate limits, and one accepted gap.
+
+**API keys are never stored, returned, or settable.** Presets reference a
+credential by NAME (`key_env="OPENROUTER_API_KEY"`) and read the value from the
+environment. Nothing puts one in `qatf.db` or in a response. `/healthz` reports
+`llm_ready` and `llm_error` without exposing the key, and that stays the only
+signal a caller gets.
+
+**`media_root` and `data_dir` are not in the allowlist.** `media_root` is the
+sandbox for `POST /jobs`; an endpoint that could widen it is an endpoint that
+could switch the sandbox off. The allowlist is enforced on write and again on
+read, so a hand-edited row naming one of them is inert rather than effective.
+
+**`llm_base_url` is allowlisted.** It decides who receives the transcript AND
+the `Authorization: Bearer` header, on an API with no authentication in front of
+it — freely editable it is a one-request credential-exfiltration path.
+`llm.validate_base_url` accepts a preset's own host, or a host resolving
+**entirely** to loopback/private/link-local, or an unresolvable
+**single-label** name (`ollama`, `vllm`) — a service that is not running yet.
+A single label cannot be a public DNS name; an unresolvable dotted name is
+refused because it could start resolving anywhere. Every resolved address must be
+private: a name publishing one private and one public record is refused, not
+accepted on the first hit. Exact host match, never `.endswith`. Userinfo is
+refused, because `https://openrouter.ai@evil/x` resolves to `evil`.
+
+### Accepted gap: DNS rebinding on base_url
+
+The private-address check resolves DNS, so it is **time-of-check/time-of-use**.
+A name that resolves privately when you save it can resolve publicly by the time
+a job runs.
+
+This is accepted rather than solved. Closing it needs the resolved IP pinned
+into the outbound connection, which the `openai` SDK does not expose. What
+bounds it is the credential: a private-range `base_url` means a local model,
+which needs no API key, so a successful rebind exposes the transcript rather
+than the key. Do not read the check as airtight — read it as removing the
+trivial "point it at my server" case.
+
 ## Known gaps
 
 Not defects — decisions, or things that belong at a different layer. Know them

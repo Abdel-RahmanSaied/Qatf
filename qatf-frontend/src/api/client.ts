@@ -1,6 +1,14 @@
 import type {
-  ClipModel, ClipOutput, Health, JobOptions, JobResponse, JobState,
-  TranscriptResponse, WordModel,
+  ClipModel,
+  ClipOutput,
+  Health,
+  JobOptions,
+  JobResponse,
+  JobState,
+  SettingsResponse,
+  SuggestResponse,
+  TranscriptResponse,
+  WordModel,
 } from "./types";
 
 const API_BASE = "/api";
@@ -208,4 +216,51 @@ export async function downloadClip(
     onProgress(loaded, total);
   }
   return new Blob(chunks, { type: res.headers.get("Content-Type") ?? "" });
+}
+
+// ---- server settings ------------------------------------------------------
+
+export function getSettings(): Promise<SettingsResponse> {
+  return request<SettingsResponse>("/settings");
+}
+
+/** Partial update — send ONLY what changed.
+ *
+ * Sending the whole form would revert any field somebody else altered between
+ * the read and the write, which is why the endpoint is partial rather than a
+ * wholesale replace. */
+export function updateSettings(patch: Record<string, unknown>): Promise<SettingsResponse> {
+  return request<SettingsResponse>("/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Drop a saved override so the QATF_* variable takes over again.
+ *
+ * Not the same as saving "": an absent row means "not overridden", an empty
+ * string means "explicitly blank, use the preset default". */
+export function clearSetting(key: string): Promise<SettingsResponse> {
+  return request<SettingsResponse>(`/settings/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Ask the model which words look misheard.
+ *
+ * Read-only: it returns candidates and writes nothing. Applying them is a
+ * normal `putTranscript`, so the server's word-count and timing contract is
+ * enforced in exactly one place either way.
+ *
+ * Synchronous and slow by API standards — seconds to half a minute — because it
+ * is one model call. The caller shows a spinner rather than polling. */
+export function suggestCorrections(
+  id: string, terms: string[],
+): Promise<SuggestResponse> {
+  return request<SuggestResponse>(`/jobs/${id}/transcript/suggest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ terms }),
+  });
 }

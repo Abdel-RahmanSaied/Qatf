@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, detailFrom, downloadClip, getJob, listJobs } from "./client";
+import {
+  ApiError, clearSetting, detailFrom, downloadClip, getJob, getSettings, listJobs,
+  updateSettings,
+} from "./client";
 import type { ClipOutput } from "./types";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -144,5 +147,46 @@ describe("downloadClip", () => {
     const err = await downloadClip(CLIP, () => {}).catch((e: unknown) => e);
     expect((err as ApiError).status).toBe(0);
     expect((err as ApiError).message).toBe("cannot reach the server");
+  });
+});
+
+describe("settings client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends ONLY the changed keys, never the whole form", async () => {
+    const seen: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      seen.push(JSON.parse(String(init.body)));
+      return jsonResponse(200, { items: [] });
+    }));
+    await updateSettings({ llm_model: "anthropic/claude-opus-5" });
+    // A page that must send every field to change one silently reverts a field
+    // somebody else changed between the read and the write.
+    expect(seen[0]).toEqual({ llm_model: "anthropic/claude-opus-5" });
+  });
+
+  it("surfaces the server's 403 for a refused base_url rather than guessing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(403, { detail: "base_url must be a known provider host" })));
+    await expect(updateSettings({ llm_base_url: "https://nope.example.com/v1" }))
+      .rejects.toThrow(ApiError);
+  });
+
+  it("encodes the key when clearing, so a stray slash cannot escape the path", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(url);
+      return jsonResponse(200, { items: [] });
+    }));
+    await clearSetting("llm_model");
+    expect(urls[0]).toContain("/settings/llm_model");
+  });
+
+  it("reads the settings list", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, {
+      items: [{ key: "llm_model", value: "m", source: "saved", restart_required: false }],
+    })));
+    const r = await getSettings();
+    expect(r.items[0].source).toBe("saved");
   });
 });

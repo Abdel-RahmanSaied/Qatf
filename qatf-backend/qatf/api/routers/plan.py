@@ -13,6 +13,8 @@ from ...core.errors import EmptyPlan, NoTranscript
 from ...core.types import Word, clips_from_dicts, clips_to_dicts, words_from_dicts
 from ...jobs import JobState, JobStore
 from ...jobs.worker import baseline_words, caption_words
+from ...llm.presets import resolve_model
+from ...pipeline import enhance
 from ..deps import clip_models, get_store, reject_if_running, require_job, to_response
 from ..openapi import NO_PLAN, NO_TRANSCRIPT, NOT_FOUND, RUNNING, TIMING_LOCKED, merge
 from ..schemas import (
@@ -20,6 +22,9 @@ from ..schemas import (
     JobOptions,
     JobResponse,
     PlanUpdate,
+    SuggestionModel,
+    SuggestRequest,
+    SuggestResponse,
     TranscriptResponse,
     TranscriptUpdate,
 )
@@ -87,6 +92,58 @@ def get_transcript(job_id: str, store: JobStore = Depends(get_store)) -> Transcr
     actually produced.
     """
     return _read(store, require_job(store, job_id))
+
+
+@router.post(
+    "/transcript/suggest",
+    response_model=SuggestResponse,
+    operation_id="suggestCorrections",
+    summary="Ask the model which words look misheard",
+    response_description="Proposed corrections. Nothing is applied — PUT the "
+                         "transcript to accept them.",
+    responses=merge(NOT_FOUND, NO_TRANSCRIPT),
+)
+def suggest_corrections(job_id: str, body: SuggestRequest,
+                        store: JobStore = Depends(get_store)) -> SuggestResponse:
+    """Propose per-word corrections against a list of terms.
+
+    **This endpoint writes nothing.** It returns candidates; you apply them to
+    your copy and submit the whole word list through `PUT /transcript` like any
+    hand edit. So the count-and-timing contract is still enforced in exactly one
+    place, and there is no second write path to keep honest.
+
+    **Synchronous, and the deliberate exception** to this API's "nothing is
+    synchronous" rule. That rule exists for Whisper and ffmpeg, which take
+    minutes; this is one model call over a few thousand tokens. Expect a few
+    seconds to half a minute depending on the configured model.
+
+    **What it may propose is bounded by the server, not by the prompt.** A
+    replacement must be one of `terms` exactly, or the empty string (which
+    blanks the word — that is how a non-word is dropped without changing the
+    count). Anything else is refused, so a model that decides to "improve"
+    ordinary Arabic cannot. It also cannot hear the audio: it is matching text
+    against your vocabulary, not re-transcribing, which is precisely why the
+    scope is drawn this tight.
+
+    `dropped` counts what was refused. A large number is worth reading as a
+    signal — the term list is wrong, or the model is not up to this job."""
+    job = require_job(store, job_id)
+    transcript = store.transcript_for(job)
+    if transcript is None:
+        raise NoTranscript("no transcript yet")
+    # The BASELINE, not the captioned view: a suggestion is keyed by position
+    # and diffed against exactly what `PUT /transcript` will diff against.
+    words, _blanked = baseline_words(transcript, job.options)
+    terms = sorted({*body.terms, *enhance.load_vocab(),
+                    *(job.options.get("hotwords") or "").split()})
+    settings = store.settings_for_job()
+    kept, dropped = enhance.suggest(words, terms, settings=settings)
+    return SuggestResponse(
+        suggestions=[SuggestionModel(**s) for s in enhance.to_dicts(kept)],
+        dropped=len(dropped),
+        terms_used=len(terms),
+        model=resolve_model(settings.llm_provider, settings.llm_model),
+    )
 
 
 @router.put(

@@ -22,12 +22,13 @@ import os
 
 from ..core.errors import ProviderNotConfigured
 from .base import Capabilities, Completion, LLMProvider
+from .base_url import validate_base_url
 from .presets import PRESETS, Preset, describe, resolve, with_overrides
 
 __all__ = [
     "LLMProvider", "Capabilities", "Completion",
     "Preset", "PRESETS", "resolve", "describe", "with_overrides",
-    "build_provider", "provider_from_settings",
+    "build_provider", "provider_from_settings", "validate_base_url",
 ]
 
 

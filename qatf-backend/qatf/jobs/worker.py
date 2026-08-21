@@ -265,8 +265,11 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
                  device=transcript.device)
 
     store.checkpoint(job_id)
-    # the store's settings, not the process-wide ones — see JobStore.__init__
-    settings = store.settings
+    # Per JOB, not per store — see JobStore.settings_for_job. Still not the
+    # process-wide ones (see JobStore.__init__), and now also a snapshot: a
+    # settings change made while this job is selecting must not reach it, or
+    # the record would report a provider the run did not use.
+    settings = store.settings_for_job()
     model = resolve_model(settings.llm_provider, settings.llm_model)
     store.update(job_id, state=JobState.selecting.value,
                  message=f"[3/5] asking {settings.llm_provider}:{model} "

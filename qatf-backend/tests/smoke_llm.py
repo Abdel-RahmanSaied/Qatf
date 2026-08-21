@@ -210,4 +210,45 @@ check("normal transcript fits", small.fits("x" * 100, 100))
 check("unknown context window never blocks",
       OpenAICompatProvider("x", Capabilities()).fits("x" * 10_000_000, 16000))
 
+
+section("base_url is an outbound-request boundary")
+from qatf.core.errors import InvalidBaseURL  # noqa: E402
+from qatf.llm import validate_base_url  # noqa: E402
+
+check("a preset's own host is accepted",
+      validate_base_url("https://openrouter.ai/api/v1")
+      == "https://openrouter.ai/api/v1")
+check("loopback is accepted", bool(validate_base_url("http://127.0.0.1:11434/v1")))
+check("a private address is accepted", bool(validate_base_url("http://10.1.2.3:8000/v1")))
+raises("a public host off the preset list is refused", InvalidBaseURL,
+       validate_base_url, "https://evil.example.com/v1")
+# EXACT match, never endswith — this is precisely how a suffix check is bypassed.
+raises("a lookalike suffix is refused", InvalidBaseURL,
+       validate_base_url, "https://openrouter.ai.evil.example.com/v1")
+raises("userinfo is refused — it decides the real host", InvalidBaseURL,
+       validate_base_url, "https://openrouter.ai@evil.example.com/v1")
+raises("a non-http scheme is refused", InvalidBaseURL,
+       validate_base_url, "file:///etc/passwd")
+# Found by live verification, not by this suite: `ollama` had been stopped for
+# 30 hours, so the name did not resolve, so "every address must be private" was
+# vacuously false and the URL was refused. Logically consistent and completely
+# wrong in practice — you cannot configure a service's URL before you start it,
+# and bringing it up is exactly when you would want to.
+#
+# A SINGLE-LABEL hostname is the discriminator. `ollama` and `vllm` are container
+# service names; a public host always has a dot. So an unresolvable single-label
+# name is accepted as internal-not-yet-running, while an unresolvable DOTTED name
+# is still refused — that one could start resolving anywhere.
+check("an unresolvable single-label host is accepted — the service may be down",
+      bool(validate_base_url("http://ollama:11434/v1")))
+check("and so is another one", bool(validate_base_url("http://vllm:8000/v1")))
+raises("but an unresolvable DOTTED host is still refused", InvalidBaseURL,
+       validate_base_url, "https://not-a-real-host-xyz.example.com/v1")
+
+try:
+    validate_base_url("https://evil.example.com/v1")
+except InvalidBaseURL as exc:
+    check("the refusal does not echo the rejected url back",
+          "evil.example.com" not in str(exc), str(exc))
+
 raise SystemExit(report())

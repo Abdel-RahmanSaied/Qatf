@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -93,6 +93,51 @@ class Settings:
     @property
     def max_upload_mb(self) -> int:
         return self.max_upload_bytes // 1024 // 1024
+
+
+#: The settings a running server may change. Everything else is env-only.
+#:
+#: `media_root` and `data_dir` are absent on purpose. `media_root` is a security
+#: boundary — without it a `POST /jobs` naming `../../etc/passwd` transcribes any
+#: file the process can read — so an endpoint that can widen it is an endpoint
+#: that can switch the sandbox off. `host`, `port` and `reload` are meaningless
+#: once the process is up. No `*_API_KEY` appears here or anywhere on the wire:
+#: presets name a credential and read it from the environment.
+EDITABLE = frozenset({
+    "llm_provider", "llm_model", "llm_base_url", "llm_effort",
+    "llm_max_tokens", "llm_timeout", "workers",
+})
+
+
+def effective_settings(overrides: Mapping[str, object],
+                       env: Mapping[str, str] | None = None) -> Settings:
+    """`Settings` with saved overrides layered over the environment.
+
+    PRECEDENCE INVERTS HERE, and only for `EDITABLE` keys:
+
+        1. a saved override        <- the settings endpoint writes these
+        2. QATF_* in the environment
+        3. the dataclass default
+
+    That is the opposite of `dotenv.py`, where the real environment always wins,
+    and the difference is deliberate rather than an oversight.
+    `docker-compose.yaml` sets `QATF_LLM_PROVIDER: "${QATF_LLM_PROVIDER:-anthropic}"`,
+    so the variable is ALWAYS present in the container whether or not the
+    operator set one. If the environment kept winning, a saved value could never
+    take effect under Docker — the only deployment — and the feature would look
+    broken rather than opinionated. `dotenv.py` itself is unchanged; a layer now
+    sits above the environment for seven named keys.
+
+    Takes the overrides as an ARGUMENT rather than opening the database: `core`
+    may not import a store, it keeps every settings read from being a file read,
+    and it makes the whole precedence rule testable against a dict with no temp
+    directory and no migration.
+
+    Returns a NEW frozen object. Nothing here mutates anything, which is what
+    lets a job hold its own snapshot while a save happens underneath it."""
+    base = Settings.from_env(env)
+    clean = {k: v for k, v in overrides.items() if k in EDITABLE and v is not None}
+    return replace(base, **clean) if clean else base
 
 
 @lru_cache(maxsize=1)

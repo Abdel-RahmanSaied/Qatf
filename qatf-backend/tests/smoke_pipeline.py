@@ -21,7 +21,8 @@ from pathlib import Path
 from _harness import check, raises, report, section
 
 from qatf import pipeline
-from qatf.core import utils
+from qatf.core import config, utils
+from qatf.core.config import Settings
 from qatf.core.constants import CAPTION_MAX_CHARS, DEFAULT_FONT, TARGET_H, TARGET_W
 from qatf.core.errors import (
     CaptionLanguageInvalid,
@@ -1864,5 +1865,102 @@ for _name in ("LICENSE", "NOTICE"):
     check(f"qatf-backend/{_name} is byte-identical to the repo root's",
           _local.read_bytes() == _root.read_bytes(),
           f"{_name} has drifted — copy the root file over it")
+
+section("settings precedence — saved over env over default")
+_env = {"QATF_LLM_PROVIDER": "ollama", "QATF_LLM_MODEL": "qwen3:14b"}
+check("environment seeds when nothing is saved",
+      config.effective_settings({}, _env).llm_provider == "ollama")
+check("a saved value beats the environment",
+      config.effective_settings({"llm_provider": "openrouter"}, _env).llm_provider
+      == "openrouter")
+check("an unsaved key still falls through to the environment",
+      config.effective_settings({"llm_provider": "openrouter"}, _env).llm_model
+      == "qwen3:14b")
+check("with neither, the dataclass default stands",
+      config.effective_settings({}, {}).llm_provider == "anthropic")
+# The table is a file someone can edit. The allowlist has to hold on the way
+# OUT, not only when a request comes in.
+check("a row for a non-editable key is ignored on read",
+      config.effective_settings({"media_root": "/etc"}, {}).media_root
+      == Settings.from_env({}).media_root,
+      str(config.effective_settings({"media_root": "/etc"}, {}).media_root))
+check("numbers survive the round trip as numbers",
+      config.effective_settings({"workers": 3, "llm_timeout": 30.0}, {}).workers == 3)
+check("the editable set is exactly the seven the design names",
+      frozenset({
+          "llm_provider", "llm_model", "llm_base_url", "llm_effort",
+          "llm_max_tokens", "llm_timeout", "workers"}) == config.EDITABLE,
+      str(sorted(config.EDITABLE)))
+check("effective_settings returns a new object rather than mutating one",
+      config.effective_settings({}, {}) is not config.effective_settings({}, {}))
+
+
+section("transcript enhancement — the scope is a SERVER rule")
+from qatf.pipeline import enhance  # noqa: E402
+
+_ew = [Word("بايسون", 0.0, 0.5), Word("من", 1.0, 1.5), Word("اا", 2.0, 2.2)]
+_terms = ["بايثون", "فلاتر"]
+
+
+def _sg(index, was, text):
+    return enhance.Suggestion(index=index, was=was, text=text, why="w")
+
+
+_kept, _why = enhance.validate([_sg(0, "بايسون", "بايثون")], _ew, _terms)
+check("a near-miss of a listed term is kept", len(_kept) == 1, str(_why))
+_kept, _why = enhance.validate([_sg(2, "اا", "")], _ew, _terms)
+check("a blank replacement is kept — that is how a filler is dropped",
+      len(_kept) == 1, str(_why))
+
+# The prompt ASKS the model to leave ordinary words alone; this ENFORCES it.
+# من -> مين is the case CLAUDE.md calls unfixable by rule, and no amount of
+# model confidence should get it through.
+_kept, _why = enhance.validate([_sg(1, "من", "مين")], _ew, _terms)
+check("an out-of-vocabulary replacement is refused however plausible",
+      _kept == [] and "out of scope" in _why[0], str(_why))
+
+# The guard against the failure mode measured on this project today: models
+# copying labels rather than computing from them produces a WRONG INDEX.
+_kept, _why = enhance.validate([_sg(1, "بايسون", "بايثون")], _ew, _terms)
+check("a miscounted index is discarded, not applied to an unrelated word",
+      _kept == [] and "miscounted" in _why[0], str(_why))
+_kept, _why = enhance.validate([_sg(99, "بايسون", "بايثون")], _ew, _terms)
+check("an index past the end is discarded",
+      _kept == [] and "out of range" in _why[0], str(_why))
+_kept, _why = enhance.validate([_sg(0, "بايسون", "بايسون")], _ew, _terms)
+check("a no-op is discarded", _kept == [] and "no-op" in _why[0], str(_why))
+
+# MEASURED, and it is why deletion is gated. Against the real 511-word Arabic
+# transcript, qwen3-235b proposed deleting `لك` ("for you") — an ordinary word
+# used SIX times. The scope rule bounded replacements to listed terms and left
+# "" unconstrained, so a delete could take any word at all.
+#
+# A decoder artefact is by its nature a one-off; a real word recurs. Refusing to
+# delete a token that appears more than once removes the whole "deleted a common
+# word" class. It does not make deletion safe — a real word used once can still
+# go — which is why the pass is reviewed rather than applied.
+_rep = [Word("اا", 0.0, 0.2), Word("لك", 1.0, 1.2), Word("لك", 2.0, 2.2),
+        Word("لك", 3.0, 3.2)]
+_kept, _why = enhance.validate([_sg(0, "اا", "")], _rep, _terms)
+check("a one-off token may be deleted", len(_kept) == 1, str(_why))
+_kept, _why = enhance.validate([_sg(1, "لك", "")], _rep, _terms)
+check("a token used more than once may NOT be deleted — it is a real word",
+      _kept == [] and "occurs" in _why[0], str(_why))
+
+check("build_prompt numbers the words and skips blanks",
+      ("0" + chr(9) + "بايسون") in enhance.build_prompt(_ew, _terms)
+      and (chr(9) + chr(10)) not in enhance.build_prompt(
+          [Word("a", 0, 1), Word("", 1, 2)], _terms))
+check("a missing vocab file is an empty list, not an error",
+      enhance.load_vocab(Path("no-such-file-xyz.txt")) == [])
+check("the shipped vocab file is found and non-empty",
+      len(enhance.load_vocab()) > 10, str(len(enhance.load_vocab())))
+
+_parsed = enhance.parse_suggestions(
+    '{"suggestions": [{"index": 3, "was": "x", "text": "y", "why": "z"}]}')
+check("suggestions parse from the wrapper shape",
+      _parsed[0].index == 3 and _parsed[0].text == "y")
+raises("prose instead of JSON is refused", ModelResponseError,
+       enhance.parse_suggestions, "sure, here you go")
 
 raise SystemExit(report())
