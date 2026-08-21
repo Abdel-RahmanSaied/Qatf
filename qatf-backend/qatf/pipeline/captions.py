@@ -23,7 +23,13 @@ import functools
 import subprocess
 from pathlib import Path
 
-from ..core.constants import CAPTION_MAX_CHARS, CAPTION_MAX_WORDS, TARGET_H, TARGET_W
+from ..core.constants import (
+    CAPTION_MAX_CHARS,
+    CAPTION_MAX_WORDS,
+    DEFAULT_FONT,
+    TARGET_H,
+    TARGET_W,
+)
 from ..core.types import Clip, Word
 from ..core.utils import ts_ass
 from .cuts import words_in
@@ -39,7 +45,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Pop,{{FONT}},82,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,7,3,2,90,90,300,1
+Style: Pop,{{FONT}},{{SIZE}},&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,{{OUTLINE}},3,2,90,90,300,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -49,14 +55,35 @@ HILITE = r"{\c&H00E0FF&}"   # ASS colour is BGR, not RGB -> this is yellow
 RESET = r"{\c&HFFFFFF&}"
 
 MIN_CUE = 0.08
+#: how long the last word of a caption line is held after it finishes.
+#:
+#: ALWAYS CLAMPED against the next line's start — see `build_ass`. Unclamped it
+#: put two `Dialogue:` events on screen at once on essentially every hand-off
+#: (measured: 34 of 34 consecutive pairs in one real clip, 100%), and libass
+#: STACKS simultaneous events, so for ~3 frames the viewer saw the upcoming
+#: caption sitting above the one still showing. The .ass file reads as perfectly
+#: correct either way, which is why this survived so long.
 LAST_WORD_HOLD = 0.12
+
+#: Caption type, sized against how short-form editors actually set captions:
+#: bold sans, 55-75pt at 1080x1920, 3-4px stroke. This used to be 82/7.
+#:
+#: 82px was legible but forced `CAPTION_MAX_CHARS` down to 22 — half the 32-42
+#: that reads comfortably — so lines turned over about twice as often as they
+#: needed to (35 cues in a 46s clip, roughly one every 1.3s). And a 7px stroke
+#: is heavy for Arabic specifically: Naskh and the sans Arabic faces have finer
+#: connected strokes than Latin, and the outline thickens the joins until
+#: letterforms bleed into one another.
+FONT_SIZE = 64
+OUTLINE = 4
 
 
 def group_words(words: list[Word], max_words: int = CAPTION_MAX_WORDS,
                 max_chars: int = CAPTION_MAX_CHARS) -> list[list[Word]]:
     """Chunk into caption lines by BOTH word count and character budget.
     Word count alone overflows the frame on long words — 4 x 12-char words at
-    82px is wider than 1080px."""
+    the old 82px was wider than 1080px, which is what the character budget is
+    for. `CAPTION_MAX_CHARS` tracks `FONT_SIZE`; see the note on it."""
     out: list[list[Word]] = []
     cur: list[Word] = []
     for w in words:
@@ -109,7 +136,7 @@ def safe_font(name: str) -> str:
     the same treatment as caption text."""
     cleaned = " ".join(name.translate(_STRUCTURAL).replace(",", " ").split())
     cleaned = cleaned.replace("{", "(").replace("}", ")")
-    return cleaned[:64] or "Arial"
+    return cleaned[:64] or DEFAULT_FONT
 
 
 #: Seconds to wait for fontconfig. A host with thousands of fonts takes a moment
@@ -214,8 +241,26 @@ def is_rtl(text: str) -> bool:
     return any(any(lo <= ord(ch) <= hi for lo, hi in _RTL_RANGES) for ch in text)
 
 
+def _clamp(start: float, end: float, next_start: float | None) -> float:
+    """A cue end that cannot reach into the next cue.
+
+    Order matters. MIN_CUE runs first so a degenerate line still gets a visible
+    duration, and the ceiling runs LAST so that duration can never be bought by
+    overlapping the next line — libass draws simultaneous events stacked, and a
+    caption appearing above the previous one is far worse than a short cue.
+
+    `next_start` is always greater than `start` in practice: chunks are built
+    from ordered words and each chunk opens on a later word than the one before,
+    so clamping cannot invert the cue."""
+    if end <= start:
+        end = start + MIN_CUE
+    if next_start is not None:
+        end = min(end, next_start)
+    return end
+
+
 def build_ass(clip: Clip, words: list[Word], path: Path,
-              per_line: int = CAPTION_MAX_WORDS, font: str = "Arial",
+              per_line: int = CAPTION_MAX_WORDS, font: str = DEFAULT_FONT,
               highlight: bool | None = None) -> Path:
     """Captions timed relative to the clip start.
 
@@ -226,11 +271,18 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
     correctly — see the module docstring. Pass True to force it on RTL anyway;
     the line will be scrambled, and the only reason to do that is to re-measure
     the bug."""
-    lines = [ASS_HEADER.replace("{FONT}", safe_font(font))]
+    lines = [ASS_HEADER.replace("{FONT}", safe_font(font))
+                        .replace("{SIZE}", str(FONT_SIZE))
+                        .replace("{OUTLINE}", str(OUTLINE))]
 
-    for chunk in group_words(words_in(clip, words), max_words=per_line):
+    chunks = group_words(words_in(clip, words), max_words=per_line)
+    for i, chunk in enumerate(chunks):
         tokens = [escape(w.text) for w in chunk]
         want = highlight if highlight is not None else not is_rtl(" ".join(tokens))
+        # Where the NEXT caption line begins, so this one can be clamped off it.
+        # None on the last line, which has nothing to collide with.
+        next_start = (chunks[i + 1][0].start - clip.start
+                      if i + 1 < len(chunks) else None)
 
         if not want:
             # One cue for the whole line. Nothing splits the run, so libass
@@ -238,9 +290,8 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
             # survives. The trade is that the caption no longer tracks the
             # individual word — it appears and clears with the line.
             start = chunk[0].start - clip.start
-            end = chunk[-1].end - clip.start + LAST_WORD_HOLD
-            if end <= start:
-                end = start + MIN_CUE
+            end = _clamp(start, chunk[-1].end - clip.start + LAST_WORD_HOLD,
+                         next_start)
             lines.append(f"Dialogue: 0,{ts_ass(start)},{ts_ass(end)},Pop,,0,0,0,,"
                          + " ".join(tokens))
             continue
@@ -251,13 +302,15 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
             text = " ".join(parts)
 
             start = active.start - clip.start
-            # hold the last word of a group until the next word actually starts
+            # Inside a chunk the hold is already the next word's start, so only
+            # the LAST word can spill into the next line — but it is the same
+            # clamp either way, and routing both through one call means a future
+            # edit cannot fix one path and forget the other.
             if idx + 1 < len(chunk):
-                end = chunk[idx + 1].start - clip.start
+                end = _clamp(start, chunk[idx + 1].start - clip.start, next_start)
             else:
-                end = active.end - clip.start + LAST_WORD_HOLD
-            if end <= start:
-                end = start + MIN_CUE
+                end = _clamp(start, active.end - clip.start + LAST_WORD_HOLD,
+                             next_start)
             lines.append(f"Dialogue: 0,{ts_ass(start)},{ts_ass(end)},Pop,,0,0,0,,{text}")
 
     path.parent.mkdir(parents=True, exist_ok=True)

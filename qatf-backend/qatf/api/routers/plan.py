@@ -13,7 +13,7 @@ from ...core.errors import EmptyPlan, NoTranscript
 from ...core.types import Word, clips_from_dicts, clips_to_dicts, words_from_dicts
 from ...jobs import JobState, JobStore
 from ...jobs.worker import baseline_words, caption_words
-from ..deps import get_store, reject_if_running, require_job, to_response
+from ..deps import clip_models, get_store, reject_if_running, require_job, to_response
 from ..openapi import NO_PLAN, NO_TRANSCRIPT, NOT_FOUND, RUNNING, TIMING_LOCKED, merge
 from ..schemas import (
     ClipModel,
@@ -175,7 +175,7 @@ def get_plan(job_id: str, store: JobStore = Depends(get_store)) -> list[ClipMode
     job = require_job(store, job_id)
     if not job.clips:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no plan yet")
-    return [ClipModel(**c) for c in job.clips]
+    return clip_models(job.clips, job.options)
 
 
 @router.put(
@@ -220,7 +220,9 @@ def put_plan(job_id: str, body: PlanUpdate,
     updated = store.update(job_id, clips=clips_to_dicts(clips),
                            state=JobState.planned.value, error=None,
                            message="plan replaced — POST /render to encode")
-    return [ClipModel(**c) for c in updated.clips]
+    # Re-labelled against the job's range, not echoed back: a caller who typed
+    # a 20s clip should see it come back marked `short` rather than unmarked.
+    return clip_models(updated.clips, updated.options)
 
 
 @router.post(

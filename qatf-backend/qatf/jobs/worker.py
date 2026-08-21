@@ -11,6 +11,8 @@ already in flight.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +26,20 @@ from .model import JobState
 
 if TYPE_CHECKING:
     from .store import JobStore
+
+
+def out_of_range_note(clips: list[Clip], opts: dict) -> str:
+    """The clause appended to a job message when part of the plan misses the
+    requested range. Empty when it does not, so the common path reads unchanged.
+
+    Says "kept" out loud. These clips ARE in the plan and WILL be rendered — the
+    note exists so that is a decision the operator saw, not a surprise."""
+    n = sum(1 for c in clips
+            if pipeline.classify_duration(c, opts["min_len"], opts["max_len"]))
+    if not n:
+        return ""
+    return (f" — {n} of {len(clips)} outside "
+            f"{opts['min_len']}-{opts['max_len']}s, kept and flagged")
 
 
 def baseline_words(transcript, opts: dict) -> tuple[list[Word], int]:
@@ -78,6 +94,45 @@ def caption_words(transcript, opts: dict, work: Path | None = None,
     return words, blanked, applied, len(stale)
 
 
+#: how often stage 0 writes a progress reading to the job record.
+#:
+#: yt-dlp calls its hook per chunk — hundreds of times a second on a fast link —
+#: and every `store.update` is a SQLite transaction. Unthrottled, a job would
+#: spend more time persisting how the download is going than downloading. One
+#: second sits well inside any sane client poll interval, so nothing a user
+#: could see is lost by coalescing.
+FETCH_PROGRESS_SECONDS = 1.0
+
+
+def fetch_reporter(
+    store: JobStore, job_id: str,
+) -> Callable[[pipeline.fetch.FetchProgress], None]:
+    """A throttled `on_progress` callback for stage 0.
+
+    Built here rather than in `pipeline/fetch.py` because it is the half that
+    knows about a store, and the layer arrows say `pipeline` may not. `fetch`
+    is handed a plain callable and stays ignorant of jobs entirely."""
+    last = 0.0
+
+    def report(reading: pipeline.fetch.FetchProgress) -> None:
+        nonlocal last
+        moment = time.monotonic()
+        # A closing reading is never throttled. The last `downloading` event
+        # before a file completes is precisely the one this throttle would drop,
+        # and the record would then claim a finished download was still partway
+        # through — a wrong number that looks authoritative.
+        if not reading.final and moment - last < FETCH_PROGRESS_SECONDS:
+            return
+        last = moment
+        store.update(job_id, fetch_progress={
+            "downloaded_bytes": reading.downloaded_bytes,
+            "total_bytes": reading.total_bytes,
+            "file_index": reading.file_index,
+        })
+
+    return report
+
+
 def fetch_source(store: JobStore, job_id: str, job) -> object | None:
     """Stage 0. Returns what was fetched, or None for a job that needs no fetch.
 
@@ -96,6 +151,7 @@ def fetch_source(store: JobStore, job_id: str, job) -> object | None:
         job.url, job.source_dir(store.root),
         language=job.options.get("language"),
         want_captions=want_captions,
+        on_progress=fetch_reporter(store, job_id),
     )
     store.update(job_id, video=str(fetched.video))
     log(f"stage 0: fetched {fetched.title!r} ({fetched.duration}s)")
@@ -224,11 +280,14 @@ def run_pipeline(store: JobStore, job_id: str) -> None:
                                 model=model, settings=settings,
                                 timing_source=transcript.timing_source)
     store.update(job_id, clips=clips_to_dicts(clips),
-                 message="[4/5] snapped cuts to word boundaries")
+                 message="[4/5] snapped cuts to word boundaries"
+                         + out_of_range_note(clips, opts))
 
     if not clips:
+        # Reachable only when stage 3 itself returned nothing. Length no longer
+        # empties a plan, so this now means what it says.
         store.update(job_id, state=JobState.planned.value,
-                     message="no clips survived the duration filter")
+                     message="stage 3 returned no clips")
         return
 
     if not opts.get("auto_render", True):
@@ -334,4 +393,6 @@ def render_plan(store: JobStore, job_id: str,
     )
 
     store.checkpoint(job_id)
-    store.update(job_id, state=JobState.done.value, message=f"done. {len(done)} clips")
+    store.update(job_id, state=JobState.done.value,
+                 message=f"done. {len(done)} clips"
+                         + out_of_range_note(clips, opts))

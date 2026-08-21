@@ -11,8 +11,35 @@ from fastapi import HTTPException, Request, status
 
 from ..core.config import Settings
 from ..core.errors import SourceNotFound, SourceOutsideMediaRoot
+from ..core.types import clips_from_dicts
 from ..jobs import RUNNING_STATES, Job, JobState, JobStore
-from .schemas import ClipModel, ClipOutput, JobOptions, JobResponse
+from ..pipeline import classify_duration
+from .schemas import (
+    ClipModel,
+    ClipOutput,
+    FetchProgressModel,
+    JobOptions,
+    JobResponse,
+)
+
+
+def clip_models(clips: list[dict], options: dict) -> list[ClipModel]:
+    """Wire clips, each labelled against the job's requested duration range.
+
+    Derived on read, never stored. The label is a pure function of the clip and
+    the job's `min_len`/`max_len`, so persisting it would create a second copy
+    that a plan edit could leave stale — and a clip wrongly marked `short` is
+    worse than no mark at all, because the operator would stop trusting the one
+    that is right. Any `out_of_range` a caller submitted is discarded here for
+    the same reason: the server owns this label.""" 
+    lo = options.get("min_len", 0)
+    hi = options.get("max_len", 10 ** 6)
+    models = []
+    for raw, clip in zip(clips, clips_from_dicts(clips), strict=True):
+        body = {k: v for k, v in raw.items() if k != "out_of_range"}
+        models.append(ClipModel(**body,
+                                out_of_range=classify_duration(clip, lo, hi) or None))
+    return models
 
 
 def get_store(request: Request) -> JobStore:
@@ -99,6 +126,8 @@ def to_response(store: JobStore, job: Job) -> JobResponse:
         device=job.device,
         word_count=job.word_count,
         transcript_cached=job.transcript_cached,
-        clips=[ClipModel(**c) for c in job.clips],
+        clips=clip_models(job.clips, job.options),
         outputs=outputs,
+        fetch_progress=(FetchProgressModel(**job.fetch_progress)
+                        if job.fetch_progress else None),
     )

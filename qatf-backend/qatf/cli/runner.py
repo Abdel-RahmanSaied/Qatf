@@ -205,22 +205,27 @@ def run(args: argparse.Namespace) -> int:
         log(f"[3/5] asking "
             f"{resolve_model(settings.llm_provider, settings.llm_model)} "
             f"for {args.clips} clips")
-        clips = pipeline.plan_clips(words, args.clips, args.min_len, args.max_len,
-                                    timing_source=transcript.timing_source)
+        clips = pipeline.plan_clips(
+            words, args.clips, args.min_len, args.max_len,
+            timing_source=transcript.timing_source)
         log("[4/5] snapped cuts to word boundaries")
 
     plan_path.write_text(json.dumps(clips_to_dicts(clips), indent=2, ensure_ascii=False),
                          encoding="utf-8")
     for c in clips:
+        # The flag rides along with the listing rather than in a separate block,
+        # because the operator is reading this line to decide about this clip.
+        flag = pipeline.classify_duration(c, args.min_len, args.max_len)
         log(f"      {ts_human(c.start)}-{ts_human(c.end)} "
-            f"({c.duration:4.1f}s, {c.score:.2f})  {c.title}")
+            f"({c.duration:4.1f}s, {c.score:.2f})  {c.title}"
+            f"{'  [' + flag.upper() + ']' if flag else ''}")
 
     if args.plan_only:
         log(f"\nplan written to {plan_path} — review, edit, then rerun with "
             f"--plan {plan_path}")
         return 0
     if not clips:
-        log("no clips survived the duration filter")
+        log("stage 3 returned no clips")
         return 1
 
     size = pipeline.encode.parse_resolution(args.resolution)

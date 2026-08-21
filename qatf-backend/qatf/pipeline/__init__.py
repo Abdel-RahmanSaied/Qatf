@@ -54,7 +54,7 @@ from .asr import (
 )
 from .audio import DENOISE_FILTER, audio_path, extract_audio
 from .captions import build_ass, font_available, font_warning, group_words
-from .cuts import snap, tail_for, within_duration, words_in
+from .cuts import classify_duration, report_durations, snap, tail_for, words_in
 from .detect import detections_for
 from .encode import REFRAME_MODES, clip_stem, filtergraph, render, render_all
 from .fetch import Fetched, is_url, validate_url
@@ -69,7 +69,8 @@ __all__ = [
     "read_cache", "write_cache",
     "DEVICES", "resolve_device", "cuda_device_count", "compute_type_for",
     "pick_clips", "build_transcript_blocks", "parse_response",
-    "snap", "words_in", "within_duration", "plan_clips", "tail_for",
+    "snap", "words_in", "classify_duration", "report_durations", "plan_clips",
+    "tail_for",
     "fetch", "subs", "Fetched", "validate_url", "is_url",
     "has_word_timings", "to_transcript",
     "build_ass", "group_words", "font_available", "font_warning",
@@ -82,8 +83,13 @@ __all__ = [
 def plan_clips(words: list[Word], n: int, lo: int, hi: int,
                model: str | None = None, settings=None,
                timing_source: str | None = None) -> list[Clip]:
-    """Stages 3 and 4 together: propose, then snap, then drop what the snap
-    pushed out of range.
+    """Stages 3 and 4 together: propose, then snap. Returns the WHOLE plan.
+
+    Nothing is dropped for length any more. `cuts.report_durations` logs the
+    clips that missed the requested range and they stay in the plan, flagged,
+    for the operator to judge — see `cuts.classify_duration` for why that
+    reversed. A four-second miss is not worth discarding a clip nobody has
+    looked at.
 
     Deliberately goes through the modules rather than the re-exported names, so
     a test that patches `pipeline.select.pick_clips` is actually honoured.
@@ -99,7 +105,8 @@ def plan_clips(words: list[Word], n: int, lo: int, hi: int,
     clips = select.pick_clips(words, n, lo, hi, model=model, settings=settings)
     tail = cuts.tail_for(timing_source)
     clips = [cuts.snap(c, words, tail=tail) for c in clips]
-    return cuts.within_duration(clips, lo, hi)
+    cuts.report_durations(clips, lo, hi)
+    return clips
 
 
 def track_clips(video, clips: list[Clip], work, src: tuple[int, int], *,

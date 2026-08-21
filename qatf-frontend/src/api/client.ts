@@ -149,3 +149,63 @@ export function renderJob(id: string): Promise<JobResponse> {
 export function clipUrl(output: ClipOutput): string {
   return API_BASE + output.url;
 }
+
+/** Stream a clip into memory, reporting bytes as they land.
+ *
+ * The mirror of `uploadJob`, and it needs the OPPOSITE mechanism. That function
+ * drops to XHR because fetch has no upload-progress events; fetch does expose
+ * the download side, as a ReadableStream on `res.body`, so there is no reason
+ * to reach for XHR here.
+ *
+ * `total` is null when nothing knows the size, and callers must then render
+ * bytes WITHOUT a percentage rather than invent a denominator — the same rule
+ * the harvest strip follows in refusing to assume a source duration. A bar that
+ * guesses its own total is the UI lying about the one thing it exists to report.
+ *
+ * The whole clip is buffered before it is handed back. A clip is bounded by
+ * `--max-len`, so this is tens of MB; the streaming alternative
+ * (`showSaveFilePicker`) is Chromium-only and not worth the split path.
+ */
+export async function downloadClip(
+  output: ClipOutput,
+  onProgress: (loaded: number, total: number | null) => void,
+): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(clipUrl(output));
+  } catch {
+    throw new ApiError(0, "cannot reach the server");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null; // non-JSON body (proxy error page); fall back to status
+    }
+    throw new ApiError(res.status, detailFrom(body, `HTTP ${res.status}`));
+  }
+
+  // Content-Length is what is actually coming over THIS wire, so it wins over
+  // the recorded size, which was read when the job record was last fetched.
+  // `.get` returns null when absent and Number(null) is 0, so both fall through.
+  const declared = Number(res.headers.get("Content-Length"));
+  const total = declared > 0 ? declared
+    : output.size_bytes > 0 ? output.size_bytes
+    : null;
+
+  const reader = res.body?.getReader();
+  if (!reader) return res.blob(); // no stream to meter; the file still arrives
+
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    onProgress(loaded, total);
+  }
+  return new Blob(chunks, { type: res.headers.get("Content-Type") ?? "" });
+}

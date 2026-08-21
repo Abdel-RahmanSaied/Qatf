@@ -15,8 +15,35 @@ BLOCK_SECONDS = 12.0
 
 # Caption budget. Both limits are enforced; word count alone overflows the frame
 # on long words (4 x 12-char words at 82px is wider than 1080px).
-CAPTION_MAX_WORDS = 4
-CAPTION_MAX_CHARS = 22
+#: Default caption typeface.
+#:
+#: A product decision, so it lives here and NOT as a literal in each caller —
+#: it was written in six places (both front ends, `build_ass`, `encode.render`,
+#: `safe_font`'s fallback and the web UI) and changing four of them left the
+#: other two rendering Arial, which is the exact drift a shared constant exists
+#: to stop. The web UI keeps its own copy because it cannot import Python; that
+#: one is a declared mirror.
+#:
+#: Noto Sans Arabic rather than Arial: it is present in the render image
+#: (`fc-match` resolves it exactly, no fallback) and carries Latin as well as
+#: Arabic, so one default serves both scripts. Arial has no Arabic coverage, so
+#: it reached libass and came back as whatever fontconfig chose — silently.
+DEFAULT_FONT = "Noto Sans Arabic"
+
+#: Caption line budget. Both are enforced — word count alone overflows the frame
+#: on long words.
+#:
+#: The character budget is a FUNCTION OF THE FONT SIZE and has to move with it.
+#: Usable width is 1080 minus the two 90px margins = 900px; average advance is
+#: roughly half the em, so 82px fitted ~22 characters and 64px fits ~28. When
+#: `captions.FONT_SIZE` changes, recompute this or lines will either overflow
+#: the frame or waste half of it.
+#:
+#: Wider lines are also calmer lines: at 22 characters a real clip turned over
+#: 35 caption lines in 46 seconds, about one every 1.3s. Short-form editors
+#: settle around 32-42 characters for that reason.
+CAPTION_MAX_WORDS = 5
+CAPTION_MAX_CHARS = 28
 
 # How far outside the chosen word boundary a cut opens and closes.
 SNAP_LEAD = 0.15

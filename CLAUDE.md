@@ -132,11 +132,24 @@ qatf talk.mov -o reels/ --language ar --clips 8 --min-len 28 --max-len 52 \
 model picks them, so it routinely adds a few seconds. Ask for 60 and some clips
 land at 63, which YouTube Shorts rejects. Reels and TikTok allow longer.
 
-`within_duration` allows `DURATION_SLACK` (2s) either side, absolute rather than
-proportional — the old `hi * 1.4` admitted 72.8s for `--max-len 52`, which
+`classify_duration` allows `DURATION_SLACK` (2s) either side, absolute rather
+than proportional — the old `hi * 1.4` admitted 72.8s for `--max-len 52`, which
 defeats the whole point of passing 52. Anything further out is the model
-overrunning its instruction, and it is dropped **and logged**: a plan silently
-returning 7 clips for `--clips 8` reads as the model finding nothing.
+overrunning its instruction, and it is **flagged and logged, never dropped**.
+
+That last part reversed on 2026-08-20, and the reason is worth keeping. The
+function used to be `within_duration` and it DELETED out-of-range clips. Sound
+in principle; on a real transcript stage 3 kept proposing 24s clips against a
+`min_len` of 30 — six of eight on the run that settled it — and every one was a
+publishable 24-second short, discarded unseen for missing a number by four
+seconds. Refusing to render a clip is a bigger decision than the flag that
+produced it, so the flag now travels on the clip (`ClipModel.out_of_range`:
+`short` | `long` | `null`) and the operator decides.
+
+Consequence: a plan can now contain clips outside the range that was asked for,
+and `len(clips)` is no longer evidence that they are all usable. Read
+`out_of_range` before publishing. The label is derived on read from the clip and
+the job's options — never stored, so a plan edit cannot leave it stale.
 
 ```bash
 
@@ -402,6 +415,32 @@ a fixture with no yt-dlp and no network — same split as `select.parse_response
 Rolling `aAppend` events need no special handling, which is measured rather than
 assumed: of 454 events, 226 carry `aAppend` and all 226 hold only blank segments.
 
+**Download progress: `fetch.progress_hook` builds it, `worker.fetch_reporter`
+consumes it.** The split is the layer arrow — `pipeline` may not import `jobs`,
+so `download()` takes an `on_progress` callable and the half that knows what a
+store is lives in `jobs/`. Four things there are not obvious, and each one was a
+bug before it was a rule:
+
+- **A merged DASH fetch downloads two files**, video then audio, and
+  `downloaded_bytes` restarts at zero between them. A percentage taken straight
+  off the event runs 0→100 twice. `file_index` exists so a consumer can *name*
+  the part instead of smoothing the reset into a fake monotonic number.
+- **`total_bytes` may be yt-dlp's estimate**, which a real download can
+  overshoot, and it is None when nothing knows. Clamp a bar, never the bytes.
+- **The closing reading bypasses the write throttle.** Writes are coalesced to
+  one a second because yt-dlp reports per chunk and every `store.update` is a
+  transaction — which means the last `downloading` event before a file completes
+  is exactly the one dropped. Without the bypass a finished job's record sits
+  forever claiming 412 MB of 1.1 GB. A stale number reads as authoritative, so
+  it is worse than none.
+- **Nothing raised by the callback escapes the hook.** yt-dlp calls it inside
+  the download loop, so an exception there aborts the fetch: a failure to
+  *report* progress would cost the video.
+
+`smoke_api.py`'s `fake_download` **calls** the callback rather than merely
+accepting the kwarg. Faking only the signature is how this wiring rots silently
+— that fake is the one place the path runs without a network.
+
 ### Reframe: crop keeps ~3x the subject pixels
 
 On a 16:9 source, `blur` scales the whole frame to 1080 wide — a 3840x2160
@@ -610,6 +649,34 @@ Before switching the Arabic path to an open model, A/B it on the same transcript
 and read the clips. `--plan-only` makes that cheap: same cached transcript, two
 providers, diff the two plan.json files.
 
+**One data point now exists, and it is not about judgment.** `ollama:qwen3:14b`
+on the real 12-minute Arabic transcript, `--clips 8 --min-len 30 --max-len 75`,
+returned 8 well-formed clips of which **1** survived the duration filter. Seven
+came back at 23.7–25.4s: `BLOCK_SECONDS` labels that prompt in 12s blocks, and
+the model was picking a number of transcript LINES and copying their labels
+rather than subtracting one timestamp from the other. Not truncation
+(`truncated = 0` at 6503 of 32768 tokens), not parsing — the clips were refused
+downstream by the duration filter (now `cuts.classify_duration`, which flags
+instead). Reproduced on two jobs, `ca52ad57b0b4` and
+`4126b12169dd`. Measurement in `docs/quality.md`.
+
+So there are now **two** questions about a small local model here, and the
+cheaper one comes first: can it hold a duration at all? Count the clips that
+survive the filter before spending any effort reading them for judgment. A
+provider that returns 8 and lands 1 looks like a success at every layer that
+only counts responses — which is why the refused clips are now reported in
+`out_of_range` on every clip rather than only reaching the log.
+
+**And the cause is the PROMPT, not the model size.** Measured on
+`qwen3-235b-a22b`: labelling each transcript block with the span it covers
+(`[MM:SS-MM:SS]`) instead of only its start took the same transcript from 2 of 8
+in range to **8 of 8**, durations 36-50s. Scaling 8B -> 235B had bought exactly
+one clip. `build_transcript_blocks` emits only block starts, so copying two
+start labels is the only span the prompt format affords — the models were never
+doing bad arithmetic, they had nothing to subtract. Numbers in
+`docs/quality.md`. **Not implemented yet**; the measurement was taken against a
+patched prompt in a scratch script.
+
 ---
 
 ## API shape
@@ -712,7 +779,7 @@ One dark theme, warm rather than blue-gray, and the tokens at the top of
 action and picked spans, olive for done. `styles.css` is the ONLY stylesheet;
 components carry class names and no inline styles, the single exception being a
 percentage computed at runtime (the harvest strip's spans, the upload progress
-fill), which cannot live in a stylesheet.
+fill, and the two download bars below), which cannot live in a stylesheet.
 
 The **harvest strip** is the signature element and it is honest by
 construction: the API exposes no source-video duration, so the track spans
@@ -721,6 +788,40 @@ run longer. Do not "improve" it by assuming a total. Same discipline in
 `StageTimeline`: `fetching` renders struck-through for a non-URL job rather than
 green, because drawing a stage that never ran as completed is the timeline
 lying about the one thing it exists to report.
+
+### Progress bars — three of them, one rule
+
+Upload, clip download and stage 0's fetch each show a bar, and all three obey
+the harvest strip's rule: **no bar without a real denominator.** Where the size
+is unknown they render a byte count and no bar at all, rather than an empty
+track that implies a total nobody has. A bar with an invented denominator is the
+UI lying about the one thing it exists to report.
+
+- **Upload** (`uploadJob`) drops to XHR because fetch has no upload-progress
+  events. **Clip download** (`downloadClip`) is the mirror and must NOT copy
+  that: fetch *does* expose the download side, as a ReadableStream on
+  `res.body`. Denominator is the response's `Content-Length`, falling back to
+  the `size_bytes` already on the wire.
+- The clip link keeps its real `href` and only `preventDefault`s an unmodified
+  left click. That is load-bearing: right-click "Save link as", middle-click and
+  a page whose JS failed all still download through the browser. Replacing the
+  href with `#` deletes three working behaviours to add one. The trade it *does*
+  make is the native download manager — no resume, and navigating away cancels —
+  which is acceptable only because a clip is bounded by `--max-len`.
+- The busy guard is a `useRef`, not state. State updates are batched, so two
+  clicks in one tick both read the stale idle value and start two transfers.
+- **`fetch_progress`** is null on a job that never fetched, which is NOT zero
+  bytes; only a `source=youtube` job can be the latter. Rendering a bar for null
+  draws a download that never happened. It is shown only while
+  `state === "fetching"` — the record keeps the closing reading afterwards, and
+  presenting a finished download as live progress is the same lie
+  `StageTimeline` refuses to tell.
+- `describeFetch` in `lib/format.ts` holds all of that arithmetic, deliberately:
+  the vitest config is `environment: "node"` with `include: ["src/**/*.test.ts"]`,
+  so a component cannot be unit-tested without adding jsdom and
+  `@testing-library`. Keeping the decisions in a pure function puts everything
+  that can be wrong where the suite can reach it, and leaves the components
+  with nothing but rendering.
 
 ### Live reload
 
@@ -824,12 +925,16 @@ Be honest about this in any session. It is the difference between a demo and a t
   risk #4.
 
 **UNVERIFIED — never executed:**
-- **Every provider except OpenRouter, against its real endpoint.** OpenRouter has
-  now served a real request (Claude Opus 5, json_object tier). The rest —
-  Anthropic direct, OpenAI, Kimi, GLM, Ollama, vLLM — remain documentation-only.
-  `smoke_llm.py` pins what we *send*; those endpoints have never replied.
-  OpenRouter's own default model ID was already stale when checked
-  (`kimi-k2` → `kimi-k3`), so expect the same of the others.
+- **Every provider except OpenRouter and Ollama, against its real endpoint.**
+  OpenRouter has served a real request (Claude Opus 5, json_object tier).
+  **Ollama has now served two** (`qwen3:14b`, json_object tier, real Arabic
+  transcript) — the requests were accepted and parsed, so the wire shape is
+  confirmed; the *output* was unusable and is measured under "Open question:
+  Arabic selection quality" above. The rest — Anthropic direct, OpenAI, Kimi,
+  GLM, vLLM — remain documentation-only. `smoke_llm.py` pins what we *send*;
+  those endpoints have never replied. OpenRouter's own default model ID was
+  already stale when checked (`kimi-k2` → `kimi-k3`), so expect the same of the
+  others.
 - Arabic *selection* quality on any non-Claude provider (see Stage 3 providers).
 - Whisper word-timestamp *accuracy* on Arabic. Transcription spelling is now
   measured, but nobody has checked whether the word boundaries `snap` relies on
@@ -937,40 +1042,40 @@ mis-framed clips.
 No loudness normalization (`loudnorm` is a one-line filter add, highest
 value-per-effort item here), no silence trimming, no scene-change detection.
 
-### 4. Caption cues overlap — measured, unfixed
+### 4. Caption cues overlapped — FIXED 2026-08-20
 
-Listed last only to avoid renumbering; **by impact it outranks 2 and 3**, because
-it is visible in every clip the tool currently ships.
+Kept because the fix has to stay, and because the way it hid is worth knowing.
 
-`LAST_WORD_HOLD` (0.12s) is added to the end of every caption line and nothing
-clamps it against the next line's start. On continuous speech the next line
-almost always begins inside that window, so two `Dialogue:` events are live at
-once and libass stacks them — for ~3 frames the viewer sees **the upcoming
+`LAST_WORD_HOLD` (0.12s) was added to the end of every caption line with nothing
+clamping it against the next line's start. On continuous speech the next line
+almost always begins inside that window, so two `Dialogue:` events were live at
+once and libass stacks them — for ~3 frames the viewer saw **the upcoming
 caption sitting above the one still on screen**.
 
-Measured on the real 12-minute Arabic file, first three clips:
-
 ```text
-01-clip.ass   28 cues, 22 overlapping pairs   e.g. 5.74-9.31 vs 9.19-10.57
-02-clip.ass   26 cues, 20 overlapping pairs
-03-clip.ass   30 cues, 29 overlapping pairs
-              71 of 81 consecutive pairs — 88%
+before   01-clip.ass   35 cues, 34 of 34 consecutive pairs overlap — 100%
+                       (an earlier 3-clip sample measured 71 of 81 — 88%)
+after                  0 overlapping pairs, on LTR, RTL and gapless speech
 ```
 
-It hits **LTR as well as RTL**: the highlight path holds each word until the next
-word starts *within* a chunk, but the last word of every chunk still takes the
+It hit **LTR as well as RTL**: the highlight path holds each word until the next
+word starts *within* a chunk, but the last word of every chunk took the
 unclamped `+ LAST_WORD_HOLD`.
 
-Found by rendering a clip and extracting a frame — the `.ass` file reads as
-entirely correct, which is the same trap the RTL bug set. A cue-timing assertion
-in `smoke_pipeline.py` would have caught it without a render, and there is no
-such assertion today: nothing anywhere checks that consecutive cues are disjoint.
+**The fix** is `captions._clamp`, and both paths route through it so a future
+edit cannot repair one and forget the other. Order inside it matters: `MIN_CUE`
+raises a degenerate cue to a visible length FIRST, and the ceiling applies LAST,
+so a cue can never buy duration by overlapping its neighbour. The product
+decision was clamp-to-next-start rather than push-the-next-cue-later: clamping
+gives gap-free hand-offs, which is what short-form editors do, whereas pushing
+trades the overlap for a moment with no caption at all. The hold still applies
+in full wherever there is room — a line before a pause keeps all 0.12s.
 
-The fix is a clamp in `build_ass`, but the product decision is not obvious and
-should be made deliberately: clamping the end to the next cue's start removes the
-hold wherever speech is continuous (captions become gap-free hand-offs), whereas
-holding the line and pushing the *next* cue later trades the overlap for a brief
-gap with no caption at all.
+**What let it ship:** nothing anywhere asserted that consecutive cues are
+disjoint. There is now a `caption cues must be disjoint` section in
+`smoke_pipeline.py` covering LTR, RTL and gapless speech, and it was verified to
+FAIL with the clamp removed — a check that cannot fail measures nothing. The
+`.ass` file reads as entirely correct either way, the same trap the RTL bug set.
 
 ---
 

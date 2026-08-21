@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core.constants import (
     CAPTION_MAX_WORDS,
+    DEFAULT_FONT,
     DEFAULT_TRACK_TIER,
     LANGUAGE_TAG_PATTERN,
 )
@@ -190,11 +191,11 @@ class JobOptions(BaseModel):
                     "hotwords. Part of the transcript cache key.",
     )
     font: str = Field(
-        "Arial",
+        DEFAULT_FONT,
         description="must be installed on the RENDERING host, which under the "
                     "API is the server and not the caller's machine. libass falls "
                     "back silently, so a missing Arabic face ships as tofu.",
-        examples=["Arial", "Traditional Arabic"],
+        examples=["Noto Sans Arabic", "Noto Kufi Arabic", "Traditional Arabic"],
     )
     captions: bool = Field(True, description="burn captions into the video")
     per_line: int = Field(CAPTION_MAX_WORDS, ge=1, le=8,
@@ -335,6 +336,13 @@ class ClipModel(BaseModel):
     why: str = Field("", max_length=2000,
                      description="the model's reason for picking this passage")
     score: float = Field(0.0, ge=0.0, le=1.0, description="the model's own confidence")
+    out_of_range: Literal["short", "long"] | None = Field(
+        None,
+        description="set when this clip misses the job's min_len/max_len by "
+                    "more than snapping can account for. It is still in the "
+                    "plan and still gets rendered — the label is for you to "
+                    "judge, not a refusal. Server-computed and read-only; a "
+                    "value sent to PUT /plan is ignored and recalculated.")
 
     @model_validator(mode="after")
     def _ordered(self) -> ClipModel:
@@ -475,6 +483,35 @@ class ClipOutput(BaseModel):
     url: str = Field(..., description="GET this path to download the clip")
 
 
+class FetchProgressModel(BaseModel):
+    """How far stage 0's download has got. Present only while, or after, a
+    `source="youtube"` job fetches — null on an upload or a server path."""
+
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "downloaded_bytes": 431_820_800,
+            "total_bytes": 1_181_116_006,
+            "file_index": 1,
+        }],
+    })
+
+    downloaded_bytes: int = Field(
+        ..., description="bytes of the CURRENT file, not of the fetch as a "
+                         "whole — see file_index.")
+    total_bytes: int | None = Field(
+        None,
+        description="size of the current file, or null when nothing knows it. "
+                    "May be yt-dlp's ESTIMATE, which can be overshot: clamp a "
+                    "bar at 100% and leave the byte counts alone, because the "
+                    "bytes are measured and this number may not be.")
+    file_index: int = Field(
+        ..., description="1-based position in the sequence of files this fetch "
+                         "downloads. A merged DASH fetch pulls the video and "
+                         "audio streams SEPARATELY, so downloaded_bytes resets "
+                         "to zero when this increments. Report the part rather "
+                         "than smoothing the reset into a fake percentage.")
+
+
 class JobResponse(BaseModel):
     """The whole job. This is what you poll.
 
@@ -526,10 +563,17 @@ class JobResponse(BaseModel):
     clips: list[ClipModel] = Field([], description="the plan; populated from state=planned")
     outputs: list[ClipOutput] = Field(
         [], description="rendered files; grows during state=rendering")
+    fetch_progress: FetchProgressModel | None = Field(
+        None,
+        description="stage 0 download progress, updated about once a second "
+                    "during state=fetching. Null on a job that never fetched — "
+                    "which is not the same as zero bytes, so do not render a "
+                    "bar for it.")
 
 
 class JobList(BaseModel):
     jobs: list[JobResponse]
+
 
 
 class ProviderInfo(BaseModel):
