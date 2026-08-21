@@ -303,6 +303,86 @@ class JobFromUrl(JobOptions):
     )
 
 
+class SuggestionModel(BaseModel):
+    """One proposed correction. Nothing is applied until you `PUT` the
+    transcript — this endpoint writes nothing."""
+
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{"index": 412, "was": "بايسون", "text": "بايثون",
+                      "why": "near-miss of a listed term"}],
+    })
+
+    index: int = Field(..., ge=0, description="position in the word list")
+    was: str = Field(..., description="the word as it stands, echoed by the "
+                                      "model and verified against the "
+                                      "transcript before the suggestion "
+                                      "survives")
+    text: str = Field(..., description="the replacement. Empty string means "
+                                       "delete — the word is blanked, which "
+                                       "keeps the word count and every timing "
+                                       "intact")
+    why: str = Field("", max_length=400)
+
+
+class SuggestRequest(BaseModel):
+    """Terms to match against. Sent in the body so you can add one for a single
+    run without editing a file on the server."""
+
+    terms: list[str] = Field(
+        default_factory=list, max_length=2000,
+        description="matched against the transcript. A replacement that is not "
+                    "one of these — or the empty string — is refused by the "
+                    "server, so this list bounds what the pass can do.")
+
+
+class SuggestResponse(BaseModel):
+    """What the model proposed and what the server refused."""
+
+    suggestions: list[SuggestionModel]
+    dropped: int = Field(
+        0, description="how many the model proposed that the server refused: "
+                       "a wrong index, a no-op, or a replacement outside the "
+                       "term list. A large number here means the vocabulary is "
+                       "wrong or the model is not up to this.")
+    terms_used: int = Field(0, description="how many terms were matched against")
+    model: str = Field("", description="which model produced them")
+
+
+class SettingItem(BaseModel):
+    """One editable server setting, and where its current value came from."""
+
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{"key": "llm_model", "value": "anthropic/claude-opus-5",
+                      "source": "saved", "restart_required": False}],
+    })
+
+    key: str
+    value: object | None = Field(
+        None,
+        description="the value in effect for the next job. Never a credential "
+                    "— presets name an API key (`key_env`) and read it from the "
+                    "environment; it is neither stored nor returned here.")
+    source: Literal["saved", "env", "default"] = Field(
+        ...,
+        description="`saved` means it was set through this endpoint and "
+                    "overrides the environment; `env` means it came from a "
+                    "QATF_* variable; `default` means neither was set. This is "
+                    "what makes 'reset to environment' meaningful — without it "
+                    "a caller cannot tell a value they chose from one the "
+                    "container handed them.")
+    restart_required: bool = Field(
+        False,
+        description="true for `workers` only: it is stored, but the thread pool "
+                    "is not resized while jobs are in flight, so it takes "
+                    "effect on the next restart.")
+
+
+class SettingsResponse(BaseModel):
+    """Every editable setting. Read this to see what the next job will use."""
+
+    items: list[SettingItem]
+
+
 class ClipModel(BaseModel):
     """One planned clip. `start`/`end` are seconds into the SOURCE video.
 

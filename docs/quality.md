@@ -553,6 +553,52 @@ word. That is the cost of the RTL fix, and it is deliberate — see
 
 ---
 
+## Transcript enhancement — safe, and so far unproven
+
+Measured 2026-08-22 on the real 511-word Arabic transcript
+(`words-large-v3-ar-6da1b0b4`, 240s), 36 terms (`ar-tech.txt` + the job's
+hotwords + all 7 tracked terms), provider `openrouter:qwen/qwen3-235b-a22b`,
+13 seconds.
+
+```text
+                              before    after
+tracked terms right / wrong   0 / 5    0 / 5
+terms_accuracy                 0.0%     0.0%
+word count                      511      511
+```
+
+The model returned six suggestions: **four no-ops**, **one correct**
+(`بايسون` -> `بايثون`, the exact case CLAUDE.md documents), and **one false
+positive** — it proposed deleting `لك` ("for you"), an ordinary word used **six
+times** in that transcript.
+
+**Two things this establishes, and one it does not.**
+
+It found **1 of 6** available opportunities. The five tracked errors — `PHP` x2,
+`هايرنج` x1, `جونيورز` x2 — were never proposed, even though all three expected
+terms were in the list it was given. So the pass is not yet worth trusting to
+clean a transcript; it is worth running and reading.
+
+It exposed a real hole. The scope rule bounded *replacements* to listed terms
+and left `""` **unconstrained**, so a deletion could take any word at all —
+which is how a word used six times nearly got removed. `validate` now refuses to
+delete a token occurring more than once: a decoder artefact is by nature a
+one-off, a real word recurs. That does not make deletion safe (a real word used
+once can still go), which is why the pass is reviewed rather than applied.
+
+It does **not** establish that a stronger model would do better. That is the
+obvious next measurement and it has not been run — same transcript, same 36
+terms, Claude instead of qwen. `--baseline` on `score_transcript.py` makes the
+comparison cheap.
+
+**How to re-measure.** Export a cached transcript as `{"words": [...]}`, score
+it, run the pass, apply the kept suggestions, score again with `--baseline`
+pointing at the first file. The word-count guard is the one that matters: a pass
+that "improves" the transcript by deleting speech shows up there and nowhere
+else.
+
+---
+
 ## Stage 3 — a small local model sizes clips by line count, not seconds
 
 Measured on the real 12-minute Arabic video (975s of caption-track transcript,

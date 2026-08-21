@@ -35,10 +35,36 @@ from pathlib import Path
 
 from .. import pipeline
 from ..core import db
-from ..core.config import Settings, get_settings
+from ..core.config import EDITABLE, Settings, effective_settings, get_settings
 from ..core.types import Transcript
 from ..core.utils import log
 from .model import RUNNING_STATE_VALUES, Job, JobState, now
+
+
+def _settings_as_env(s: Settings) -> dict[str, str]:
+    """The injected `Settings` expressed as the env vars that would produce it.
+
+    `effective_settings` layers overrides onto `Settings.from_env`, but this
+    store may hold an INJECTED object that never came from the environment —
+    that is the whole point of `create_app(settings=...)`. Without translating
+    it back first, a settings lookup would layer onto whatever the process
+    environment happens to hold and `create_app(settings=...)` would be a
+    half-truth exactly where it matters, which is the failure the comment in
+    `JobStore.__init__` already warns about."""
+    return {
+        "QATF_DATA_DIR": str(s.data_dir),
+        "QATF_MEDIA_ROOT": str(s.media_root),
+        "QATF_WORKERS": str(s.workers),
+        "QATF_MAX_UPLOAD_MB": str(s.max_upload_bytes // 1024 // 1024),
+        "QATF_LLM_PROVIDER": s.llm_provider,
+        "QATF_LLM_MODEL": s.llm_model or "",
+        "QATF_LLM_BASE_URL": s.llm_base_url or "",
+        "QATF_LLM_EFFORT": s.llm_effort or "",
+        "QATF_LLM_MAX_TOKENS": str(s.llm_max_tokens),
+        "QATF_LLM_TIMEOUT": str(int(s.llm_timeout)),
+        "QATF_HOST": s.host,
+        "QATF_PORT": str(s.port),
+    }
 
 
 class Cancelled(Exception):
@@ -58,6 +84,52 @@ class JobStore:
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="qatf")
         self._recover()
+
+    # -- server settings --------------------------------------------------
+
+    def settings_overrides(self) -> dict[str, object]:
+        """Every saved override, JSON-decoded.
+
+        Non-editable keys are dropped HERE as well as on write. The table is a
+        file someone can edit, so the allowlist has to hold on the way out too;
+        a row naming `media_root` must be inert, not effective."""
+        rows = db.connect(self.db_path).execute(
+            "SELECT key, value FROM settings").fetchall()
+        return {r["key"]: json.loads(r["value"])
+                for r in rows if r["key"] in EDITABLE}
+
+    def save_setting(self, key: str, value: object) -> None:
+        """Store one override. Silently ignores a non-editable key — the router
+        refuses those with a 422 before reaching here, and a store that could
+        write one would make the allowlist advisory."""
+        if key not in EDITABLE:
+            return
+        with db.transaction(self.db_path) as con:
+            con.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                "updated_at=excluded.updated_at",
+                (key, json.dumps(value), now()))
+
+    def clear_setting(self, key: str) -> None:
+        """Drop an override so the environment takes over again.
+
+        Deleting the row is not the same as saving `""`: an absent row means
+        "not overridden", an empty string means "explicitly blank, use the
+        preset default"."""
+        with db.transaction(self.db_path) as con:
+            con.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    def settings_for_job(self) -> Settings:
+        """The settings a job starting NOW should use.
+
+        Computed per call, never held on the store. That is the entire reason a
+        save cannot reach a run already in flight: the job captured its own
+        frozen snapshot at start, so there is no window to race. The job record
+        reports the provider and model used, and a mid-run change that could
+        alter them would make the record describe a run that did not happen."""
+        return effective_settings(self.settings_overrides(),
+                                  _settings_as_env(self.settings))
 
     # -- persistence ------------------------------------------------------
 

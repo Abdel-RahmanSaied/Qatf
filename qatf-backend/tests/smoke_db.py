@@ -75,7 +75,7 @@ finally:
 migrated = db.connect(v1_path)
 check("an existing v1 database migrates forward to the current version",
       migrated.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-      and db.SCHEMA_VERSION == 4, str(db.SCHEMA_VERSION))
+      and db.SCHEMA_VERSION == 5, str(db.SCHEMA_VERSION))
 check("the v2 table exists after migrating an old file",
       migrated.execute(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='imported'"
@@ -115,7 +115,7 @@ finally:
 migrated2 = db.connect(v2_path)
 check("an existing v2 database migrates forward to the current version",
       migrated2.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-      and db.SCHEMA_VERSION == 4, str(db.SCHEMA_VERSION))
+      and db.SCHEMA_VERSION == 5, str(db.SCHEMA_VERSION))
 check("the v3 column exists on the v2 table after migrating",
       any(r[1] == "mtime" for r in
           migrated2.execute("PRAGMA table_info(imported)")))
@@ -157,7 +157,7 @@ finally:
 migrated3 = db.connect(v3_path)
 check("an existing v3 database migrates forward to the current version",
       migrated3.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-      and db.SCHEMA_VERSION == 4, str(db.SCHEMA_VERSION))
+      and db.SCHEMA_VERSION == 5, str(db.SCHEMA_VERSION))
 check("the v4 column exists on the v3 transcripts table after migrating",
       any(r[1] == "timing_source" for r in
           migrated3.execute("PRAGMA table_info(transcripts)")))
@@ -233,6 +233,31 @@ try:
           "connect() returned normally")
 except sqlite3.DatabaseError:
     check("a corrupt database raises rather than returning an empty one", True)
+
+section("core/db — v4 migrates to v5 without losing data")
+p5 = TMP / "v4.db"
+raw = sqlite3.connect(p5)
+for stmt in db._MIGRATIONS[:4]:
+    raw.executescript(stmt)
+raw.execute("PRAGMA user_version = 4")
+raw.execute("INSERT INTO jobs (id, state, created_at, updated_at, doc) "
+            "VALUES ('v4job', 'done', 'then', 'then', '{}')")
+raw.commit()
+raw.close()
+
+con5 = db.connect(p5)
+check("v4 database migrates to the current version",
+      con5.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION,
+      str(con5.execute("PRAGMA user_version").fetchone()[0]))
+check("the row a v4 client wrote survives the migration",
+      con5.execute("SELECT id FROM jobs").fetchone()[0] == "v4job")
+check("the settings table exists after migrating",
+      con5.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                   "AND name='settings'").fetchone() is not None)
+cols = {r[1] for r in con5.execute("PRAGMA table_info(settings)")}
+check("settings has the columns the design names",
+      cols == {"key", "value", "updated_at"}, str(sorted(cols)))
+db.close(p5)
 
 db.close_all()
 raise SystemExit(report())

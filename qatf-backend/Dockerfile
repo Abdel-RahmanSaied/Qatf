@@ -12,6 +12,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY qatf ./qatf
+# The shipped vocabulary the enhancement pass matches against. Without it
+# `enhance.load_vocab()` returns an empty list in the container and the pass
+# silently finds almost nothing — correct behaviour, and indistinguishable from
+# a broken feature.
+COPY prompts ./prompts
 
 # [all] = api + every provider SDK. Use [api,anthropic] to keep the image small
 # when only one provider is ever used.

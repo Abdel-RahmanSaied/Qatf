@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, getTranscript, putTranscript } from "../api/client";
+import { ApiError, getTranscript, putTranscript, suggestCorrections } from "../api/client";
 import { RUNNING_STATES } from "../api/types";
-import type { JobResponse, TranscriptResponse, WordModel } from "../api/types";
+import type {
+  JobResponse, SuggestionModel, TranscriptResponse, WordModel,
+} from "../api/types";
 import { useToast } from "./Toasts";
 import { transcriptEditGuard } from "../lib/rules";
 
@@ -31,9 +33,55 @@ export function TranscriptEditor({ jobId, job }: Props) {
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  // The proposed pass, held separately from `edits` until it is accepted —
+  // accepting is what turns suggestions into ordinary pending corrections.
+  const [pass, setPass] = useState<SuggestionModel[] | null>(null);
+  const [passInfo, setPassInfo] = useState<{ dropped: number; terms: number; model: string } | null>(null);
+  const [thinking, setThinking] = useState(false);
   const { push } = useToast();
 
   const running = RUNNING_STATES.has(job.state);
+
+  /** Ask the server for candidate corrections. Writes nothing — accepting is
+   * what folds them into `edits`, and saving still goes through the same
+   * `putTranscript` the manual path uses. */
+  async function enhance() {
+    if (thinking) return;
+    setThinking(true);
+    try {
+      // The job's own hotwords, plus whatever the server ships. The server
+      // unions in its list too; sending these covers a job that set its own.
+      const terms = (job.options.hotwords ?? "").split(/\s+/).filter(Boolean);
+      const r = await suggestCorrections(jobId, terms);
+      setPass(r.suggestions);
+      setPassInfo({ dropped: r.dropped, terms: r.terms_used, model: r.model });
+      if (r.suggestions.length === 0) {
+        push(r.terms_used === 0
+          ? "No terms to match against — add some vocabulary first."
+          : `Nothing to suggest (${r.dropped} refused).`);
+      }
+    } catch (e) {
+      push(e instanceof ApiError ? e.message : "the model could not be reached");
+    } finally {
+      setThinking(false);
+    }
+  }
+
+  /** Fold the whole pass into the pending corrections.
+   *
+   * Whole-diff accept is safe because the per-word editor is still right there:
+   * accept, then click any single word the model got wrong. You are never made
+   * to discard the good ones over one bad one. */
+  function acceptPass() {
+    if (!pass) return;
+    setEdits((prev) => {
+      const next = { ...prev };
+      for (const s of pass) next[s.index] = s.text;
+      return next;
+    });
+    setPass(null);
+    setPassInfo(null);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -185,6 +233,47 @@ export function TranscriptEditor({ jobId, job }: Props) {
         )}
       </div>
 
+      {pass && pass.length > 0 && passInfo && (
+        <div className="banner banner-warn suggest">
+          <p className="suggest-head">
+            <span className="tnum">{pass.length}</span>{" "}
+            {pass.length === 1 ? "suggestion" : "suggestions"} from{" "}
+            <span className="mono">{passInfo.model}</span>, matched against{" "}
+            <span className="tnum">{passInfo.terms}</span> terms
+            {passInfo.dropped > 0 && (
+              <> — <span className="tnum">{passInfo.dropped}</span> refused by the
+                server for proposing something outside that list</>
+            )}
+            . Nothing is applied until you accept, and nothing is saved until you
+            press Save corrections.
+          </p>
+          <ul className="suggest-list">
+            {pass.map((s) => (
+              <li className="suggest-item" key={s.index}>
+                <span className="tnum suggest-idx">{s.index}</span>
+                <span className="suggest-was">{s.was}</span>
+                <span className="suggest-arrow">→</span>
+                <span className="suggest-new">
+                  {s.text === "" ? <em>(delete)</em> : s.text}
+                </span>
+                <span className="suggest-why">{s.why}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="row">
+            <button className="btn btn-primary" onClick={acceptPass}>
+              Accept all {pass.length}
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => { setPass(null); setPassInfo(null); }}
+            >
+              Discard suggestions
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="sticky-bar">
         <div className="sticky-bar-status">
           {running
@@ -197,6 +286,14 @@ export function TranscriptEditor({ jobId, job }: Props) {
               : "No corrections pending."}
         </div>
         <div className="sticky-bar-actions">
+          <button
+            className="btn"
+            onClick={() => void enhance()}
+            disabled={thinking || saving || running}
+            title="Ask the model which words look misheard. Nothing is applied until you accept."
+          >
+            {thinking ? "Reading…" : "AI enhance"}
+          </button>
           {dirty && (
             <button className="btn btn-ghost" onClick={() => setEdits({})} disabled={saving}>
               Discard

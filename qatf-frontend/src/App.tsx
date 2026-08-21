@@ -1,4 +1,5 @@
 import { Link, NavLink, Route, Routes } from "react-router-dom";
+import { SettingsPage } from "./pages/SettingsPage";
 import { ToastProvider } from "./components/Toasts";
 import JobsList from "./pages/JobsList";
 import NewJob from "./pages/NewJob";
@@ -22,6 +23,12 @@ export default function App() {
             >
               Jobs
             </NavLink>
+            <NavLink
+              to="/settings"
+              className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            >
+              Settings
+            </NavLink>
             <Link to="/new" className="btn btn-primary">New job</Link>
           </nav>
         </header>
@@ -31,6 +38,7 @@ export default function App() {
             <Route path="/new" element={<NewJob />} />
             <Route path="/jobs/:id" element={<JobDetail />} />
             <Route path="/jobs/:id/transcript" element={<TranscriptPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>

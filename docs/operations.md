@@ -92,6 +92,25 @@ temperatures less often.
 
 ---
 
+## Changing the stage-3 model without a rebuild
+
+`PUT /settings` (or the Settings page in the web UI) changes the provider, model
+and base URL for the **next** job. No `.env` edit, no `docker compose build` —
+which used to mean a full image rebuild to change one string.
+
+```bash
+curl -X PUT localhost:8000/settings   -H 'Content-Type: application/json'   -d '{"llm_provider": "openrouter", "llm_model": "anthropic/claude-opus-5"}'
+```
+
+`.env` still matters: it **seeds** a fresh deployment and it is the fallback
+whenever an override is cleared. What changed is the direction — for the seven
+editable keys a saved value now wins over the variable, because compose always
+sets `QATF_LLM_*` and an environment-wins rule would make the endpoint inert.
+See "Settings precedence inverts" in CLAUDE.md.
+
+API keys are **not** settable this way and never will be. They stay in the
+environment, named by each preset's `key_env`.
+
 ## Caching
 
 ```text

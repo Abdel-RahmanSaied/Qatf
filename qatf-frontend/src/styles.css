@@ -1286,3 +1286,51 @@ span.tnum { font-size: .93em; }
     transition-duration: .01ms !important;
   }
 }
+
+/* ============================================================== settings === */
+
+/* One row per setting: name, value, where it came from, and the reset that only
+   appears when there is something to reset. */
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .5rem 0;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.setting-row:last-child { border-bottom: 0; }
+.setting-key { min-width: 11rem; color: var(--muted); font-size: .8rem; }
+.setting-row .input { flex: 1 1 14rem; }
+
+/* The source badge is the point of the row — it separates a value the operator
+   chose from one the container handed them. Saffron only for `saved`, because
+   that is the one that overrides something. */
+.setting-source {
+  font-size: .6rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 0 .35rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  color: var(--muted);
+}
+.setting-source--saved { border-color: var(--saffron-dim); color: var(--saffron); }
+
+/* The proposed pass. Same stacked-banner shape as the out-of-range notice —
+   a sentence over a list — because it is the same kind of statement: here is
+   what happened, you decide. */
+.suggest { flex-direction: column; gap: .5rem; }
+.suggest-head { margin: 0; }
+.suggest-list { margin: 0; padding: 0; list-style: none; display: grid; gap: .2rem; }
+.suggest-item {
+  display: flex;
+  gap: .55rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.suggest-idx { color: var(--muted); min-width: 3rem; text-align: right; font-size: .7rem; }
+.suggest-was { color: var(--muted); text-decoration: line-through; }
+.suggest-arrow { color: var(--muted); }
+.suggest-new { color: var(--saffron); }
+.suggest-why { color: var(--muted); font-size: .7rem; }

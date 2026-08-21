@@ -279,6 +279,52 @@ model skip a good moment, fix the word and edit the plan directly.
 
 ---
 
+## Server settings
+
+Three endpoints change what stage 3 uses, without editing `.env` or rebuilding.
+
+| Method | Path | |
+| --- | --- | --- |
+| `GET` | `/settings` | every editable key, its value and its **source** |
+| `PUT` | `/settings` | partial update — send only what changed |
+| `DELETE` | `/settings/{key}` | drop the override, fall back to the environment |
+
+```json
+{ "items": [
+  { "key": "llm_model", "value": "anthropic/claude-opus-5",
+    "source": "saved", "restart_required": false },
+  { "key": "workers", "value": 1, "source": "env", "restart_required": true }
+]}
+```
+
+**Editable:** `llm_provider`, `llm_model`, `llm_base_url`, `llm_effort`,
+`llm_max_tokens`, `llm_timeout`, `workers`. Anything else is a `422` naming the
+allowed set.
+
+**`source` is why "reset to environment" can exist.** Without it a caller cannot
+tell a value they chose from one the container handed them. `saved` overrides
+the matching `QATF_*` variable; `DELETE` removes the override and the variable
+takes over again.
+
+**A saved value beats the environment.** That is the opposite of `.env` parsing
+and it is deliberate — compose always sets `QATF_LLM_*`, so an
+environment-wins rule would make these endpoints inert under Docker.
+
+**Changes apply to the next job.** A job already running keeps the settings it
+started with; its record reports the provider and model it actually used.
+`workers` is stored but carries `restart_required` — the worker pool is not
+resized with jobs in flight.
+
+**Two refusals worth expecting.** `422` for a key outside the allowlist, and
+`403` for a `base_url` that is neither a known provider host nor a private
+address. Neither echoes your input back.
+
+**API keys are not here.** Presets name a credential and read it from the
+environment; nothing stores or returns one. Check `/healthz` `llm_ready` for
+whether the configured provider has a usable key.
+
+---
+
 ## Clips outside the length you asked for
 
 `clips` is what the model was asked for; `min_len`/`max_len` is the length it

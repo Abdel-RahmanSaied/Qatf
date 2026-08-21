@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 
 from qatf import pipeline
 from qatf.api import create_app
-from qatf.core.config import Settings
+from qatf.core.config import EDITABLE, Settings
 from qatf.core.types import Clip, Keyframe, Track, Transcript, Word
 from qatf.jobs import RUNNING_STATE_VALUES, JobStore, worker
 from qatf.pipeline import asr, audio, encode, select
@@ -279,8 +279,18 @@ with TestClient(app) as client:
           abs(job["clips"][0]["start"] - (10.0 - 0.15)) < 0.3, str(job["clips"][0]["start"]))
     check("settings model reached stage 3", SEEN_MODELS[0] == "claude-sonnet-5",
           str(SEEN_MODELS))
+    # Stage 3 now receives a DERIVED object — `settings_for_job()` seeds from
+    # the injected one and layers saved overrides on top — so identity no
+    # longer holds and asserting it would only be testing that no feature was
+    # added. Equality is the stronger claim: every value must survive the trip,
+    # or `create_app(settings=...)` is a half-truth again. It also pins
+    # `_settings_as_env` round-tripping losslessly, which nothing else does.
     check("the INJECTED settings reached stage 3, not the process-wide ones",
-          SEEN_SETTINGS[0] is SETTINGS, repr(SEEN_SETTINGS[0]))
+          SEEN_SETTINGS[0] == SETTINGS, repr(SEEN_SETTINGS[0]))
+    check("and those really are the injected values, not the environment's",
+          SEEN_SETTINGS[0].data_dir == SETTINGS.data_dir
+          and SEEN_SETTINGS[0].data_dir != Settings.from_env().data_dir,
+          f"{SEEN_SETTINGS[0].data_dir} vs env {Settings.from_env().data_dir}")
     check("hotwords reached stage 2", SEEN_PROMPTS[0] == "بايثون فلاتر",
           str(SEEN_PROMPTS))
     check("device actually used is reported", job["device"] == "cuda",
@@ -956,5 +966,113 @@ with TestClient(create_app(settings=SETTINGS)) as client:
           pipeline.asr.subs_cache_key("ar") != pipeline.cache_key("large-v3", "ar")
           and pipeline.asr.subs_cache_key("ar").startswith("subs-"),
           pipeline.asr.subs_cache_key("ar"))
+
+
+section("settings overrides reach the next job, not a running one")
+STORE = app.state.store
+STORE.save_setting("llm_model", "saved/model-x")
+check("a saved override wins over the injected settings",
+      STORE.settings_for_job().llm_model == "saved/model-x",
+      str(STORE.settings_for_job().llm_model))
+STORE.clear_setting("llm_model")
+check("clearing falls back to the injected/environment value",
+      STORE.settings_for_job().llm_model == SETTINGS.llm_model,
+      str(STORE.settings_for_job().llm_model))
+# The table is a file someone can edit; the allowlist holds on read too.
+STORE.save_setting("media_root", "/etc")
+check("a non-editable key cannot be saved into effect",
+      str(STORE.settings_for_job().media_root) == str(SETTINGS.media_root),
+      str(STORE.settings_for_job().media_root))
+STORE.clear_setting("media_root")
+check("the injected settings still reach a job with no overrides saved",
+      STORE.settings_for_job().llm_provider == SETTINGS.llm_provider,
+      STORE.settings_for_job().llm_provider)
+
+
+section("settings endpoints")
+r = client.get("/settings")
+check("GET /settings is 200", r.status_code == 200, str(r.status_code))
+items = {i["key"]: i for i in r.json()["items"]}
+check("every editable key is reported", set(items) == set(EDITABLE),
+      str(sorted(items)))
+check("no response body carries a credential",
+      "sk-" not in r.text and "API_KEY" not in r.text, r.text[:200])
+check("workers is flagged restart_required", items["workers"]["restart_required"])
+check("llm_model is not", not items["llm_model"]["restart_required"])
+
+r = client.put("/settings", json={"llm_model": "saved/model-y"})
+check("PUT is 200", r.status_code == 200, r.text[:200])
+after = {i["key"]: i for i in r.json()["items"]}
+check("the saved value comes back", after["llm_model"]["value"] == "saved/model-y",
+      str(after["llm_model"]))
+check("and its source flips to saved", after["llm_model"]["source"] == "saved",
+      after["llm_model"]["source"])
+check("the override reaches what the next job would use",
+      app.state.store.settings_for_job().llm_model == "saved/model-y")
+
+r = client.delete("/settings/llm_model")
+check("DELETE is 200", r.status_code == 200, str(r.status_code))
+back = {i["key"]: i for i in r.json()["items"]}
+check("source falls back off saved", back["llm_model"]["source"] != "saved",
+      back["llm_model"]["source"])
+
+r = client.put("/settings", json={"media_root": "/etc"})
+check("a non-editable key is refused 422", r.status_code == 422, str(r.status_code))
+check("the refusal names the allowed set", "llm_provider" in r.text, r.text[:200])
+check("and does not echo the rejected key back",
+      "media_root" not in r.text, r.text[:200])
+
+r = client.put("/settings", json={"llm_base_url": "https://evil.example.com/v1"})
+check("a public base_url is refused 403", r.status_code == 403, str(r.status_code))
+check("the base_url refusal does not echo the url",
+      "evil.example.com" not in r.text, r.text[:200])
+r = client.put("/settings", json={"llm_base_url": "http://127.0.0.1:11434/v1"})
+check("a private base_url is accepted", r.status_code == 200, r.text[:200])
+client.delete("/settings/llm_base_url")
+check("DELETE of a non-editable key is refused 422",
+      client.delete("/settings/media_root").status_code == 422)
+
+
+section("transcript suggestions are read-only")
+from qatf.pipeline import enhance as _enh  # noqa: E402
+
+# Its own client: the blocks above have exited their lifespans, so the worker
+# pool is shut down and `POST /jobs` cannot schedule anything.
+with TestClient(create_app(settings=SETTINGS)) as sclient:
+    _sr = sclient.post("/jobs", json={"path": "talk.mp4", "clips": 2,
+                                      "language": "ar"})
+    _sjid = _sr.json()["id"]
+    wait(sclient, _sjid, {"done", "failed"})
+    _before = sclient.get(f"/jobs/{_sjid}/transcript").json()
+    check("the suggestion fixture has a transcript", _before.get("word_count", 0) > 0,
+          str(_before)[:140])
+
+    def _fake_suggest(words, terms, settings=None):
+        return ([_enh.Suggestion(index=1, was=words[1].text, text="",
+                                 why="artefact")],
+                ["index 9 proposes something that is not a listed term"])
+
+    _real_suggest = _enh.suggest
+    _enh.suggest = _fake_suggest
+    try:
+        r = sclient.post(f"/jobs/{_sjid}/transcript/suggest",
+                         json={"terms": ["بايثون"]})
+        check("suggest is 200", r.status_code == 200, r.text[:200])
+        d = r.json()
+        check("it returns the kept suggestion", len(d["suggestions"]) == 1,
+              str(d)[:160])
+        check("and reports what the server refused", d["dropped"] == 1,
+              str(d.get("dropped")))
+        check("and how many terms it matched against", d["terms_used"] >= 1,
+              str(d.get("terms_used")))
+        check("it names the model that produced them", bool(d["model"]),
+              str(d.get("model")))
+        # THE POINT: this endpoint writes nothing. Every write still goes
+        # through PUT /transcript, so `edits.diff` stays the single place the
+        # word-count and timing contract is enforced.
+        check("the stored transcript is byte-identical afterwards",
+              sclient.get(f"/jobs/{_sjid}/transcript").json() == _before)
+    finally:
+        _enh.suggest = _real_suggest
 
 raise SystemExit(report())

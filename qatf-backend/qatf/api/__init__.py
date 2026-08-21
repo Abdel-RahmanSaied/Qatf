@@ -152,6 +152,14 @@ TAGS = [
                        "you should leave it that way.",
     },
     {
+        "name": "settings",
+        "description": "Editable server settings — the stage-3 provider, model "
+                       "and base URL, plus `workers`. A saved value overrides "
+                       "the matching `QATF_*` variable and applies to the NEXT "
+                       "job; a job already running keeps the settings it "
+                       "started with. API keys are never stored or returned.",
+    },
+    {
         "name": "outputs",
         "description": "List and download rendered clips. Download names are "
                        "resolved inside the job's own output directory, so "

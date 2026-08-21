@@ -261,7 +261,14 @@ Two habits behind those:
 
 ## Architecture
 
-Five stages. Only two are AI. Keeping that boundary clean is the whole design.
+Five stages. **Three** model calls, and the boundary between them is the whole
+design: stage 2 (Whisper), stage 2f (`enhance` — optional, operator-triggered),
+and stage 3 (selection). Stages 1, 4 and 5 are model-free and must stay that way.
+
+`enhance` was added on 2026-08-22 and this line used to read "only two are AI".
+It earns its place because it cannot cross the line that matters: it changes
+`Word.text` and nothing else, so it can change what a caption reads and can
+never move a cut. Acoustic boundaries still come from Whisper alone.
 
 ### Device selection (stage 2)
 
@@ -581,7 +588,8 @@ problems are always a stage-4 issue. Diagnose them separately.
 
 ## Stage 3 providers
 
-Stage 3 is the only model call in the pipeline, and its contract is one line:
+Stage 3 is the only model call in the *automatic* pipeline (`enhance` is
+operator-triggered, never part of a job run), and its contract is one line:
 transcript in, JSON clip list out. That is what makes the provider swappable —
 and it bounds the blast radius. **A provider swap cannot affect cut accuracy or
 rendering**, because stages 1, 4 and 5 are model-free. It changes only *which
@@ -694,12 +702,50 @@ POST   /jobs/{id}/cancel      cooperative
 DELETE /jobs/{id}             refuses while running
 GET    /jobs/{id}/transcript  words, as they will be captioned
 PUT    /jobs/{id}/transcript  correct misheard words; text only, never timings
+POST   /jobs/{id}/transcript/suggest  ask the model which words look misheard
 GET    /jobs/{id}/plan
 PUT    /jobs/{id}/plan        the hand-edit round trip; re-snaps unless snap:false
 POST   /jobs/{id}/render      encode the current plan; replaces previous outputs
 GET    /jobs/{id}/clips       + /{name} to download
 GET    /healthz               reports whether ffmpeg is actually on PATH
+GET    /settings              editable server settings + where each value came from
+PUT    /settings              partial update; applies to the NEXT job
+DELETE /settings/{key}        clear an override, fall back to the environment
 ```
+
+### Settings precedence inverts, and only for seven keys
+
+`GET/PUT/DELETE /settings` edit the stage-3 provider, model, base URL, effort,
+max-tokens, timeout and `workers`. A **saved value beats the environment** —
+the opposite of `core/dotenv.py`, where the real environment always wins.
+
+That inversion is deliberate. `docker-compose.yaml` sets
+`QATF_LLM_PROVIDER: "${QATF_LLM_PROVIDER:-anthropic}"`, so the variable is
+**always present in the container** whether or not anyone set one. Under an
+environment-wins rule a saved value could never take effect under Docker — the
+only deployment — and the endpoint would look broken rather than opinionated.
+`dotenv.py` is unchanged; a layer now sits *above* the environment for the seven
+keys in `config.EDITABLE`. Clearing an override deletes the row and falls back.
+
+Three things that bound it, none of them optional:
+
+- **`media_root` and `data_dir` are not editable.** `media_root` is a security
+  boundary, so an endpoint that can widen it is an endpoint that can switch the
+  sandbox off. The allowlist is enforced on write *and* on read — a hand-edited
+  row naming a non-editable key is inert.
+- **API keys are never stored or returned.** Presets name a credential
+  (`key_env`) and read it from the environment. `/healthz` reports `llm_ready`
+  without exposing one; that stays the only signal.
+- **`llm_base_url` is allowlisted** by `llm.validate_base_url`: a preset's own
+  host, or a host resolving *entirely* to loopback/private. It decides who
+  receives the transcript **and** the `Authorization` header on an API with no
+  auth, so freely editable it is a one-request credential-exfiltration path.
+
+Settings are read **per job**, not held on the store: `JobStore.settings_for_job()`
+returns a fresh frozen snapshot, so a save cannot reach a run already in flight.
+The job record reports the provider and model used, and a mid-run change would
+make it describe a run that did not happen. `workers` is stored but flagged
+`restart_required` — the pool is not resized with jobs in flight.
 
 States: `queued → fetching → extracting → transcribing → selecting → planned →
 rendering → done`, plus `failed` and `cancelled`. `fetching` only occurs on a

@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 #: Bumped whenever `_MIGRATIONS` grows. Stored in `PRAGMA user_version`.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Milliseconds a writer waits for a competing writer before raising. Without
 #: it, two threads writing at once surface as `database is locked` rather than
@@ -113,8 +113,23 @@ _SCHEMA_V4 = """
 ALTER TABLE transcripts ADD COLUMN timing_source TEXT;
 """
 
+# Do not edit _SCHEMA_V4 either. This is the first table here that is not
+# per-job: one row per overridden server setting, written by the settings
+# endpoint and read at the start of every job. An ABSENT row means "not
+# overridden", and that is deliberately different from a row holding "", which
+# means "explicitly blank — use the preset's default". Collapsing the two would
+# make "reset to environment" and "clear this field" the same button, and they
+# are not: one restores QATF_LLM_MODEL, the other asks the preset.
+_SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+"""
+
 #: index -> the SQL that takes the schema from that version to the next.
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4]
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5]
 
 _local = threading.local()
 

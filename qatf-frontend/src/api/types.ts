@@ -109,10 +109,47 @@ export interface ClipModel {
   out_of_range?: "short" | "long" | null;
 }
 
+/** One editable server setting. Mirrors SettingItem.
+ *
+ * `source` is what makes "reset to environment" meaningful: it distinguishes a
+ * value the operator chose from one the container handed them. Never carries a
+ * credential — presets name an API key and read it from the environment. */
+export interface SettingItem {
+  key: string;
+  value: string | number | null;
+  source: "saved" | "env" | "default";
+  restart_required: boolean;
+}
+
+export interface SettingsResponse {
+  items: SettingItem[];
+}
+
 export interface WordModel {
   text: string;
   start: number;
   end: number;
+}
+
+/** One proposed correction. Nothing is applied until the transcript is PUT —
+ * the suggest endpoint writes nothing. */
+export interface SuggestionModel {
+  index: number;
+  was: string;
+  /** Empty string means delete: the word is blanked, which keeps the word count
+   * and every timing intact. */
+  text: string;
+  why: string;
+}
+
+export interface SuggestResponse {
+  suggestions: SuggestionModel[];
+  /** How many the SERVER refused — wrong index, no-op, or a replacement outside
+   * the term list. A large number means the vocabulary is wrong or the model is
+   * not up to this, and the UI should say so rather than show an empty result. */
+  dropped: number;
+  terms_used: number;
+  model: string;
 }
 
 export interface TranscriptResponse {

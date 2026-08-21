@@ -189,6 +189,30 @@ class TranscriptStructureChanged(QatfError):
 
 # -- source resolution -----------------------------------------------------
 
+class InvalidBaseURL(QatfError):
+    """A `base_url` that is neither a known provider host nor a private address.
+
+    The sibling of `UnsupportedSourceUrl`, and a boundary for the same reason.
+    `base_url` decides who receives the transcript AND the `Authorization:
+    Bearer` header, and the API has no authentication in front of it, so a
+    freely editable one is a single-request credential-exfiltration path.
+
+    403 rather than 422: this is a refusal, not a typo."""
+
+    status_code = 403
+
+
+class InvalidSetting(QatfError):
+    """A settings key outside the editable allowlist.
+
+    422 because it IS a malformed request — the caller named something that is
+    not a setting they may change. The message names the allowed set and never
+    the rejected key: a validator that formats caller input into its own message
+    defeats the 422 handler that strips it."""
+
+    status_code = 422
+
+
 class SourceNotFound(QatfError):
     status_code = 404
 
