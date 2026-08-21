@@ -22,7 +22,7 @@ from _harness import check, raises, report, section
 
 from qatf import pipeline
 from qatf.core import utils
-from qatf.core.constants import CAPTION_MAX_CHARS, TARGET_H, TARGET_W
+from qatf.core.constants import CAPTION_MAX_CHARS, DEFAULT_FONT, TARGET_H, TARGET_W
 from qatf.core.errors import (
     CaptionLanguageInvalid,
     DetectorNotAvailable,
@@ -33,7 +33,7 @@ from qatf.core.errors import (
 )
 from qatf.core.types import Clip, Transcript, Word, clips_from_dicts, clips_to_dicts
 from qatf.core.utils import mmss_to_seconds, slugify, ts_ass, ts_human
-from qatf.pipeline import asr, captions, cuts, edits, fetch, fixups, select, subs
+from qatf.pipeline import asr, captions, cuts, edits, encode, fetch, fixups, select, subs
 
 
 def words(n: int = 100, step: float = 0.5) -> list[Word]:
@@ -79,6 +79,15 @@ check("every word kept", sum(len(g) for g in groups) == 8)
 short = captions.group_words([Word("a", i, i + 0.4) for i in range(8)], max_words=4)
 check("short words hit the word cap", [len(g) for g in short] == [4, 4],
       str([len(g) for g in short]))
+# CAPTION_MAX_CHARS is a function of captions.FONT_SIZE: usable width is 1080
+# minus two 90px margins, and the average advance is about half the em. If one
+# moves without the other, lines either overflow the frame or waste half of it.
+_fits = (TARGET_W - 180) / (captions.FONT_SIZE * 0.5)
+check("the character budget still matches the font size",
+      abs(CAPTION_MAX_CHARS - _fits) <= 3,
+      f"budget {CAPTION_MAX_CHARS}, ~{_fits:.0f} fit at {captions.FONT_SIZE}px")
+check("the stroke stays in the 3-4px range short-form editors settle on",
+      3 <= captions.OUTLINE <= 4, str(captions.OUTLINE))
 
 section("ass generation")
 clip = Clip(0.0, 6.0, "t")
@@ -95,6 +104,60 @@ check("braces escaped to parens", "{tag}" not in events and "(tag)" in events)
 check("cue never zero-length",
       all(float(line.split(",")[2].split(":")[-1]) > float(line.split(",")[1].split(":")[-1])
           for line in events.splitlines() if line.startswith("Dialogue")))
+
+
+def cue_times(ass_body: str) -> list[tuple[float, float]]:
+    """(start, end) per Dialogue line, in seconds."""
+    def secs(t: str) -> float:
+        h, m, rest = t.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(rest)
+    out = []
+    for line in ass_body.split("[Events]")[1].splitlines():
+        if line.startswith("Dialogue"):
+            f = line.split(",", 10)
+            out.append((secs(f[1]), secs(f[2])))
+    return out
+
+
+# THE CHECK THAT DID NOT EXIST, which is why this shipped in every clip the
+# tool has ever produced. LAST_WORD_HOLD was added to the end of every caption
+# line with nothing clamping it against the next line's start, so on continuous
+# speech two Dialogue events were live at once — 34 of 34 consecutive pairs in
+# one real clip, 100% — and libass STACKS simultaneous events: for ~3 frames the
+# viewer saw the upcoming caption sitting above the one still on screen.
+#
+# Invisible in the .ass file, which reads as entirely correct. Only a rendered
+# frame or this assertion catches it.
+section("caption cues must be disjoint")
+for label, mk_words in (
+    ("ltr, word-by-word highlighting", lambda: words(40)),
+    ("rtl, one cue per line", lambda: [Word("مرحبا", i * 0.5, i * 0.5 + 0.45)
+                                       for i in range(40)]),
+    # Continuous speech with no silence is the case that produced the overlap:
+    # every line's neighbour starts inside the hold window.
+    ("gapless speech", lambda: [Word("word", i * 0.3, i * 0.3 + 0.3)
+                                for i in range(40)]),
+):
+    _p = captions.build_ass(Clip(0.0, 30.0, "t"), mk_words(), Path("_tmp_ov.ass"))
+    _cues = cue_times(_p.read_text(encoding="utf-8"))
+    _bad = [(a, b) for a, b in zip(_cues, _cues[1:], strict=False) if b[0] < a[1]]
+    check(f"{label}: no two cues are ever on screen together",
+          not _bad, f"{len(_bad)} of {max(0, len(_cues) - 1)} pairs overlap, "
+                    f"e.g. {_bad[0] if _bad else ''}")
+    check(f"{label}: and every cue still has a visible duration",
+          all(e > s for s, e in _cues), str([c for c in _cues if c[1] <= c[0]][:3]))
+    _p.unlink(missing_ok=True)
+
+# The hold is what makes a caption linger past the last word; clamping must not
+# silently delete it where there IS room. A trailing gap leaves the full hold.
+_gapped = [Word("a", 0.0, 0.4), Word("b", 5.0, 5.4)]
+_cues = cue_times(captions.build_ass(Clip(0.0, 8.0, "t"), _gapped,
+                                     Path("_tmp_hold.ass"), per_line=1)
+                  .read_text(encoding="utf-8"))
+check("the hold survives where the next line is far away",
+      abs(_cues[0][1] - (0.4 + captions.LAST_WORD_HOLD)) < 1e-6, str(_cues[0]))
+Path("_tmp_hold.ass").unlink(missing_ok=True)
+section("ass generation, continued")
 for tmp in (path, braced):
     tmp.unlink(missing_ok=True)
 
@@ -365,6 +428,76 @@ check("the refusal names the allowed shape and never echoes the tag back",
                                     fetch.caption_languages, _meta))
           for _meta in ("(", "[")))
 
+section("stage 0 download progress — the yt-dlp hook")
+# A merged DASH fetch downloads the video stream and the audio stream as two
+# SEPARATE files, and `downloaded_bytes` restarts at zero for the second. That
+# is the whole reason this is a stateful hook rather than a dict lookup: a
+# naive percentage runs 0->100 twice and reads as a bug.
+_seen: list[fetch.FetchProgress] = []
+_hook = fetch.progress_hook(_seen.append)
+
+_hook({"status": "downloading", "filename": "source.f299.mp4",
+       "downloaded_bytes": 1024, "total_bytes": 4096})
+check("a downloading event reports bytes and total",
+      (_seen[-1].downloaded_bytes, _seen[-1].total_bytes) == (1024, 4096),
+      repr(_seen[-1]))
+check("the first file is index 1, not 0", _seen[-1].file_index == 1)
+
+_hook({"status": "downloading", "filename": "source.f299.mp4",
+       "downloaded_bytes": 4096, "total_bytes": 4096})
+check("more events for the same file do not advance the index",
+      _seen[-1].file_index == 1, repr(_seen[-1]))
+
+check("a downloading reading is not final", _seen[-1].final is False)
+
+_hook({"status": "error", "filename": "source.f299.mp4"})
+check("an error status reports nothing", len(_seen) == 2)
+
+# The last `downloading` event before a file completes is usually dropped by the
+# consumer's write throttle, so without this the job record would sit forever
+# showing a stale "412 MB of 1.1 GB" on a download that finished. A stale number
+# is worse than none: it looks authoritative.
+_hook({"status": "finished", "filename": "source.f299.mp4",
+       "downloaded_bytes": 4096, "total_bytes": 4096})
+check("a finished event reports a closing reading",
+      len(_seen) == 3 and _seen[-1].downloaded_bytes == 4096, repr(_seen[-1]))
+check("and marks it final, so a throttle cannot drop it",
+      _seen[-1].final is True, repr(_seen[-1]))
+check("finishing a file does not advance the index past it",
+      _seen[-1].file_index == 1, repr(_seen[-1]))
+
+_hook({"status": "downloading", "filename": "source.f140.m4a",
+       "downloaded_bytes": 512, "total_bytes": 2048})
+check("the DASH audio file is index 2, so the byte reset is explained",
+      (_seen[-1].file_index, _seen[-1].downloaded_bytes) == (2, 512),
+      repr(_seen[-1]))
+
+_est: list[fetch.FetchProgress] = []
+fetch.progress_hook(_est.append)({
+    "status": "downloading", "filename": "a.mp4",
+    "downloaded_bytes": 10, "total_bytes_estimate": 99.5})
+check("an estimate stands in when total_bytes is absent",
+      _est[-1].total_bytes == 99, repr(_est[-1]))
+
+_none: list[fetch.FetchProgress] = []
+fetch.progress_hook(_none.append)({
+    "status": "downloading", "filename": "a.mp4", "downloaded_bytes": 10})
+check("no size anywhere means total is None, never a guess",
+      _none[-1].total_bytes is None, repr(_none[-1]))
+
+# yt-dlp calls the hook INSIDE its download loop, so an exception raised here
+# propagates and kills the fetch. A progress report must never cost the video.
+def _explode(_reading):
+    raise RuntimeError("the store is gone")
+
+_boom = fetch.progress_hook(_explode)
+try:
+    _boom({"status": "downloading", "filename": "a.mp4", "downloaded_bytes": 1})
+    _escaped: BaseException | None = None
+except BaseException as _exc:                         # noqa: BLE001 — that IS the check
+    _escaped = _exc
+check("a failing callback cannot kill the download", _escaped is None, repr(_escaped))
+
 section("ffmpeg binary resolution")
 # For hosts where ffmpeg exists but is not on PATH. Overriding the binary is
 # safer than rewriting PATH: a bad PATH takes every other tool down with it.
@@ -540,7 +673,19 @@ check("newline in a font name cannot inject a directive",
       "\n" not in captions.safe_font("Arial\nStyle: Evil,Arial,999"))
 check("font name length bounded", len(captions.safe_font("A" * 500)) == 64)
 check("empty font falls back rather than producing a blank field",
-      captions.safe_font("  ,,  ") == "Arial")
+      captions.safe_font("  ,,  ") == DEFAULT_FONT, captions.safe_font("  ,,  "))
+# The default lived as a literal in six places and four of them were updated
+# once, leaving `build_ass` and `safe_font` still emitting Arial into the Style
+# line. One constant, and this asserts the callers actually read it.
+import inspect as _inspect  # noqa: E402
+
+_font_defaults = {
+    "build_ass": _inspect.signature(captions.build_ass).parameters["font"].default,
+    "render_all": _inspect.signature(encode.render_all).parameters["font"].default,
+    "safe_font": captions.safe_font(""),
+}
+check("every default font path agrees on one constant",
+      set(_font_defaults.values()) == {DEFAULT_FONT}, str(_font_defaults))
 check("a normal font name is untouched",
       captions.safe_font("Traditional Arabic") == "Traditional Arabic")
 styled = captions.build_ass(
@@ -830,10 +975,21 @@ check("inverted range collapses instead of exploding",
 check("empty transcript is a no-op", cuts.snap(Clip(1.0, 2.0, "t"), []).start == 1.0)
 check("words_in excludes partial words",
       all(x.start >= 9.8 and x.end <= 20.9 for x in cuts.words_in(snapped, w)))
-kept = cuts.within_duration(
-    [Clip(0, 5, "short"), Clip(0, 40, "ok"), Clip(0, 400, "long")], 30, 75)
-check("duration filter keeps only the middle", [c.title for c in kept] == ["ok"],
-      str([c.title for c in kept]))
+_mixed = [Clip(0, 5, "short"), Clip(0, 40, "ok"), Clip(0, 400, "long")]
+check("a clip under min_len is labelled short",
+      cuts.classify_duration(_mixed[0], 30, 75) == "short")
+check("an in-range clip carries no label",
+      cuts.classify_duration(_mixed[1], 30, 75) == "")
+check("a clip over max_len is labelled long",
+      cuts.classify_duration(_mixed[2], 30, 75) == "long")
+check("report_durations returns the ones that missed, and only those",
+      [c.title for c in cuts.report_durations(_mixed, 30, 75)] == ["short", "long"])
+# THE REVERSAL, and the check that pins it: this used to be `within_duration`
+# and it DELETED these clips. Six of eight on a real run were 24s shorts that
+# were fine to publish, discarded unseen for missing 30s by four seconds.
+check("nothing is removed — report_durations leaves the plan whole",
+      [c.title for c in _mixed] == ["short", "ok", "long"],
+      str([c.title for c in _mixed]))
 
 # snap used to rewrite the clip it was given and hand back the same object. The
 # first test written for the drift below could not see it: `before` and `after`
@@ -869,13 +1025,27 @@ check("the idempotent value is still on a word boundary",
 
 # `hi * 1.4` admitted 72.8s for --max-len 52, defeating the only reason anyone
 # passes 52 (landing under the 60s Shorts ceiling once snapping has had its say)
-_over = cuts.within_duration([Clip(0, 56.7, "the real clip 03")], 28, 52)
-check("a clip well over max-len is dropped, not admitted by a 40% margin",
-      _over == [], f"kept {[c.duration for c in _over]}")
-check("but snapping's own slack is still allowed",
-      len(cuts.within_duration([Clip(0, 53.0, "just over")], 28, 52)) == 1)
+check("a clip well over max-len is flagged, not excused by a 40% margin",
+      cuts.classify_duration(Clip(0, 56.7, "the real clip 03"), 28, 52) == "long")
+# The slack has to stay even though nothing is dropped: 53.0s against a 52s
+# max is snapping having moved the boundary onto a word end, not the model
+# overrunning. A flag that fires on that is a flag nobody reads.
+check("snapping's own slack does not trip the flag",
+      cuts.classify_duration(Clip(0, 53.0, "just over"), 28, 52) == "")
 check("the slack is absolute, so it does not scale with the request",
-      len(cuts.within_duration([Clip(0, 130.0, "long")], 60, 100)) == 0)
+      cuts.classify_duration(Clip(0, 130.0, "long"), 60, 100) == "long")
+
+# The measured qwen3:14b signature, job 4126b12169dd: BLOCK_SECONDS is 12, and
+# the model sized every clip by transcript-LINE count instead of seconds, so
+# seven came back at two blocks (~24s) and one at three (36.4s). Asking for 8
+# and receiving 1 has to be legible as "7 were the wrong length", not as "the
+# model found nothing" — those are different problems with different fixes.
+_two_block = [Clip(0, 24.0 + i * 0.4, f"two blocks {i}") for i in range(7)]
+_plan = _two_block + [Clip(0, 36.4, "three")]
+_flagged = cuts.report_durations(_plan, 30, 75)
+check("the measured 24s case flags 7 — and still plans all 8",
+      (len(_flagged), len(_plan)) == (7, 8),
+      f"{len(_flagged)} flagged, {len(_plan)} planned")
 
 section("model response parsing — stage 3")
 good = """```json
@@ -891,6 +1061,23 @@ check("missing optional fields default", parsed[0].hook == "")
 raises("prose instead of JSON", ModelResponseError, select.parse_response, "sure! here you go")
 raises("object instead of array", ModelResponseError, select.parse_response, '{"a": 1}')
 raises("missing required key", ModelResponseError, select.parse_response, '[{"title": "x"}]')
+
+# A BARE JSON STRING is valid JSON, so a thinking model that reasons its way to
+# the answer and then narrates it in `content` parses cleanly and arrives here
+# rather than at the decode error. `qwen/qwen3-8b` did exactly this. Reporting
+# only the type ("got str") cost three live API calls to work out what had
+# happened, so the payload travels with the message like it does above.
+_narrated = ('"displayed in JSON format as requested, with 8 clips selected '
+             'based on the criteria."')
+raises("a narrated non-answer is refused", ModelResponseError,
+       select.parse_response, _narrated)
+try:
+    select.parse_response(_narrated)
+except ModelResponseError as exc:
+    _msg = str(exc)
+check("and the error shows WHAT came back, not just its type",
+      "displayed in JSON format" in _msg, _msg[:120])
+check("while still naming the type it got", "str" in _msg, _msg[:120])
 
 section("transcript blocks")
 blocks = select.build_transcript_blocks(words(100), block_seconds=12.0)

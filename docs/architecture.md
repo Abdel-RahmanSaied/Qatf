@@ -85,11 +85,9 @@ Diagnose them separately. They have never once been the same bug.
 and the end to the nearest **word end** plus `SNAP_TAIL` (0.35s). Both move
 outward. A clip the model sized at 58s routinely lands at 60–63s.
 
-`within_duration` then drops anything that landed outside the request by more
-than `DURATION_SLACK` (2 s). The margin is absolute rather than proportional
-because what snapping adds is absolute — lead plus tail plus at most a word. The
-old `lo * 0.6` to `hi * 1.4` scaled with the request and stopped meaning anything
-at the top: `--max-len 52` admitted 72.8 s. Drops are logged.
+`classify_duration` then LABELS anything that landed outside the request by
+more than snapping can account for. Nothing is removed — the label rides on
+the clip as `out_of_range` and the operator decides whether to publish it.
 
 `snap` is **idempotent**, and that is load-bearing rather than tidy: `--plan` and
 `PUT /jobs/{id}/plan` re-snap by default, so the hand-edit round trip runs it

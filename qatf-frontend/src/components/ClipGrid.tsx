@@ -1,6 +1,7 @@
 import { clipUrl } from "../api/client";
 import type { ClipModel, ClipOutput } from "../api/types";
 import { formatBytes, formatSeconds } from "../lib/format";
+import { ClipDownload } from "./ClipDownload";
 
 interface Props {
   outputs: ClipOutput[];
@@ -38,7 +39,7 @@ export function ClipGrid({ outputs, clips }: Props) {
                   {formatSeconds(clip.end - clip.start)}
                 </span>
               )}
-              <a href={clipUrl(output)} download={output.name}>Download</a>
+              <ClipDownload output={output} />
             </div>
           </div>
         );

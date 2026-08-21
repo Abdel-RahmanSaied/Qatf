@@ -24,6 +24,7 @@ parsing half is pinned offline in `smoke_pipeline.py` from a fixture.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -59,6 +60,86 @@ class Fetched:
     duration: float | None = None
     video_id: str = ""
     language: str | None = None
+
+
+@dataclass
+class FetchProgress:
+    """One normalised reading from yt-dlp's download loop.
+
+    `total_bytes` is None when nothing knows the size. Callers must render the
+    byte count WITHOUT a percentage in that case rather than invent a
+    denominator — the same discipline stage 5 follows everywhere else: a
+    progress readout that guesses is the report lying about the one thing it
+    exists to say.
+    """
+
+    downloaded_bytes: int
+    #: best available size, which may be yt-dlp's *estimate*. An estimate can be
+    #: overshot, so a consumer drawing a bar must clamp its width at 100% while
+    #: leaving the byte counts alone — the bytes are measured, the total is not.
+    total_bytes: int | None
+    #: 1-based position in the sequence of files this fetch downloads. See
+    #: `progress_hook` for why a single fetch has more than one.
+    file_index: int
+    #: this file is done, and this is its closing reading.
+    #:
+    #: A consumer that throttles its writes MUST let a final reading through. The
+    #: last `downloading` event before a file completes is exactly the one a
+    #: throttle drops, which would leave a record permanently claiming a finished
+    #: download was still at 412 MB of 1.1 GB. A stale number reads as
+    #: authoritative, so it is worse than no number at all.
+    final: bool = False
+
+
+def progress_hook(
+    on_progress: Callable[[FetchProgress], None],
+) -> Callable[[dict], None]:
+    """Build a yt-dlp `progress_hooks` entry that reports normalised readings.
+
+    Stateful, and that is the point. **A merged DASH fetch downloads the video
+    stream and the audio stream as two SEPARATE files**, so `downloaded_bytes`
+    restarts at zero partway through what a user sees as one download. A
+    percentage computed straight off the event therefore runs 0->100 twice and
+    reads as a bug. `file_index` exists so a consumer can *say* which part is
+    running rather than smooth the reset into a fake monotonic number — the
+    same call `StageTimeline` makes in refusing to draw a stage that never ran
+    as completed.
+
+    **Nothing raised by `on_progress` escapes.** yt-dlp calls this from inside
+    its download loop, so an exception here aborts the fetch: a failure to
+    *report* progress would cost the video itself. Reported and swallowed.
+    """
+    seen_filename: str | None = None
+    index = 0
+
+    def hook(event: dict) -> None:
+        nonlocal seen_filename, index
+        try:
+            status = event.get("status")
+            # `error` is deliberately not reported: the download is failing, and
+            # `download` raises SourceNotFetchable for that. A progress reading
+            # would only muddy the record on its way out.
+            if status not in ("downloading", "finished"):
+                return
+            filename = event.get("filename")
+            if filename != seen_filename:
+                seen_filename = filename
+                index += 1
+            # `or` rather than a None check on purpose: yt-dlp supplies the key
+            # with a None value as often as it omits it, and a zero total is
+            # just as unusable as a missing one.
+            raw_total = event.get("total_bytes") or event.get("total_bytes_estimate")
+            on_progress(FetchProgress(
+                downloaded_bytes=int(event.get("downloaded_bytes") or 0),
+                total_bytes=int(raw_total) if raw_total else None,
+                file_index=index,
+                final=status == "finished",
+            ))
+        except Exception as exc:              # noqa: BLE001 — see the docstring
+            log(f"progress report failed, download continues: "
+                f"{type(exc).__name__}: {exc}")
+
+    return hook
 
 
 def validate_url(raw: str) -> str:
@@ -194,11 +275,17 @@ def caption_languages(language: str | None) -> list[str]:
 
 
 def download(url: str, dest: Path, *, language: str | None = None,
-             want_captions: bool = True) -> Fetched:
+             want_captions: bool = True,
+             on_progress: Callable[[FetchProgress], None] | None = None) -> Fetched:
     """Fetch the video, and its caption track when asked, into `dest`.
 
     Validates first — `download` is reachable from the CLI as well as the API,
-    so it cannot rely on a router having checked."""
+    so it cannot rely on a router having checked.
+
+    `on_progress` is called with a `FetchProgress` as bytes land. It is passed
+    IN rather than reached for, so this module still knows nothing about jobs or
+    a store: the layer arrows say `pipeline` may not import `jobs`, and a
+    progress feature is not a reason to bend that."""
     url = validate_url(url)
     yt_dlp = ytdlp_module()
     dest.mkdir(parents=True, exist_ok=True)
@@ -218,6 +305,8 @@ def download(url: str, dest: Path, *, language: str | None = None,
         "subtitlesformat": CAPTION_FORMAT,
         "merge_output_format": "mp4",
     }
+    if on_progress is not None:
+        options["progress_hooks"] = [progress_hook(on_progress)]
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:

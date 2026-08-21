@@ -26,6 +26,7 @@ The pipeline takes minutes, so **nothing is synchronous**. Every start returns
 | `GET` | `/healthz` | `health` | readiness, provider roster, transcription device |
 | `POST` | `/jobs` | `createJob` | start from a server-side path |
 | `POST` | `/jobs/upload` | `createJobFromUpload` | start from a multipart upload |
+| `POST` | `/jobs/url` | `createJobFromUrl` | start from a YouTube URL. `403` off the allowlist |
 | `GET` | `/jobs` | `listJobs` | list, optional `?state=` |
 | `GET` | `/jobs/{id}` | `getJob` | **poll this** |
 | `DELETE` | `/jobs/{id}` | `deleteJob` | refuses while running |
@@ -49,6 +50,8 @@ they stay that way.
 ```mermaid
 stateDiagram-v2
     [*] --> queued
+    queued --> fetching: 0 · yt-dlp, url jobs only
+    fetching --> extracting: 1 · demux
     queued --> extracting: 1 · demux
     extracting --> transcribing: 2 · whisper
     transcribing --> selecting: 3 · llm
@@ -64,8 +67,13 @@ stateDiagram-v2
     selecting --> failed
 ```
 
-`queued`, `extracting`, `transcribing`, `selecting` and `rendering` are the
-**running** states. A job in one of them cannot be deleted, re-planned or
+`fetching` occurs only on a job started from `POST /jobs/url`. It is its own
+state rather than part of `extracting` because it is the one stage whose duration
+depends on somebody else's network — a job sitting still deserves to say whether
+it is waiting on YouTube or on ffmpeg.
+
+`queued`, `fetching`, `extracting`, `transcribing`, `selecting` and `rendering`
+are the **running** states. A job in one of them cannot be deleted, re-planned or
 re-rendered — cancel it first.
 
 Set `auto_render: false` to stop at `planned`.
@@ -143,6 +151,40 @@ Three fields are worth reading on the way past:
 - **`transcript_cached`** — whether stage 2 ran at all.
 - **`outputs`** — grows during `rendering` rather than appearing all at once, so
   progress is visible clip by clip.
+
+### Stage 0 progress on a URL job
+
+`fetch_progress` reports how far the download has got, updated about once a
+second while `state=fetching`. It is **null on a job that never fetched**, which
+is not the same as a job sitting at zero bytes — only a `source=youtube` job can
+ever be in the second, so do not render a bar for the first.
+
+```json
+{
+  "state": "fetching",
+  "message": "[0/5] fetching the video and its captions",
+  "fetch_progress": { "downloaded_bytes": 431820800, "total_bytes": 1181116006, "file_index": 1 }
+}
+```
+
+Two things about these numbers, both of which will otherwise read as bugs:
+
+- **`total_bytes` may be an estimate, and it can be null.** yt-dlp frequently
+  reports only `total_bytes_estimate`, which an actual download can overshoot.
+  Clamp a progress bar at 100% and leave the byte counts alone — the bytes are
+  measured, the total may not be. When nothing knows the size the field is null,
+  and the honest rendering is a byte count with no percentage at all rather than
+  a bar against an invented denominator.
+- **`downloaded_bytes` restarts at zero when `file_index` increments.** A merged
+  DASH fetch downloads the video stream and the audio stream as *separate*
+  files, so one download the user sees is two the server performs. Report the
+  part — the web UI shows `part 2 · …` — rather than smoothing the reset into a
+  fake monotonic percentage that hides it.
+
+The reading is coalesced to roughly one write per second, because yt-dlp reports
+per chunk and every write is a transaction. The **closing** reading for each file
+bypasses that throttle, so a finished download is never left recorded as partway
+through.
 
 ---
 
@@ -234,6 +276,47 @@ clips now caption text nobody will see again.
 Correcting text does not move a caption in time, and does not change which
 passages the model picked — selection already ran. If a misheard word made the
 model skip a good moment, fix the word and edit the plan directly.
+
+---
+
+## Clips outside the length you asked for
+
+`clips` is what the model was asked for; `min_len`/`max_len` is the length it
+was asked for. It misses sometimes, and when it does **the clip is kept, not
+discarded** — every clip in the plan gets rendered.
+
+Each one carries `out_of_range`: `"short"`, `"long"`, or `null`.
+
+```json
+{
+  "clips": [
+    { "start": 145.3, "end": 195.9, "title": "...", "out_of_range": null },
+    { "start": 402.1, "end": 426.3, "title": "...", "out_of_range": "short" }
+  ],
+  "message": "done. 8 clips — 6 of 8 outside 30-52s, kept and flagged"
+}
+```
+
+**Read it before publishing.** `len(clips)` no longer tells you they are all
+usable — a plan of 8 can be 6 clips that missed the range. What the two labels
+mean in practice:
+
+- **`short`** — under `min_len`. Usually still publishable; a 24s clip is a
+  perfectly good Short. If most of a plan is short and the durations cluster,
+  the model is likely sizing clips by transcript-line count rather than by
+  seconds — see `docs/quality.md`.
+- **`long`** — over `max_len`. Worth checking before upload: YouTube Shorts
+  rejects anything past 60s, so a `long` clip may be unpostable there even
+  though it rendered fine.
+
+The label allows `DURATION_SLACK` (2s) either side, so it means *the model*
+missed the range — not that snapping nudged a boundary onto a word end. A 53s
+clip against `--max-len 52` is not flagged.
+
+`out_of_range` is **server-computed and read-only**. It is derived on every read
+from the clip and the job's options, never stored, so a plan edit cannot leave a
+stale label behind. A value sent to `PUT /jobs/{id}/plan` is discarded and
+recalculated — edit a clip to 20s and it comes back marked `short`.
 
 ---
 

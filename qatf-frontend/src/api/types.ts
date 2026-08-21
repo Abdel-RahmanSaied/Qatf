@@ -69,7 +69,7 @@ export const DEFAULT_OPTIONS: JobOptions = {
   fixups: null,
   hotwords: null,
   initial_prompt: null,
-  font: "Arial",
+  font: "Noto Sans Arabic",
   captions: true,
   per_line: 4,
   transcript_source: "auto",
@@ -97,6 +97,16 @@ export interface ClipModel {
   hook: string;
   why: string;
   score: number;
+  /** Set when this clip misses the job's min_len/max_len by more than snapping
+   * can account for. It is still in the plan and still gets rendered — the
+   * label is for the operator to judge, not a refusal.
+   *
+   * Server-computed. Never derive it here: the server applies DURATION_SLACK,
+   * so a naive `duration < min_len` would flag a 29.5s clip the server calls
+   * fine, and a flag that cries wolf is a flag nobody reads. */
+  /** Optional because the plan editor builds draft clips locally that the
+   * server has not labelled yet. Present on anything that came off the wire. */
+  out_of_range?: "short" | "long" | null;
 }
 
 export interface WordModel {
@@ -121,6 +131,19 @@ export interface ClipOutput {
   url: string;
 }
 
+/** Stage 0 download progress. Mirrors FetchProgressModel.
+ *
+ * `total_bytes` may be yt-dlp's ESTIMATE, which can be overshot — clamp a bar
+ * at 100% but leave the byte counts alone, because the bytes are measured and
+ * the total may not be. `file_index` increments when a merged DASH fetch moves
+ * from the video stream to the audio stream, and `downloaded_bytes` restarts
+ * at zero when it does. */
+export interface FetchProgressModel {
+  downloaded_bytes: number;
+  total_bytes: number | null;
+  file_index: number;
+}
+
 export interface JobResponse {
   id: string;
   state: JobState;
@@ -138,6 +161,9 @@ export interface JobResponse {
   transcript_cached: boolean;
   clips: ClipModel[];
   outputs: ClipOutput[];
+  /** null on a job that never fetched — which is NOT the same as zero
+   * bytes, so never render a bar for it. */
+  fetch_progress: FetchProgressModel | null;
 }
 
 export interface ProviderInfo {

@@ -147,7 +147,17 @@ def parse_response(raw: str) -> list[Clip]:
             raise ModelResponseError(
                 f"expected a 'clips' array, got keys {sorted(data)[:6]}")
     if not isinstance(data, list):
-        raise ModelResponseError(f"expected a JSON array, got {type(data).__name__}")
+        # Show `raw`, not just the type. A BARE JSON STRING is valid JSON, so a
+        # model that reasons its way to the answer and then narrates it lands
+        # here rather than at the decode error above — and "got str" alone gives
+        # the operator nothing to act on. `qwen/qwen3-8b` returned exactly one
+        # sentence, `"displayed in JSON format as requested, with 8 clips
+        # selected..."`, and diagnosing that took three API calls because this
+        # message withheld the one thing that would have explained it. The
+        # JSONDecodeError branch has always shown its payload; so does this one.
+        raise ModelResponseError(
+            f"expected a JSON array of clips, got a bare "
+            f"{type(data).__name__}:\n{raw[:400]}")
 
     clips = []
     for item in data:

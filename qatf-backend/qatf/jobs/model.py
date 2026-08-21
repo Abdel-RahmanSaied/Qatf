@@ -88,6 +88,18 @@ class Job:
     #: Absent on records written before this field existed; `api.deps` falls
     #: back to stat() for those rather than reporting a wrong number.
     output_sizes: dict[str, int] = field(default_factory=dict)
+    #: stage 0 download progress, as `{"downloaded_bytes", "total_bytes",
+    #: "file_index"}` — or None on a job that never fetched.
+    #:
+    #: None rather than a zeroed dict on purpose: "this job downloaded nothing"
+    #: and "this job has downloaded 0 bytes so far" are different facts, and only
+    #: a `source="youtube"` job can ever be in the second. A client that cannot
+    #: tell them apart draws an empty progress bar on an upload.
+    #:
+    #: A plain dict for the same reason `clips` is: the record round-trips
+    #: through `asdict`/`json.dumps`, and a nested dataclass buys nothing there.
+    #: Absent on records written before this field existed, which read as None.
+    fetch_progress: dict | None = None
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
 

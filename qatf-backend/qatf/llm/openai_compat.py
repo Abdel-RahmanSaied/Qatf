@@ -59,6 +59,13 @@ class OpenAICompatProvider(LLMProvider):
             kwargs["response_format"] = fmt
         if self.caps.effort and self.effort:
             kwargs["reasoning_effort"] = self.effort
+        elif self.caps.reasoning_control:
+            # An explicit effort wins if a preset ever declares both; otherwise
+            # this stage turns deliberation off. See `Capabilities`: a thinking
+            # model that reasons its way to the answer and then narrates it in
+            # `content` produces valid JSON that is not a clip list, which fails
+            # at the shape check with nothing to show for the tokens spent.
+            kwargs["extra_body"] = {"reasoning": {"enabled": False}}
 
         resp = self._client().chat.completions.create(**kwargs)
         choice = resp.choices[0]

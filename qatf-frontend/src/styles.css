@@ -929,6 +929,13 @@ dd { margin: 0; overflow-wrap: anywhere; }
   overflow: hidden;
   margin: .5rem 0;
 }
+/* Stage 0's download readout, under the job message it quantifies. */
+.fetch-progress {
+  margin: -.25rem 0 .75rem;
+  max-width: 34rem;
+}
+.fetch-progress .progress { margin: .35rem 0 .2rem; }
+
 .progress > div {
   height: 100%;
   background: var(--saffron);
@@ -1020,6 +1027,36 @@ dd { margin: 0; overflow-wrap: anywhere; }
   font-variant-numeric: tabular-nums;
   font-size: .74rem;
   color: var(--muted);
+}
+
+/* The metered download, while it runs. `flex-basis: 100%` drops it onto its own
+   line inside the wrapping .clip-meta row, so the bar spans the clip's width
+   instead of competing with the size and duration for horizontal space. */
+.clip-download,
+.clip-download-error {
+  flex-basis: 100%;
+}
+.clip-download .field-help {
+  font-size: .7rem;
+}
+.clip-download-error {
+  color: var(--clay);
+}
+
+/* A slimmer .progress for the clip card, which is a third the width of the
+   upload form's. Modifier only — the fill, the track and the transition all
+   stay with .progress so the two bars cannot drift apart. */
+.progress-slim {
+  height: 4px;
+  margin: .25rem 0 .15rem;
+}
+
+/* Mid-transfer the link is inert; `aria-disabled` already says so to a screen
+   reader, and this says the same thing to a mouse. */
+.clip-meta a[aria-disabled="true"] {
+  color: var(--muted);
+  pointer-events: none;
+  text-decoration: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1119,6 +1156,31 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .banner-warn  { border-color: var(--saffron-dim); background: rgba(232,163,61,.05); color: var(--parchment); }
 .banner-error { border-color: var(--clay);        background: rgba(196,87,63,.09);  color: var(--clay); }
 .banner-info  { border-color: var(--line-strong); background: rgba(107,140,175,.08); color: var(--sky); }
+
+/* The dropped-clip notice stacks a sentence over a list, so it opts out of
+   .banner's row layout. Durations are tabular so the column of numbers reads
+   as a column — that is the whole point of showing them next to a range. */
+.dropped { flex-direction: column; gap: .45rem; }
+.dropped-head { margin: 0; }
+.dropped-list { margin: 0; padding: 0; list-style: none; display: grid; gap: .15rem; }
+.dropped-item { display: flex; gap: .6rem; align-items: baseline; }
+.dropped-dur { color: var(--saffron); min-width: 3.6rem; text-align: right; }
+.dropped-title { color: var(--muted); overflow-wrap: anywhere; }
+
+/* SHORT and LONG are labels, not alarms — the banner's saffron edge already
+   carries the signal, so the tag stays outline-only rather than spending a
+   second accent on a word that appears once per flagged clip. */
+.range-tag {
+  font-size: .6rem;
+  letter-spacing: .08em;
+  padding: 0 .3rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  color: var(--muted);
+  flex: none;
+}
+.range-tag--short { border-color: var(--saffron-dim); color: var(--saffron); }
+.range-tag--long  { border-color: var(--clay); color: var(--clay); }
 
 .toasts {
   position: fixed;

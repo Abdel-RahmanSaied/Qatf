@@ -92,29 +92,47 @@ def words_in(clip: Clip, words: list[Word]) -> list[Word]:
     return [w for w in words if w.start >= clip.start - 0.01 and w.end <= clip.end + 0.01]
 
 
-def within_duration(clips: list[Clip], lo: int, hi: int) -> list[Clip]:
-    """Drop clips that fall outside the requested range by more than snapping
-    can account for, and say which ones went.
+def classify_duration(clip: Clip, lo: int, hi: int) -> str:
+    """How one clip sits against the requested range: `""`, `"short"` or `"long"`.
+
+    **This classifies. It does not filter.** Clips outside the range stay in the
+    plan and get rendered; the label travels with them so a front end can mark
+    them and the operator decides. That is a deliberate reversal: this function
+    used to be `within_duration`, which DROPPED anything out of range, and the
+    reasoning for dropping was sound right up until it met a real transcript.
+    Stage 3 kept proposing 24s clips against a `min_len` of 30 — six of eight on
+    the run that settled it — and every one of them was a perfectly good 24s
+    short, discarded unseen because it missed a number by four seconds. Refusing
+    to render a clip is a bigger decision than the flag that produced it.
 
     The margin is DURATION_SLACK seconds, not a percentage. It used to be
     `lo * 0.6 <= d <= hi * 1.4`, which scales with the request and stops meaning
-    anything at the top: `--max-len 52` admitted 72.8s. That silently
-    contradicts the reason the flag is set to 52 in the first place — snapping
-    adds a little, so ask for 52 to land under YouTube Shorts' 60s ceiling — and
-    a proportional margin cannot express "a little". An absolute one can, and
-    the amount snapping can actually add is absolute: `SNAP_LEAD + SNAP_TAIL`
-    plus at most a word of boundary movement.
+    anything at the top: `--max-len 52` admitted 72.8s. A proportional margin
+    cannot express "a little"; an absolute one can, and the amount snapping can
+    actually add is absolute — `SNAP_LEAD + SNAP_TAIL` plus at most a word of
+    boundary movement.
 
-    A clip well over `hi` is the MODEL overrunning its instruction, not snapping
-    drifting, and dropping it is what the flag asked for. It is logged rather
-    than dropped quietly: a plan that silently returns 7 clips for `--clips 8`
-    reads as the model finding nothing, which is a different problem with a
-    different fix."""
-    kept, dropped = [], []
-    for c in clips:
-        (kept if lo - DURATION_SLACK <= c.duration <= hi + DURATION_SLACK
-         else dropped).append(c)
-    for c in dropped:
-        log(f"      dropped {c.duration:.1f}s clip (asked for {lo}-{hi}s "
-            f"±{DURATION_SLACK:g}s): {c.title}")
-    return kept
+    The slack still belongs here even though nothing is dropped. Without it a
+    52.4s clip against `--max-len 52` reads as the model overrunning when it is
+    really snapping having nudged the boundary onto a word end. The flag has to
+    mean "the MODEL missed the range", or nobody will trust it.
+    """
+    if clip.duration < lo - DURATION_SLACK:
+        return "short"
+    if clip.duration > hi + DURATION_SLACK:
+        return "long"
+    return ""
+
+
+def report_durations(clips: list[Clip], lo: int, hi: int) -> list[Clip]:
+    """Log every clip that misses the range, and hand back the ones that did.
+
+    Nothing is removed — the return value is for the caller's own message, not
+    a filtered plan. A plan that quietly contains six clips shorter than the
+    `--min-len` the operator typed is still something they must be told about;
+    the change is that they are told INSTEAD of being overruled."""
+    flagged = [c for c in clips if classify_duration(c, lo, hi)]
+    for c in flagged:
+        log(f"      {classify_duration(c, lo, hi):>5}: {c.duration:.1f}s clip "
+            f"(asked for {lo}-{hi}s ±{DURATION_SLACK:g}s) — kept: {c.title}")
+    return flagged

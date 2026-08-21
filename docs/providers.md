@@ -102,6 +102,42 @@ produce unconstrained output, which is worse than a failure.
 
 ---
 
+## Thinking models need deliberation switched OFF
+
+Stage 3 wants a JSON clip list, not deliberation — and a reasoning model asked
+for JSON will happily spend the whole answer thinking and then put a *summary*
+in `content`.
+
+Measured on `qwen/qwen3-8b` through OpenRouter: 2,855 characters of correct
+analysis in the `reasoning` channel (it named the right passages), and a
+`content` of exactly this:
+
+```json
+"displayed in JSON format as requested, with 8 clips selected based on the criteria."
+```
+
+`start_mmss` appears **zero** times. `finish_reason` was `stop` — nothing was
+truncated, nothing errored, 832 completion tokens were spent. And because a
+**bare JSON string is valid JSON**, `json_object` mode was satisfied; the
+failure surfaced two layers later in `parse_response` as
+`expected a JSON array of clips, got a bare str`.
+
+So `Capabilities.reasoning_control` declares that an endpoint understands
+OpenRouter's unified `reasoning` field, and the OpenRouter preset sets it. With
+deliberation disabled the identical prompt parsed to 8 clips.
+
+Two details worth keeping:
+
+- **Declared, not always-sent.** `reasoning` is an OpenRouter extension.
+  Sending it to plain OpenAI or vLLM is a 400, not a degrade — the same rule as
+  `json_schema`.
+- **`chat_template_kwargs: {"enable_thinking": false}` does NOT work through
+  OpenRouter.** Tested: reasoning still ran at 3,611 characters. That parameter
+  is for vLLM directly. `reasoning: {"enabled": false}` is the one that works.
+
+An explicit `reasoning_effort` still wins if a preset ever declares both, so a
+provider that genuinely wants thinking is one capability row away.
+
 ## Self-hosting
 
 ```bash

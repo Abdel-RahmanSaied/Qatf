@@ -27,6 +27,7 @@ ENV = {
     "OPENAI_API_KEY": "sk-test",
     "MOONSHOT_API_KEY": "sk-moon",
     "ZHIPU_API_KEY": "sk-zhipu",
+    "OPENROUTER_API_KEY": "sk-or-test",
 }
 
 CLIPS = {"clips": [
@@ -126,6 +127,30 @@ legacy = build_provider("openai-legacy", env=ENV)
 bind(legacy, FakeOpenAI())
 legacy.complete_json("prompt", select.CLIP_SCHEMA)
 check("GPT-4 family uses max_tokens", "max_tokens" in legacy._client().captured)
+
+section("thinking is switched off where the endpoint allows it")
+# `qwen/qwen3-8b` through OpenRouter spent its whole answer in the reasoning
+# channel and returned, as content, the bare JSON string "displayed in JSON
+# format as requested, with 8 clips selected...". That is valid JSON, so
+# json_object mode was satisfied and stage 3 failed at the shape check with
+# 832 completion tokens spent and no clips. Verified against the live endpoint:
+# with reasoning disabled the same prompt parsed to 8 clips.
+router = build_provider("openrouter", env=ENV)
+bind(router, FakeOpenAI())
+router.complete_json("prompt", select.CLIP_SCHEMA)
+sent = router._client().captured
+check("openrouter asks for reasoning to be disabled",
+      sent.get("extra_body") == {"reasoning": {"enabled": False}}, str(sent.get("extra_body")))
+
+# `reasoning` is an OpenRouter extension. Sending it to an endpoint that does
+# not know it is a 400, not a degrade — the same rule as json_schema.
+for key in ("openai", "kimi", "glm", "vllm", "ollama"):
+    prov = build_provider(key, env=ENV)
+    bind(prov, FakeOpenAI())
+    prov.complete_json("prompt", select.CLIP_SCHEMA)
+    check(f"{key} is not sent the reasoning field",
+          "extra_body" not in prov._client().captured,
+          str(prov._client().captured.get("extra_body")))
 
 section("json_object-only providers")
 for key, expect_url in (("kimi", "moonshot"), ("glm", "bigmodel")):

@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from ..core.constants import CAPTION_MAX_WORDS, TARGET_H, TARGET_W
+from ..core.constants import CAPTION_MAX_WORDS, DEFAULT_FONT, TARGET_H, TARGET_W
 from ..core.errors import ReframeNotConfigured
 from ..core.types import Clip, Track, Word
 from ..core.utils import run, slugify
@@ -311,7 +311,7 @@ def _track_args(track: Track | None, cmd_path: Path,
 
 
 def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
-               work: Path, *, mode: str = "crop", font: str = "Arial",
+               work: Path, *, mode: str = "crop", font: str = DEFAULT_FONT,
                captions: bool = True, per_line: int = CAPTION_MAX_WORDS,
                crf: int = 20, fps: float | None = None,
                width: int = TARGET_W, height: int = TARGET_H,

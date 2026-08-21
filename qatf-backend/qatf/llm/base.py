@@ -35,6 +35,21 @@ class Capabilities:
     sampling: bool = False
     #: accepts a reasoning-effort hint
     effort: bool = False
+    #: endpoint understands OpenRouter's unified `reasoning` control, so
+    #: deliberation can be switched OFF for this stage.
+    #:
+    #: Stage 3 wants a JSON clip list, not deliberation, and a thinking model
+    #: asked for JSON will happily spend its whole answer reasoning and then
+    #: emit a summary sentence as `content`. Measured on `qwen/qwen3-8b`:
+    #: 2,855 characters of correct analysis in the reasoning channel, and a
+    #: content of `"displayed in JSON format as requested, with 8 clips
+    #: selected..."` — a bare JSON string, which is valid JSON, so
+    #: `json_object` mode was satisfied and stage 3 died at the shape check
+    #: instead. `finish_reason` was `stop`; nothing was truncated.
+    #:
+    #: Declared rather than always-sent, because `reasoning` is an OpenRouter
+    #: extension. Sending it to plain OpenAI or vLLM is a 400, not a degrade.
+    reasoning_control: bool = False
     #: context window, for the pre-flight length check. None = unknown.
     context_tokens: int | None = None
     #: name of the output-token parameter — the o-series and GPT-5 renamed it

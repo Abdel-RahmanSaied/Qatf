@@ -526,8 +526,21 @@ call a blocking `fh.write`, stalling the event loop for the whole upload. Those
 
 | Constant | Value | Why |
 | --- | --- | --- |
-| `CAPTION_MAX_WORDS` | 4 | |
-| `CAPTION_MAX_CHARS` | 22 | four 12-char words at 82 px is wider than 1080 px |
+| `CAPTION_MAX_WORDS` | 5 | |
+| `CAPTION_MAX_CHARS` | 28 | ~900 px usable (1080 less two 90 px margins) at ~½ em per glyph |
+| `captions.FONT_SIZE` | 64 | short-form editors settle at 55–75 pt on 1080×1920 |
+| `captions.OUTLINE` | 4 | 3–4 px is the norm; 7 px thickens Arabic joins until letterforms bleed |
+| default `--font` | `Noto Sans Arabic` | present in the image, covers Arabic **and** Latin |
+
+**`CAPTION_MAX_CHARS` is a function of `FONT_SIZE` and must move with it** —
+there is a check in `smoke_pipeline.py` that fails if they drift apart. The old
+82 px forced the budget down to 22 characters, half the 32–42 that reads
+comfortably, so lines turned over about twice as often as they needed to: 35
+caption lines in a 46 s clip, roughly one every 1.3 s.
+
+**Cue timings are disjoint by construction.** `LAST_WORD_HOLD` is clamped
+against the next line's start; unclamped it put two captions on screen at every
+hand-off and libass stacked them. See open risk 4 in CLAUDE.md.
 
 **Both limits are enforced.** Budgeting by word count alone overflows the frame on
 long words. `WrapStyle` must be `0` — with `2` (no wrapping) lines get clipped at
@@ -537,6 +550,105 @@ frame.
 Arabic captions appear and clear **per line** rather than tracking the spoken
 word. That is the cost of the RTL fix, and it is deliberate — see
 [troubleshooting.md](troubleshooting.md#the-rtl-caption-bug).
+
+---
+
+## Stage 3 — a small local model sizes clips by line count, not seconds
+
+Measured on the real 12-minute Arabic video (975s of caption-track transcript,
+2596 words), `--clips 8 --min-len 30 --max-len 75`, provider `ollama`, model
+`qwen3:14b`. Two runs, jobs `ca52ad57b0b4` and `4126b12169dd`:
+
+```text
+                         asked   returned   in range   rendered
+qwen3:14b (ollama)           8          8          1          1
+```
+
+Every one of the seven refused clips came back at **23.7–25.4s**, and one at
+11.9s. That is not noise. `build_transcript_blocks` labels the prompt in
+`BLOCK_SECONDS` blocks, which measured 12–13s apart on this transcript:
+
+```text
+[00:00] هل الاي اي زود انتاجيتنا ولا قلل مهارات كمبرمجين؟ ...
+[00:12] قابله عصر الال امز والاي اي ايجنتس والكلام ...
+[00:24] كلهم لو انت عايز تجيب معلومه مثلا صعبه ...
+```
+
+Two labels apart is 24–25s; one is 12s; three is 36s — and the single survivor
+was `[00:00] → [00:36]`, exactly three. **The model was choosing a number of
+transcript lines and copying their labels, never subtracting one timestamp from
+the other to check the span against the 30–75s it was given.**
+
+Ruled out, so nobody re-checks them:
+
+- **Not context truncation.** Ollama logged `task.n_tokens = 6503 ... truncated
+  = 0` against a 32768 window. The model saw the whole transcript.
+- **Not parsing.** All 8 clips arrived well-formed; `parse_response` returned
+  every one. They were discarded downstream by the duration filter, which
+  now flags rather than drops.
+- **Not the count.** It returned exactly the 8 it was asked for.
+
+Ollama is pinned to the `json_object` tier, so there is no constrained decoding
+to lean on either — see [providers.md](providers.md).
+
+**What this costs you.** Nothing downstream can see it: the plan is valid, the
+clips render correctly, and the job reports `done`. Only the durations give it
+away — which is why every clip now carries `out_of_range` and the job message
+counts them ([api.md](api.md#clips-outside-the-length-you-asked-for)). These
+clips are no longer dropped; they are rendered and labelled.
+
+### The fix was the prompt, not the model
+
+Same transcript, same `--clips 8 --min-len 30 --max-len 52`, `qwen3-235b-a22b`,
+three prompts:
+
+```text
+                                                durations              in range
+A  baseline, blocks labelled [MM:SS]     [23.8, 50.6, 35.6, 24.2, ...]    2 of 8
+B  blocks labelled [MM:SS-MM:SS]         [48.9, 36.8, 50.1, 49.5, ...]    8 of 8
+C  B + "COMPUTE end minus start" rule    [36.4, 38.5, 37.5, 36.5, ...]    7 of 8
+```
+
+**Variant B changes one thing** — each transcript line is labelled with the span
+it covers instead of only where it starts — and the failure disappears.
+
+The models were never bad at arithmetic. `build_transcript_blocks` emits only
+block *starts*, so the sole timestamps in the entire prompt are start labels and
+copying two of them is the only span the format affords. 2 x 12.2s = 24.4s falls
+out of the shape of the prompt, not out of any judgment about clip length.
+
+Note that C — the more emphatic prompt — scored *worse* than B. Adding "COMPUTE
+this" pushed the model into a narrow 36-38s band and left one 25.4s straggler.
+The minimal change beat the forceful one; try the minimal one first.
+
+Scaling the model is the expensive way to buy this and it barely works:
+
+```text
+model                params   picks          in range (of 8)
+qwen3-8b                8B    1 block               0
+qwen3:14b              14B    2 blocks              1
+qwen3-235b-a22b       235B    2 blocks              2
+qwen3-235b + span labels      real spans            8
+```
+
+30x the parameters bought one clip. The label format bought six.
+
+**Variant B is not implemented yet.** The measurement above was taken against a
+patched prompt in a scratch script; `build_transcript_blocks` still emits
+`[MM:SS]`.
+
+**Before switching the Arabic path to a local model, count the clips that
+survive the duration filter, not the clips the model returns.** A provider that
+returns 8 and lands 1 reads as a success at every layer that only counts
+responses.
+
+**The rematch has not been run.** Nobody has put the same transcript through
+Claude or GPT at `--clips 8 --min-len 30` and counted survivors, so there is no
+second row in that table yet. `--plan-only` makes it cheap — same cached
+transcript, two providers, diff the two `plan.json` files — and until someone
+does it, "a stronger model holds the duration" is an assumption. The related
+open question, whether any of these models has Arabic selection *judgment*, is
+in [providers.md](providers.md) and is also unmeasured.
 
 ---
 

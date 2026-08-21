@@ -5,6 +5,8 @@ import { usePolling } from "../api/poll";
 import { RUNNING_STATES, TERMINAL_STATES } from "../api/types";
 import type { JobResponse } from "../api/types";
 import { ClipGrid } from "../components/ClipGrid";
+import { RangeNotice } from "../components/RangeNotice";
+import { FetchProgress } from "../components/FetchProgress";
 import { HarvestStrip } from "../components/HarvestStrip";
 import { StageTimeline } from "../components/StageTimeline";
 import { StateBadge } from "../components/StateBadge";
@@ -112,6 +114,17 @@ export default function JobDetail() {
       {job.state !== "failed" && job.message && (
         <p className="muted">{job.message}</p>
       )}
+
+      {/* Directly under the message it quantifies. Only while state=fetching:
+          afterwards the record still holds the closing reading, but a finished
+          download reported as live progress is the timeline lying, and the
+          state machine has already moved on. */}
+      {job.state === "fetching" && <FetchProgress progress={job.fetch_progress} />}
+
+      {/* Above the clips, because it qualifies every one of them. A viewer who
+          has already scrolled into the grid is not coming back up to find out
+          that two of what they are looking at are 24 seconds long. */}
+      <RangeNotice clips={job.clips} options={job.options} />
 
       {/* CLIPS FIRST. They are what the pipeline exists to produce, so nothing
           — least of all a six-row provenance table — goes above them. The meta

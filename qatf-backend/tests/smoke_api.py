@@ -258,8 +258,23 @@ with TestClient(app) as client:
     check("reached done", job["state"] == "done", job.get("error") or "")
     check("language recorded", job["language"] == "ar")
     check("word count recorded", job["word_count"] == 260, str(job["word_count"]))
-    check("short clip filtered out", len(job["clips"]) == 2, str(len(job["clips"])))
-    check("two clips rendered", len(job["outputs"]) == 2, str(len(job["outputs"])))
+    # NOTHING is filtered for length. The 3s clip the fake proposes used to be
+    # deleted here; six of eight on a real run were 24s shorts that were fine to
+    # publish, discarded unseen for missing 30s by four seconds. They stay in the
+    # plan now, labelled, and the operator decides.
+    check("the short clip stays in the plan", len(job["clips"]) == 3,
+          str(len(job["clips"])))
+    check("and is rendered like any other", len(job["outputs"]) == 3,
+          str(len(job["outputs"])))
+    _by_title = {c["title"]: c for c in job["clips"]}
+    check("the short clip is labelled short on the wire",
+          _by_title["too short to survive"]["out_of_range"] == "short",
+          str(_by_title["too short to survive"]))
+    check("an in-range clip carries no label",
+          _by_title["First {clip} title"]["out_of_range"] is None,
+          str(_by_title["First {clip} title"]["out_of_range"]))
+    check("the terminal message says some were kept out of range",
+          "outside" in job["message"] and "kept" in job["message"], job["message"])
     check("clip snapped to word bounds",
           abs(job["clips"][0]["start"] - (10.0 - 0.15)) < 0.3, str(job["clips"][0]["start"]))
     check("settings model reached stage 3", SEEN_MODELS[0] == "claude-sonnet-5",
@@ -271,13 +286,20 @@ with TestClient(app) as client:
     check("device actually used is reported", job["device"] == "cuda",
           str(job.get("device")))
     check("blur filtergraph used", any("gblur" in " ".join(c) for c in RENDERED))
+    # null, NOT a zeroed reading: "this job downloaded nothing" and "this job is
+    # 0 bytes into a download" are different facts, and only a youtube-sourced
+    # job can be in the second. A client that cannot tell them apart draws an
+    # empty progress bar on every upload.
+    check("a job that never fetched reports null progress, not zero",
+          job["fetch_progress"] is None, json.dumps(job.get("fetch_progress")))
     check("non-ascii title slug falls back",
           any(o["name"].endswith("-clip.mp4") for o in job["outputs"]),
           str([o["name"] for o in job["outputs"]]))
 
     section("ass output")
     ass_files = list((SETTINGS.data_dir / jid / ".work").glob("*.ass"))
-    check("ass files written", len(ass_files) == 2, str(len(ass_files)))
+    check("an ass file per clip, including the out-of-range one",
+          len(ass_files) == 3, str(len(ass_files)))
     check("denoise produced its own cached wav, not audio.wav",
           (SETTINGS.data_dir / jid / ".work" / "audio-denoised.wav").exists())
     all_ass = "\n".join(f.read_text(encoding="utf-8") for f in ass_files)
@@ -604,6 +626,14 @@ with TestClient(app) as client:
     check("edit re-snapped to word times",
           abs(r.json()[0]["start"] - (20.0 - 0.15)) < 0.3, str(r.json()[0]["start"]))
     check("state back to planned", client.get(f"/jobs/{jid}").json()["state"] == "planned")
+    # The label is derived on read, never echoed. A hand-edited clip gets
+    # measured against the job's range like any other.
+    _short_edit = [{"start": 20.0, "end": 25.0, "title": "hand edited short",
+                    "hook": "", "why": "", "score": 1.0, "out_of_range": None}]
+    _r = client.put(f"/jobs/{jid}/plan", json={"clips": _short_edit, "snap": False})
+    check("a hand-edited short clip comes back flagged, not echoed",
+          _r.json()[0]["out_of_range"] == "short", str(_r.json()[0]))
+    client.put(f"/jobs/{jid}/plan", json={"clips": edited, "snap": False})
     r = client.put(f"/jobs/{jid}/plan", json={"clips": edited, "snap": False})
     check("snap:false leaves boundaries alone", r.json()[0]["start"] == 20.0,
           str(r.json()[0]["start"]))
@@ -799,11 +829,21 @@ def _caption_doc(tokens: int = 260, step_ms: int = 500, word_level: bool = True)
 NEXT_CAPTIONS: list = [_caption_doc()]
 
 
-def fake_download(url, dest, *, language=None, want_captions=True):
+def fake_download(url, dest, *, language=None, want_captions=True, on_progress=None):
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     video = dest / "source.mp4"
     video.write_bytes(b"\0" * 1024)
+    # Drive the progress callback the way yt-dlp would: a partial reading,
+    # then the closing one. Faking the SIGNATURE without CALLING it would let
+    # the wiring rot silently — this fake is the only place the stage 0
+    # progress path runs without a network.
+    if on_progress is not None:
+        on_progress(_fetch.FetchProgress(downloaded_bytes=256,
+                                         total_bytes=1024, file_index=1))
+        on_progress(_fetch.FetchProgress(downloaded_bytes=1024,
+                                         total_bytes=1024, file_index=1,
+                                         final=True))
     captions = None
     if want_captions and NEXT_CAPTIONS[0] is not None:
         captions = dest / "source.ar-orig.json3"
@@ -847,6 +887,18 @@ with TestClient(create_app(settings=SETTINGS)) as client:
           str(body["word_count"]))
     check("a caption job reports no transcription device",
           client.get(f"/jobs/{job_id}").json()["device"] is None)
+
+    _fetched = client.get(f"/jobs/{job_id}").json()["fetch_progress"]
+    check("a url job records stage 0 progress on the record",
+          _fetched is not None, json.dumps(_fetched))
+    # Both readings land inside one throttle window, so the CLOSING one has to
+    # win. Otherwise a finished download is recorded forever as partway through
+    # — a wrong number wearing an authoritative face.
+    check("the closing reading beats the write throttle",
+          _fetched["downloaded_bytes"] == 1024 and _fetched["total_bytes"] == 1024,
+          json.dumps(_fetched))
+    check("and it says which file of the fetch it was",
+          _fetched["file_index"] == 1, json.dumps(_fetched))
 
     # The property the design turns on, end to end: with bounded ends the cut
     # closes exactly ON a word boundary rather than SNAP_TAIL past it.

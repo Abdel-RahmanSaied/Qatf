@@ -97,7 +97,8 @@ PRESETS: dict[str, Preset] = {
     "openrouter": Preset(
         key="openrouter", factory=OpenAICompatProvider,
         model="anthropic/claude-opus-5",
-        caps=Capabilities(json_object=True, sampling=True, context_tokens=1_000_000),
+        caps=Capabilities(json_object=True, sampling=True, context_tokens=1_000_000,
+                          reasoning_control=True),
         base_url="https://openrouter.ai/api/v1", key_env="OPENROUTER_API_KEY",
         note="One key, many models — the cheapest way to A/B providers. Model IDs "
              "are vendor-prefixed and move fast (kimi-k2 -> kimi-k3): check "
