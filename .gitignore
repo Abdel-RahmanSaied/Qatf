@@ -118,3 +118,6 @@ qatf-frontend/dist/
 .playwrite-mcp/*
 # browser-automation scratch (screenshots, page snapshots)
 .playwright-mcp/
+
+# superpowers brainstorming companion (mockups, server state)
+.superpowers/
