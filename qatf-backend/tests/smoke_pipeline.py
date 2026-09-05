@@ -2209,6 +2209,31 @@ check("the capsule is a drawing event",
       any("\\p1" in d[9] and "m " in d[9] for d in _dl))
 check("the capsule uses the measured pill fill",
       any(captions.ass_bgr(K.PILL_FILL) in d[9] for d in _dl))
+
+# CRITICAL FIX (post-review): capsule_path floors its own drawing width to
+# 2*radius so the rounded caps cannot invert on a short word, but `px` used to
+# be computed from the UN-floored width — so for any word narrower than the
+# line height, capsule_path silently drew wider than `px` assumed and the pill
+# rendered off-centre on its word. Invisible in the .ass file, the exact
+# failure class this project records twice already. "hi" under FakeMeasurer
+# gives pw=56 against ph=96 (2*radius), which trips the clamp by 20px.
+_short = [Word("hi", 0.0, 0.5)]
+_sp = captions.build_ass(Clip(0.0, 5.0, "t"), _short, Path("_tmp_yt_short.ass"),
+                         style="youtube", measurer=_M)
+_sdl = dialogue_lines(_sp.read_text(encoding="utf-8"))
+_capsule = next(d for d in _sdl if d[0].split(":")[1].strip() == "1")
+_bright = next(d for d in _sdl if d[0].split(":")[1].strip() == "2")
+_cap_px = float(re.search(r"\\pos\((-?\d+(?:\.\d+)?),", _capsule[9]).group(1))
+# The drawing sits between the override block's closing `}` and the trailing
+# `{\p0}`; its largest coordinate along the path is the drawn width.
+_path_text = _capsule[9].split("}", 1)[1].rsplit("{", 1)[0]
+_drawn_width = max(int(tok) for tok in _path_text.split() if tok.lstrip("-").isdigit())
+_word_cx = float(re.search(r"\\pos\((-?\d+(?:\.\d+)?),", _bright[9]).group(1))
+check("the capsule is centred on its word even when the width clamp fires",
+      abs((_cap_px + _drawn_width / 2) - _word_cx) <= 1.0,
+      f"px={_cap_px}, drawn_width={_drawn_width}, word_cx={_word_cx}")
+_sp.unlink(missing_ok=True)
+
 check("inactive words are dimmed",
       any(f"\\alpha&H{K.CAPTION_DIM_ALPHA:02X}&" in d[9] for d in _dl))
 # CORRECTED from the plan: the capsule event also carries \bord0 and no \alpha,

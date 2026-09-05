@@ -311,8 +311,15 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
                 f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{dim}}}{box.text}")
 
             # 1 — the capsule
-            pw = int(round(box.width)) + 2 * PILL_PAD_X
             ph = int(round(line.height)) + 2 * PILL_PAD_Y
+            # capsule_path floors its own width to 2*radius so the rounded caps
+            # cannot invert on a short word. That floor has to be applied HERE
+            # too, before px is computed — otherwise px centres the un-clamped
+            # pw while capsule_path silently draws a wider shape, and every word
+            # narrower than the line height renders its pill off-centre. Do not
+            # "simplify" this back to the unclamped value.
+            r = max(1, ph // 2)
+            pw = max(int(round(box.width)) + 2 * PILL_PAD_X, 2 * r)
             px = cx - pw / 2
             py = baseline_y - ph / 2
             lines.append(
