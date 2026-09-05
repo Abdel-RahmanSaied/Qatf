@@ -158,6 +158,27 @@ _cues = cue_times(captions.build_ass(Clip(0.0, 8.0, "t"), _gapped,
 check("the hold survives where the next line is far away",
       abs(_cues[0][1] - (0.4 + captions.LAST_WORD_HOLD)) < 1e-6, str(_cues[0]))
 Path("_tmp_hold.ass").unlink(missing_ok=True)
+
+section("textlayout: direction runs")
+from qatf.pipeline import textlayout as tl  # noqa: E402
+
+check("ltr line keeps logical order",
+      tl.visual_order(["a", "b", "c"], base_rtl=False) == [0, 1, 2])
+check("rtl line reverses word order",
+      tl.visual_order(["واحد", "اثنين", "ثلاثة"], base_rtl=True) == [2, 1, 0])
+# A Latin phrase inside Arabic: the RUN moves, the words inside it do not.
+# Naive reversal would give [3, 2, 1, 0] and read "is Python" backwards.
+check("latin run inside arabic keeps its internal order",
+      tl.visual_order(["قال", "Python", "is", "الأفضل"], base_rtl=True) == [3, 1, 2, 0])
+check("arabic run inside latin reverses internally",
+      tl.visual_order(["The", "كتاب", "جديد", "is"], base_rtl=False) == [0, 2, 1, 3])
+check("single word is a no-op in both directions",
+      tl.visual_order(["x"], base_rtl=True) == [0]
+      and tl.visual_order(["x"], base_rtl=False) == [0])
+check("empty line does not crash", tl.visual_order([], base_rtl=True) == [])
+check("is_rtl moved but is still importable from captions",
+      captions.is_rtl is tl.is_rtl)
+
 section("ass generation, continued")
 for tmp in (path, braced):
     tmp.unlink(missing_ok=True)

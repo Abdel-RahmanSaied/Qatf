@@ -32,7 +32,9 @@ from ..core.constants import (
 )
 from ..core.types import Clip, Word
 from ..core.utils import ts_ass
+from . import textlayout  # noqa: F401 — unused here; later tasks call textlayout.load_measurer
 from .cuts import words_in
+from .textlayout import is_rtl
 
 # WrapStyle MUST be 0. With 2 (no wrapping) caption lines overflow the 1080px
 # frame and get clipped at both edges — it passes every dimension check.
@@ -213,32 +215,6 @@ def font_warning(name: str) -> str | None:
             f"Arabic that usually renders as tofu. Install the font on the "
             f"RENDERING host (under the API that is the server, not your "
             f"machine), or pass a family `fc-list : family` reports.")
-
-
-#: Codepoint ranges whose script is written right-to-left. Arabic and Hebrew are
-#: the ones this project will actually meet; the rest are cheap to include and
-#: fail the same way.
-_RTL_RANGES = (
-    (0x0590, 0x05FF),   # Hebrew
-    (0x0600, 0x06FF),   # Arabic
-    (0x0700, 0x074F),   # Syriac
-    (0x0750, 0x077F),   # Arabic Supplement
-    (0x0780, 0x07BF),   # Thaana
-    (0x07C0, 0x07FF),   # N'Ko
-    (0x0800, 0x083F),   # Samaritan
-    (0x08A0, 0x08FF),   # Arabic Extended-A
-    (0xFB1D, 0xFB4F),   # Hebrew presentation forms
-    (0xFB50, 0xFDFF),   # Arabic presentation forms-A
-    (0xFE70, 0xFEFF),   # Arabic presentation forms-B
-)
-
-
-def is_rtl(text: str) -> bool:
-    """True if the text contains any right-to-left character.
-
-    One RTL character is enough: a mixed line still gets bidi-reordered, so it
-    hits the same libass run-splitting bug as a fully RTL one."""
-    return any(any(lo <= ord(ch) <= hi for lo, hi in _RTL_RANGES) for ch in text)
 
 
 def _clamp(start: float, end: float, next_start: float | None) -> float:
