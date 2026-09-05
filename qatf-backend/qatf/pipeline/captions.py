@@ -24,6 +24,7 @@ import subprocess
 from pathlib import Path
 
 from ..core.constants import (
+    CAPSULE_KAPPA,
     CAPTION_MAX_CHARS,
     CAPTION_MAX_WORDS,
     DEFAULT_FONT,
@@ -292,3 +293,36 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def ass_bgr(hex_rgb: str) -> str:
+    """`#RRGGBB` -> an ASS `&HAABBGGRR&` literal, fully opaque.
+
+    ASS colours are BGR, not RGB. This has bitten this file before — the
+    existing highlight is written `&H00E0FF&` and is yellow, not blue."""
+    h = hex_rgb.lstrip("#").upper()
+    r, g, b = h[0:2], h[2:4], h[4:6]
+    return f"&H00{b}{g}{r}&"
+
+
+def capsule_path(w: int, h: int) -> str:
+    """An ASS `\\p1` drawing of a capsule `w` x `h`, origin at its top-left.
+
+    Radius is half the height, which makes it a true capsule at any word length
+    and needs no per-word tuning. Coordinates are integers: libass accepts
+    floats, but integers are portable across every renderer that reads ASS and
+    the sub-pixel difference is invisible at a ~100px pill.
+
+    The path carries NO caller-supplied text — it is pure geometry — so it adds
+    no trust-boundary surface. `escape()` still guards every actual word."""
+    r = max(1, h // 2)
+    w = max(w, 2 * r)                  # never let the caps overlap and invert
+    k = round(r * CAPSULE_KAPPA)
+    return (f"m {r} 0 l {w - r} 0 "
+            f"b {w - r + k} 0 {w} {r - k} {w} {r} "
+            f"l {w} {h - r} "
+            f"b {w} {h - r + k} {w - r + k} {h} {w - r} {h} "
+            f"l {r} {h} "
+            f"b {r - k} {h} 0 {h - r + k} 0 {h - r} "
+            f"l 0 {r} "
+            f"b 0 {r - k} {r - k} 0 {r} 0")

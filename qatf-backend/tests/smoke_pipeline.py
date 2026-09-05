@@ -2131,4 +2131,29 @@ check("suggestions parse from the wrapper shape",
 raises("prose instead of JSON is refused", ModelResponseError,
        enhance.parse_suggestions, "sure, here you go")
 
+section("captions: capsule geometry and colour")
+from qatf.core import constants as K  # noqa: E402
+
+check("ASS colour is BGR, not RGB", captions.ass_bgr("#B4560A") == "&H000A56B4&")
+check("ass_bgr tolerates a missing hash", captions.ass_bgr("B4560A") == "&H000A56B4&")
+check("the chosen pill fill is the measured 4.91:1 colour", K.PILL_FILL == "#B4560A")
+check("dim alpha is 45% opacity, inverted as ASS wants",
+      K.CAPTION_DIM_ALPHA == 0x8C)
+# Not cosmetic: the capsule paints over the dimmed layer's outline, so padding
+# under the outline width leaves a dark fringe around the active word.
+check("horizontal pill padding clears the outline",
+      K.PILL_PAD_X > captions.OUTLINE, f"{K.PILL_PAD_X} vs {captions.OUTLINE}")
+
+_p = captions.capsule_path(200, 80)
+check("capsule path starts with a move", _p.startswith("m "))
+check("capsule path uses only drawing commands and integers",
+      all(tok in ("m", "l", "b") or re.fullmatch(r"-?\d+", tok)
+          for tok in _p.split()), _p[:80])
+check("capsule path has four bezier corners", _p.count("b ") == 4)
+_toks = _p.split()
+check("capsule path closes on its start point",
+      _toks[-2:] == [str(80 // 2), "0"], " ".join(_toks[-4:]))
+check("a capsule on a tiny box does not invert",
+      "-" not in captions.capsule_path(10, 80))
+
 raise SystemExit(report())

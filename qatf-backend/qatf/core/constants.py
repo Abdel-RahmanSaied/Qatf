@@ -185,3 +185,45 @@ TRACK_MAX_KEYFRAMES = 20_000
 VIDEO_SUFFIXES = frozenset({
     ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".mp3", ".wav", ".m4a",
 })
+
+#: Caption styles. `youtube` positions every word absolutely and puts the
+#: spoken one in a filled capsule; `pop` is the original single-line style and
+#: remains the fallback whenever measurement is unavailable.
+CAPTION_STYLES = ("youtube", "pop")
+DEFAULT_CAPTION_STYLE = "youtube"
+
+#: Pill fill. A deepened saffron, and the depth is measured rather than chosen:
+#: white on the product's existing highlight yellow (#E8A317) is 2.17:1, below
+#: even the 3:1 large-text floor, which is why a saffron pill would have to keep
+#: a black outline to stay legible. Outline-on-pill is the muddy combination,
+#: and worse on Arabic than Latin — the caption stroke was already cut from 7px
+#: to 4px because a heavy outline thickens Naskh's connected joins.
+#:
+#: #B4560A measures 4.91:1 against white, clears 4.5:1, and lets the active word
+#: drop its outline entirely. #A34708 measures 6.07:1 and was rejected for
+#: reading as its own colour rather than the product's accent.
+PILL_FILL = "#B4560A"
+
+#: Padding between the word's box and the capsule edge.
+#:
+#: PILL_PAD_X IS NOT COSMETIC. The dimmed word on the layer beneath keeps its
+#: outline, and the capsule is what paints over it — so padding at or under
+#: `captions.OUTLINE` leaves a dark fringe around the active word. There is a
+#: check pinning this; do not "tighten" past it.
+PILL_PAD_X = 18
+PILL_PAD_Y = 8
+
+#: Opacity of a word that is not currently being spoken, as an ASS alpha byte.
+#: ASS alpha is INVERTED — 0x00 is opaque, 0xFF is transparent — so 45% opacity
+#: is 0x8C, not 0x73. Applies to fill, outline and shadow together, which is
+#: what makes the whole word recede rather than just its face.
+CAPTION_DIM_ALPHA = 0x8C
+
+#: Side margin used when solving a caption line, matching MarginL/MarginR on the
+#: Style line. Usable width is TARGET_W - 2 * this = 900px at 1080 wide.
+CAPTION_SIDE_MARGIN = 90
+
+#: Bezier control-point offset for a quarter circle, as a fraction of the
+#: radius. The standard circle-from-beziers constant; ASS has no rounded-rect
+#: primitive, so the capsule is a hand-built path.
+CAPSULE_KAPPA = 0.5523
