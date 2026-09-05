@@ -187,6 +187,53 @@ _ff = tl.font_file("Noto Sans Arabic")
 check("font_file returns a Path or None, never raises",
       _ff is None or _ff.suffix.lower() in (".ttf", ".otf", ".ttc"), str(_ff))
 
+# The check above only ever exercises the "fc-match is missing" branch on a host
+# with no fontconfig — it proves nothing about matching, refusing a substitution,
+# a non-zero exit, or a resolved path that doesn't exist. Same pattern as
+# _fake_fc below (which mocks captions.subprocess.run), aimed at
+# tl.subprocess.run instead, so those branches run deterministically everywhere.
+_real_run_tl = tl.subprocess.run
+_here = Path(__file__)  # any real file on disk — font_file only checks p.is_file()
+
+
+def _fake_fc_tl(stdout: str = "", returncode: int = 0, boom: Exception | None = None):
+    """Swap in a fake fc-match for textlayout.font_file and clear its cache."""
+    calls: list = []
+
+    def fake(cmd, **kwargs):
+        calls.append(cmd)
+        if boom is not None:
+            raise boom
+        return types.SimpleNamespace(stdout=stdout, returncode=returncode)
+
+    tl.subprocess.run = fake
+    tl.font_file.cache_clear()
+    return calls
+
+
+_fake_fc_tl(f"{_here}\tTest Sans")
+check("an exact family match resolves to the file fc-match named",
+      tl.font_file("Test Sans") == _here, str(tl.font_file("Test Sans")))
+
+# THE load-bearing case: fc-match always returns SOMETHING, so a caller asking
+# for "Test Sans" and getting "Other Family" back must be refused rather than
+# measured as if it were the font actually asked for — otherwise libass draws
+# one face while HarfBuzz measured another, and every capsule sits off its word.
+_fake_fc_tl(f"{_here}\tOther Family")
+check("a substituted family is refused, not silently accepted",
+      tl.font_file("Test Sans") is None)
+
+_fake_fc_tl(f"{_here}\tTest Sans", returncode=1)
+check("a non-zero fc-match exit is refused",
+      tl.font_file("Test Sans") is None)
+
+_fake_fc_tl("/no/such/path/does-not-exist.ttf\tTest Sans")
+check("a resolved path that does not exist on disk is refused",
+      tl.font_file("Test Sans") is None)
+
+tl.subprocess.run = _real_run_tl
+tl.font_file.cache_clear()
+
 # The fallback is the load-bearing behaviour: it must be None, not an exception,
 # because a missing wheel has to degrade to the `pop` style rather than fail a job.
 check("load_measurer on a font that cannot exist returns None",
