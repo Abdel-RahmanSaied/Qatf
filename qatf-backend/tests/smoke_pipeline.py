@@ -262,6 +262,70 @@ else:
     check("line height is positive and sane for 64px",
           40 < _m.line_height < 200, str(_m.line_height))
 
+section("textlayout: line solving")
+
+_M = FakeMeasurer()          # 10px per character, 80px line height
+
+# Three 2-char words: 3*20 advance + 2 spaces of 10 = 80
+_line = tl.solve_line(["ab", "cd", "ef"], _M, usable=900, base_rtl=False)
+check("line width is words plus measured spaces", abs(_line.width - 80.0) < 1e-6,
+      str(_line.width))
+check("line height comes from the measurer", _line.height == 80.0)
+check("boxes are returned in logical order", [b.text for b in _line.boxes] ==
+      ["ab", "cd", "ef"])
+check("ltr boxes ascend left to right",
+      [b.x for b in _line.boxes] == sorted(b.x for b in _line.boxes))
+check("the line is centred in the usable width",
+      abs(_line.boxes[0].x - (900 - 80) / 2) < 1e-6, str(_line.boxes[0].x))
+
+# RTL: boxes stay in LOGICAL order in the list, but the FIRST logical word must
+# sit furthest RIGHT. Returning them pre-reversed would make every consumer
+# guess which order it has.
+#
+# Real Arabic tokens, not ASCII filler: `visual_order` groups by the words' OWN
+# direction, so Latin words in an rtl-base line correctly stay left-to-right and
+# would not exercise this path at all. Each token is 2 characters, so the
+# arithmetic matches the LTR line above exactly — 3 x 20 + 2 x 10 = 80.
+_AR = ["من", "في", "ما"]
+_rtl = tl.solve_line(_AR, _M, usable=900, base_rtl=True)
+check("rtl keeps boxes in logical order in the list",
+      [b.text for b in _rtl.boxes] == _AR)
+check("rtl places the first logical word furthest right",
+      _rtl.boxes[0].x > _rtl.boxes[-1].x,
+      f"{_rtl.boxes[0].x} vs {_rtl.boxes[-1].x}")
+check("rtl line is the same width as the ltr one",
+      abs(_rtl.width - _line.width) < 1e-6)
+check("no box escapes the usable width",
+      all(b.x >= 0 and b.x + b.width <= 900 for b in _rtl.boxes))
+
+# The bug this check exists for: an earlier version of this suite asserted that
+# LATIN words in an rtl-base line get reversed. They must not — that assertion
+# could only be satisfied by making visual_order reverse everything, which reads
+# an embedded "Python is" backwards. Latin inside Arabic stays left-to-right.
+_lat_in_rtl = tl.solve_line(["ab", "cd", "ef"], _M, usable=900, base_rtl=True)
+check("latin words in an rtl-base line still run left to right",
+      [b.x for b in _lat_in_rtl.boxes] == sorted(b.x for b in _lat_in_rtl.boxes),
+      str([b.x for b in _lat_in_rtl.boxes]))
+
+# Chunking by measured width replaces the character-count proxy.
+_long = ["aaaaa"] * 12          # 50px each + 10px spaces => 5 fit in 300px
+_chunks = tl.chunk_by_width(_long, _M, usable=300, max_words=8)
+check("chunking respects measured width",
+      all(sum(_M.advance(_long[i]) for i in c) + 10 * (len(c) - 1) <= 300
+          for c in _chunks), str([len(c) for c in _chunks]))
+check("chunking still honours the word cap",
+      all(len(c) <= 8 for c in tl.chunk_by_width(["a"] * 30, _M, 900, 8)))
+check("chunking loses no words",
+      [i for c in _chunks for i in c] == list(range(len(_long))))
+
+# A single word wider than the frame cannot be chunked away.
+_huge = tl.chunk_by_width(["x" * 200], _M, usable=300, max_words=8)
+check("an over-wide single word gets its own chunk rather than vanishing",
+      _huge == [[0]], str(_huge))
+_hl = tl.solve_line(["x" * 200], _M, usable=300, base_rtl=False)
+check("an over-wide word is centred, overflowing symmetrically",
+      abs(_hl.boxes[0].x - (300 - 2000) / 2) < 1e-6, str(_hl.boxes[0].x))
+
 section("ass generation, continued")
 for tmp in (path, braced):
     tmp.unlink(missing_ok=True)

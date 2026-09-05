@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -194,3 +195,83 @@ def load_measurer(family: str, size: float) -> Measurer | None:
         return None                      # uharfbuzz not installed
     except Exception:                    # noqa: BLE001 — a corrupt or exotic face
         return None
+
+
+@dataclass(frozen=True)
+class Box:
+    """One word's slot on the line, in PlayRes pixels. `x` is the LEFT edge."""
+
+    text: str
+    x: float
+    width: float
+
+
+@dataclass(frozen=True)
+class Line:
+    """A solved caption line. `boxes` is in LOGICAL order, not visual order.
+
+    Logical, deliberately: the caller pairs boxes with `Word` objects to get
+    timings, and a list that silently reorders itself on RTL is a list every
+    consumer has to remember to un-reorder. Position lives in `Box.x`, which is
+    where the visual order already is."""
+
+    boxes: list[Box]
+    width: float
+    height: float
+
+
+def solve_line(words: list[str], m: Measurer, usable: float,
+               base_rtl: bool) -> Line:
+    """Place each word on one centred line.
+
+    The line's total width is order-independent — it is the words plus the
+    measured inter-word spaces — so only the x assignment depends on direction.
+
+    A line wider than `usable` is centred anyway and allowed to overflow. That
+    only happens for a single word too wide to break, which `chunk_by_width`
+    cannot chunk away; clipping it symmetrically is more honest than silently
+    dropping it."""
+    if not words:
+        return Line([], 0.0, m.line_height)
+
+    widths = [m.advance(w) for w in words]
+    space = m.advance(" ")
+    total = sum(widths) + space * (len(words) - 1)
+
+    x = (usable - total) / 2.0
+    placed: dict[int, float] = {}
+    for i in visual_order(words, base_rtl):
+        placed[i] = x
+        x += widths[i] + space
+
+    return Line([Box(words[i], placed[i], widths[i]) for i in range(len(words))],
+                total, m.line_height)
+
+
+def chunk_by_width(texts: list[str], m: Measurer, usable: float,
+                   max_words: int) -> list[list[int]]:
+    """Group word indices into lines that fit, by MEASURED width.
+
+    This replaces `captions.CAPTION_MAX_CHARS` on the pill path. That constant
+    is only ever a proxy for width — its own comment warns it must be recomputed
+    whenever FONT_SIZE moves, from an estimate of "900px usable, ~half the em".
+    Measuring makes the proxy unnecessary. It stays in use for the `pop` path.
+
+    A word wider than `usable` on its own still gets a chunk: refusing to emit
+    it would delete speech from the captions."""
+    out: list[list[int]] = []
+    cur: list[int] = []
+    cur_w = 0.0
+    space = m.advance(" ")
+    for i, t in enumerate(texts):
+        w = m.advance(t)
+        projected = cur_w + (space if cur else 0.0) + w
+        if cur and (len(cur) >= max_words or projected > usable):
+            out.append(cur)
+            cur, cur_w = [], 0.0
+            projected = w
+        cur.append(i)
+        cur_w = projected
+    if cur:
+        out.append(cur)
+    return out
