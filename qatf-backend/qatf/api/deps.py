@@ -124,6 +124,7 @@ def to_response(store: JobStore, job: Job) -> JobResponse:
         updated_at=job.updated_at,
         language=job.language,
         device=job.device,
+        caption_style_used=job.caption_style_used,
         word_count=job.word_count,
         transcript_cached=job.transcript_cached,
         clips=clip_models(job.clips, job.options),

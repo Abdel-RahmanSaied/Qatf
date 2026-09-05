@@ -649,6 +649,18 @@ class JobResponse(BaseModel):
                     "cpu even though a GPU was requested — check it before "
                     "trusting a benchmark.",
     )
+    #: caption style stage 5a actually used — may differ from
+    #: options.caption_style when `youtube` falls back to `pop`
+    caption_style_used: str = Field(
+        "",
+        description="the caption style ACTUALLY used. May differ from "
+                    "options.caption_style: `youtube` falls back to `pop` when "
+                    "shaped word measurement is unavailable on the rendering "
+                    "host — check `caption_pill_ready` on /healthz before "
+                    "trusting a request for `youtube`. Empty when captions were "
+                    "not burned in at all (options.captions: false) or on a "
+                    "record written before this field existed.",
+    )
     word_count: int = 0
     transcript_cached: bool = Field(
         False, description="true when stage 2 was skipped because a matching "

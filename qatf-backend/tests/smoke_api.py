@@ -650,9 +650,9 @@ with TestClient(app) as client:
     # Task 6's gate — `resolve_style` and `store.update(caption_style_used=...)`
     # both run only under `opts.get("captions", True)` — is pinned from OUTSIDE
     # the worker here: a job that burns in no captions must not claim a style
-    # was used. `caption_style_used` is not on the wire (JobResponse carries no
-    # such field yet), so it is read off the store directly, same depth as the
-    # restart-recovery check reads `store.get(jid)` further down this file.
+    # was used. Read through the WIRE now that `JobResponse` carries the field
+    # (fix round 1 of Task 7) — a stronger check than reading the store
+    # directly, since it is the value an actual caller would see.
     _r = client.post("/jobs", json={"path": "talk.mp4", "captions": False})
     check("captions-disabled job accepted", _r.status_code == 202, str(_r.status_code))
     _nocap_jid = _r.json()["id"]
@@ -660,8 +660,38 @@ with TestClient(app) as client:
     check("captions-disabled job finishes", _nocap_job["state"] == "done",
           _nocap_job.get("error") or "")
     check("caption_style_used stays empty when captions are off",
-          app.state.store.get(_nocap_jid).caption_style_used == "",
-          repr(app.state.store.get(_nocap_jid).caption_style_used))
+          client.get(f"/jobs/{_nocap_jid}").json()["caption_style_used"] == "",
+          repr(client.get(f"/jobs/{_nocap_jid}").json()["caption_style_used"]))
+
+    # Fix round 1: `jobs/worker.py` used to compute `style_used` (for the
+    # record) without ever forwarding it into the `render_all` call that
+    # actually renders — so a job requesting "pop" was RECORDED as pop and
+    # RENDERED as youtube wherever a measurer resolved. Pin the wiring by
+    # capturing the `style` keyword `build_ass` actually receives. Patched as
+    # seen from the `encode` module: `encode.py` does
+    # `from .captions import build_ass`, which binds the name in `encode`'s
+    # OWN namespace, so patching `captions.build_ass` would leave encode.py's
+    # already-bound reference untouched and prove nothing.
+    _captured_styles: list[str | None] = []
+    _real_build_ass = encode.build_ass
+
+    def _capture_build_ass(*args, **kwargs):
+        _captured_styles.append(kwargs.get("style"))
+        return _real_build_ass(*args, **kwargs)
+
+    encode.build_ass = _capture_build_ass
+    try:
+        _r = client.post("/jobs", json={"path": "talk.mp4", "caption_style": "pop"})
+        check("caption_style=pop job accepted", _r.status_code == 202, str(_r.status_code))
+        _pop_jid = _r.json()["id"]
+        _pop_job = wait(client, _pop_jid, {"done", "failed"})
+        check("caption_style=pop job finishes", _pop_job["state"] == "done",
+              _pop_job.get("error") or "")
+        check("the worker forwards caption_style into render_all -> build_ass",
+              bool(_captured_styles) and _captured_styles[-1] == "pop",
+              str(_captured_styles))
+    finally:
+        encode.build_ass = _real_build_ass
 
     section("plan round trip")
     edited = [{"start": 20.0, "end": 61.0, "title": "hand edited",

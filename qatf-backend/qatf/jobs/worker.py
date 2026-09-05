@@ -348,9 +348,18 @@ def render_plan(store: JobStore, job_id: str,
     # reports whether the pill path is available on THIS host. Recording it is
     # what stops a silent fallback from being indistinguishable from the
     # feature working, same as `device` on stage 2.
+    #
+    # `style_used`, not `requested_style`, is what reaches `render_all` below.
+    # `resolve_style` and `build_ass` each independently call `load_measurer`
+    # to decide the same fallback (flagged in Task 6's review) — forwarding the
+    # REQUESTED style would leave those as two separate computations free to
+    # drift, and `caption_style_used` could then describe a render that did not
+    # happen. Forwarding the RESOLVED value instead makes "what was recorded"
+    # and "what will be rendered" the same value by construction.
+    requested_style = opts.get("caption_style", DEFAULT_CAPTION_STYLE)
+    style_used = ""
     if opts.get("captions", True):
-        style_used, style_note = pipeline.resolve_style(
-            opts.get("caption_style", DEFAULT_CAPTION_STYLE), opts["font"])
+        style_used, style_note = pipeline.resolve_style(requested_style, opts["font"])
         if style_note:
             log(f"      WARNING {style_note}")
         store.update(job_id, caption_style_used=style_used)
@@ -406,7 +415,12 @@ def render_plan(store: JobStore, job_id: str,
     pipeline.render_all(
         Path(job.video), clips, words, out_dir, job.work_dir(store.root),
         mode=mode, font=opts["font"], captions=opts.get("captions", True),
-        per_line=opts.get("per_line", 4), crf=opts.get("crf", 20),
+        per_line=opts.get("per_line", 4),
+        # `style_used` is "" when captions are off (never resolved above), in
+        # which case `render_all` never calls `build_ass` at all — the `or` is
+        # a total expression for that case, not a fallback with any meaning.
+        caption_style=style_used or requested_style,
+        crf=opts.get("crf", 20),
         width=size[0], height=size[1],
         codec=opts.get("codec", pipeline.encode.DEFAULT_CODEC),
         ten_bit=opts.get("ten_bit", False),
