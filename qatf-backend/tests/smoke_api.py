@@ -244,6 +244,16 @@ with TestClient(app) as client:
           health["media_root"] == str(MEDIA.resolve()) and health["max_workers"] == 2,
           json.dumps(health))
     check("reports the configured model", health["model"] == "claude-sonnet-5")
+    # `response_model=Health` silently drops any field the handler computes but
+    # the schema does not declare — that trap is exactly how a `/healthz` field
+    # can be wired up and never reach a caller with nothing failing. Assert the
+    # KEY survives the response model (not just that the schema declares it)
+    # and that the value is a real bool, not a stringified one or a leftover
+    # default that happens to look right.
+    check("caption_pill_ready reaches the response",
+          "caption_pill_ready" in health, json.dumps(health))
+    check("caption_pill_ready is a boolean",
+          isinstance(health.get("caption_pill_ready"), bool), json.dumps(health))
 
     section("path job, auto_render")
     r = client.post("/jobs", json={"path": "talk.mp4", "clips": 3, "language": "ar",

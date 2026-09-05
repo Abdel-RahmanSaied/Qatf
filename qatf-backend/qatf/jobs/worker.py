@@ -334,16 +334,26 @@ def render_plan(store: JobStore, job_id: str,
     if opts.get("captions", True) and (note := pipeline.font_warning(opts["font"])):
         log(f"      WARNING {note}")
 
+    # Gated the same as `font_warning` above, and for the same reason: a job
+    # with `captions: False` never calls `build_ass` (see `encode.render`), so
+    # no caption style is used at all. Recording one anyway — even "pop" with a
+    # fabricated font-fallback warning — would be a record of something that
+    # never happened, the exact failure this project refuses elsewhere by
+    # design (`StageTimeline` strikes through a stage that never ran rather
+    # than drawing it green; a progress bar never appears without a real
+    # denominator). Left at the `Job` default of `""` when captions are off.
+    #
     # Resolved (and recorded) even before Task 7 wires `caption_style` into
     # `JobOptions` — `opts.get` then always falls to the default, so today this
     # reports whether the pill path is available on THIS host. Recording it is
     # what stops a silent fallback from being indistinguishable from the
     # feature working, same as `device` on stage 2.
-    style_used, style_note = pipeline.resolve_style(
-        opts.get("caption_style", DEFAULT_CAPTION_STYLE), opts["font"])
-    if style_note:
-        log(f"      WARNING {style_note}")
-    store.update(job_id, caption_style_used=style_used)
+    if opts.get("captions", True):
+        style_used, style_note = pipeline.resolve_style(
+            opts.get("caption_style", DEFAULT_CAPTION_STYLE), opts["font"])
+        if style_note:
+            log(f"      WARNING {style_note}")
+        store.update(job_id, caption_style_used=style_used)
 
     store.update(job_id, state=JobState.rendering.value, outputs=[],
                  output_sizes={},
