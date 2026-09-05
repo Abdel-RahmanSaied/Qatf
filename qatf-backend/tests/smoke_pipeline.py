@@ -2298,4 +2298,18 @@ check("Spacing is 0 - our advances assume no added letter-spacing",
 for _t in (_yp, _ap, _ep, _pop):
     _t.unlink(missing_ok=True)
 
+section("captions: style fallback and reporting")
+_used, _warn = captions.resolve_style("pop", DEFAULT_FONT)
+check("pop resolves to pop with no warning", (_used, _warn) == ("pop", None))
+
+_used, _warn = captions.resolve_style("youtube", "NoSuchFamily\u0000Ever")
+check("youtube on an unresolvable font falls back to pop", _used == "pop")
+check("and the fallback is warned about, not silent", bool(_warn))
+check("the warning names the reason and the fallback",
+      _warn and "pop" in _warn and "youtube" in _warn, str(_warn))
+check("the warning does not echo the caller's font name back",
+      _warn and "NoSuchFamily" not in _warn, str(_warn))
+raises("an unknown style is refused rather than silently defaulted",
+       ValueError, captions.resolve_style, "sparkly", DEFAULT_FONT)
+
 raise SystemExit(report())

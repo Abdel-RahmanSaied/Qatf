@@ -6,11 +6,14 @@ from fastapi import APIRouter, Depends
 
 from ... import __version__
 from ...core.config import Settings
+from ...core.constants import DEFAULT_FONT
 from ...core.errors import QatfError
 from ...core.utils import ffmpeg_available
 from ...llm import describe, provider_from_settings
 from ...llm.presets import resolve_model
 from ...pipeline import cuda_device_count, resolve_device
+from ...pipeline.captions import FONT_SIZE
+from ...pipeline.textlayout import load_measurer
 from ..deps import get_settings
 from ..schemas import Health, ProviderInfo
 
@@ -42,6 +45,12 @@ def healthz(settings: Settings = Depends(get_settings)) -> Health:
     * `transcribe_device` — what stage 2 will pick under `device: auto`. If this
       says `cpu` on a machine with a GPU, a `large-v3` run is about to take a
       very long time.
+    * `caption_pill_ready` — whether the `youtube` pill caption style can
+      actually render on THIS host. False means uharfbuzz is not installed or
+      fontconfig cannot resolve the default font, and every job that asks for
+      the pill style will silently fall back to `pop` — see
+      `captions.resolve_style`. Worth knowing before submitting a job rather
+      than reading it off the rendered clips afterwards.
 
     `providers` carries the whole stage-3 roster with each entry's structured-
     output tier, so a client can offer a provider picker without hardcoding one.
@@ -68,4 +77,5 @@ def healthz(settings: Settings = Depends(get_settings)) -> Health:
         providers=[ProviderInfo(**p) for p in describe()],
         cuda_devices=cuda_device_count(),
         transcribe_device=resolve_device("auto"),
+        caption_pill_ready=load_measurer(DEFAULT_FONT, FONT_SIZE) is not None,
     )

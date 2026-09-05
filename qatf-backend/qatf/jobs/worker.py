@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import pipeline
-from ..core.constants import DEFAULT_TRACK_TIER
+from ..core.constants import DEFAULT_CAPTION_STYLE, DEFAULT_TRACK_TIER
 from ..core.errors import EmptyPlan, NoSpeechFound
 from ..core.types import Clip, Word, clips_from_dicts, clips_to_dicts
 from ..core.utils import log, probe_video
@@ -333,6 +333,17 @@ def render_plan(store: JobStore, job_id: str,
     # `baseline_words` had to fix for the repetition-repair count.
     if opts.get("captions", True) and (note := pipeline.font_warning(opts["font"])):
         log(f"      WARNING {note}")
+
+    # Resolved (and recorded) even before Task 7 wires `caption_style` into
+    # `JobOptions` — `opts.get` then always falls to the default, so today this
+    # reports whether the pill path is available on THIS host. Recording it is
+    # what stops a silent fallback from being indistinguishable from the
+    # feature working, same as `device` on stage 2.
+    style_used, style_note = pipeline.resolve_style(
+        opts.get("caption_style", DEFAULT_CAPTION_STYLE), opts["font"])
+    if style_note:
+        log(f"      WARNING {style_note}")
+    store.update(job_id, caption_style_used=style_used)
 
     store.update(job_id, state=JobState.rendering.value, outputs=[],
                  output_sizes={},

@@ -74,6 +74,11 @@ class Job:
     language: str | None = None
     #: device transcription actually ran on, once stage 2 has resolved it
     device: str | None = None
+    #: caption style actually used, which is not always the one requested — see
+    #: `captions.resolve_style`. Recorded for the same reason `device` is: a
+    #: silent fallback that reports success is indistinguishable from the
+    #: feature working. Empty on records written before this field existed.
+    caption_style_used: str = ""
     word_count: int = 0
     transcript_cached: bool = False
     clips: list[dict] = field(default_factory=list)

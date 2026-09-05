@@ -53,7 +53,7 @@ from .asr import (
     write_cache,
 )
 from .audio import DENOISE_FILTER, audio_path, extract_audio
-from .captions import build_ass, font_available, font_warning, group_words
+from .captions import build_ass, font_available, font_warning, group_words, resolve_style
 from .cuts import classify_duration, report_durations, snap, tail_for, words_in
 from .detect import detections_for
 from .encode import REFRAME_MODES, clip_stem, filtergraph, render, render_all
@@ -73,7 +73,7 @@ __all__ = [
     "tail_for",
     "fetch", "subs", "Fetched", "validate_url", "is_url",
     "has_word_timings", "to_transcript",
-    "build_ass", "group_words", "font_available", "font_warning",
+    "build_ass", "group_words", "font_available", "font_warning", "resolve_style",
     "detections_for", "solve", "crop_width", "sanitise", "track_clips",
     "render", "render_all", "filtergraph", "clip_stem", "REFRAME_MODES",
     "Clip", "Detection", "Track", "Transcript", "Word",

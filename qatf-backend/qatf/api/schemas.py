@@ -706,6 +706,7 @@ class Health(BaseModel):
             "providers": [],
             "cuda_devices": 1,
             "transcribe_device": "cuda",
+            "caption_pill_ready": True,
         }],
     })
 
@@ -732,3 +733,11 @@ class Health(BaseModel):
                        "nvidia-smi reports")
     transcribe_device: str = Field(
         "cpu", description="what stage 2 will pick under device=auto")
+    #: whether the `youtube` pill style can actually render on this host — see
+    #: `captions.resolve_style`. False means uharfbuzz is missing or fontconfig
+    #: cannot resolve the default font, and every job that asks for the pill
+    #: style will silently degrade to `pop` until that changes.
+    caption_pill_ready: bool = Field(
+        True, description="whether the 'youtube' pill caption style can render "
+                          "on this host, or every job asking for it will fall "
+                          "back to 'pop'")

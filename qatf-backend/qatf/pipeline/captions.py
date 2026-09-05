@@ -27,6 +27,7 @@ from ..core.constants import (
     CAPSULE_KAPPA,
     CAPTION_MAX_CHARS,
     CAPTION_MAX_WORDS,
+    CAPTION_STYLES,
     DEFAULT_CAPTION_STYLE,
     DEFAULT_FONT,
     TARGET_H,
@@ -335,6 +336,35 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def resolve_style(style: str, font: str) -> tuple[str, str | None]:
+    """The caption style that will actually be used, and a warning if it changed.
+
+    A WARNING, NEVER A REFUSAL — the `font_warning` policy, not the
+    `--device cuda` policy, and the project's own rule picks between them.
+    `--device cuda` and `--reframe track` raise because they have no better
+    alternative to fall back to. Here there is one, and it is a
+    rendered-and-verified path; failing an hour-long job over a missing wheel
+    would be the worse error.
+
+    The returned style is what the caller must RECORD. A silent fallback that
+    reports success is the failure mode this codebase keeps re-learning —
+    `--language ar` reusing an English transcript, a cache key missing a knob,
+    fc-match always returning something."""
+    if style not in CAPTION_STYLES:
+        raise ValueError(f"unknown caption style. Use one of "
+                         f"{', '.join(CAPTION_STYLES)}")
+    if style == "pop":
+        return "pop", None
+    if textlayout.load_measurer(safe_font(font), FONT_SIZE) is not None:
+        return "youtube", None
+    return "pop", (
+        "the 'youtube' caption style needs shaped word measurement, which is "
+        "unavailable on this host — either uharfbuzz is not installed "
+        "(pip install 'qatf[captions]') or fontconfig cannot resolve the "
+        "requested font family to a file. Falling back to the 'pop' style, "
+        "which renders one caption line at a time with no pill.")
 
 
 def build_ass(clip: Clip, words: list[Word], path: Path,
