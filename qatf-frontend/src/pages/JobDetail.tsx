@@ -201,6 +201,26 @@ export default function JobDetail() {
           <dt>Transcribed on</dt>
           <dd>{job.device ?? "not transcribed yet"}</dd>
 
+          {/* Only when a fallback actually happened: "" means no captions were
+              burned in at all (not the same as "pop was used", so never shown
+              as a style), and a match means the request was honoured — neither
+              is news. A fallback the UI hides here is one discovered only in
+              the rendered clip. */}
+          {job.caption_style_used
+            && job.caption_style_used !== job.options.caption_style
+            && (
+              <>
+                <dt>Captions</dt>
+                <dd>
+                  <span className="plan-warn">
+                    requested <span className="mono">{job.options.caption_style}</span>,
+                    rendered <span className="mono">{job.caption_style_used}</span> —
+                    shaped word measurement wasn't available on the render host
+                  </span>
+                </dd>
+              </>
+            )}
+
           <dt>Language</dt>
           <dd>{job.language ?? "not detected yet"}</dd>
 

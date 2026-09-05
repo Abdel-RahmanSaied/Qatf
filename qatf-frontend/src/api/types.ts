@@ -45,6 +45,14 @@ export interface JobOptions {
   font: string;
   captions: boolean;
   per_line: number;
+  /** `youtube` (the server default) puts the spoken word in a filled capsule,
+   * on Arabic as well as Latin; `pop` is the original one-line, per-word-colour
+   * (Latin only) style. `youtube` needs shaped word measurement on the
+   * rendering host — see `caption_pill_ready` on Health — and falls back to
+   * `pop` when that's unavailable, which is why the style actually used is
+   * reported separately on JobResponse. Optional: a mirror of the wire, and a
+   * record from before this field existed carries the server's own default. */
+  caption_style?: "youtube" | "pop";
   transcript_source: "auto" | "captions" | "whisper";
   auto_render: boolean;
 }
@@ -72,6 +80,7 @@ export const DEFAULT_OPTIONS: JobOptions = {
   font: "Noto Sans Arabic",
   captions: true,
   per_line: 4,
+  caption_style: "youtube",
   transcript_source: "auto",
   auto_render: false,
 };
@@ -194,6 +203,13 @@ export interface JobResponse {
   updated_at: string;
   language: string | null;
   device: string | null;
+  /** The caption style stage 5a ACTUALLY used — may differ from
+   * options.caption_style when `youtube` fell back to `pop` (shaped word
+   * measurement unavailable on the rendering host). Empty string when no
+   * captions were burned in at all — that is NOT the same as "pop was used",
+   * so never render "" as a style. Optional: absent on a record written
+   * before this field existed. */
+  caption_style_used?: string;
   word_count: number;
   transcript_cached: boolean;
   clips: ClipModel[];

@@ -173,18 +173,31 @@ export function OptionsForm({ value, onChange, errors }: Props) {
             </div>
           </div>
           <div className="field">
+            <label className="field-label" htmlFor="opt-caption-style">Caption style</label>
+            <select id="opt-caption-style" value={value.caption_style ?? DEFAULT_OPTIONS.caption_style}
+              onChange={(e) =>
+                set("caption_style", e.target.value as JobOptions["caption_style"])}>
+              <option value="youtube">youtube — pill on the spoken word (default)</option>
+              <option value="pop">pop — one line at a time, per-word colour on Latin</option>
+            </select>
+            <div className="field-help">
+              youtube needs shaped word measurement on the server; falls back to pop and
+              says so on the job page when that isn't available.
+            </div>
+          </div>
+          <div className="field">
             <label className="field-label" htmlFor="opt-per-line">Words per line</label>
             <input id="opt-per-line" type="number" min={1} max={8} value={value.per_line}
               onChange={(e) => set("per_line", Number(e.target.value))} />
             {err("per_line")}
           </div>
-          <div className="field">
-            <label className="switch" htmlFor="opt-captions">
-              <input id="opt-captions" type="checkbox" checked={value.captions}
-                onChange={(e) => set("captions", e.target.checked)} />
-              Burn captions into the clip
-            </label>
-          </div>
+        </div>
+        <div className="field">
+          <label className="switch" htmlFor="opt-captions">
+            <input id="opt-captions" type="checkbox" checked={value.captions}
+              onChange={(e) => set("captions", e.target.checked)} />
+            Burn captions into the clip
+          </label>
         </div>
       </section>
 
