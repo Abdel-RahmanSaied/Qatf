@@ -5,7 +5,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ..core.constants import CAPTION_MAX_WORDS, DEFAULT_FONT, DEFAULT_TRACK_TIER, TRACK_TIERS
+from ..core.constants import (
+    CAPTION_MAX_WORDS,
+    CAPTION_STYLES,
+    DEFAULT_CAPTION_STYLE,
+    DEFAULT_FONT,
+    DEFAULT_TRACK_TIER,
+    TRACK_TIERS,
+)
 from ..pipeline import DEVICES, REFRAME_MODES
 from ..pipeline.encode import CODECS, DEFAULT_CODEC, DEFAULT_PRESET, PRESETS
 
@@ -107,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="must be installed on the rendering host")
     ap.add_argument("--per-line", type=int, default=CAPTION_MAX_WORDS,
                     help="max words per caption line")
+    ap.add_argument("--caption-style", choices=CAPTION_STYLES,
+                    default=DEFAULT_CAPTION_STYLE,
+                    help="youtube = per-word pill (needs qatf[captions]); "
+                         "pop = one line at a time")
     ap.add_argument("--no-captions", action="store_true")
     ap.add_argument("--plan-only", action="store_true",
                     help="transcribe + select, write plan.json, skip rendering")

@@ -78,6 +78,16 @@ def preflight(args: argparse.Namespace) -> str | None:
         # for the same reason as every other check in here: an hour of audio
         # should not transcribe before you learn the captions will be tofu.
         log(f"      WARNING {note}")
+    # Gated identically to the font warning above, and for the same reason: a
+    # run with --no-captions never calls build_ass, so no caption style is used
+    # at all and there is nothing to warn about. The CLI must warn here for the
+    # same reason `jobs/worker.py` does before stage 5 — under Docker the
+    # rendering host is the server, but a local `qatf` run IS the rendering
+    # host, so silence here is the one deployment that would ship pills with no
+    # way to opt out and no notice that the fallback fired.
+    if not args.no_captions and (note := pipeline.resolve_style(args.caption_style,
+                                                                 args.font)[1]):
+        log(f"      WARNING {note}")
     return None
 
 
@@ -257,7 +267,7 @@ def run(args: argparse.Namespace) -> int:
     pipeline.render_all(
         video, clips, words, args.out, work,
         mode=args.reframe, font=args.font, captions=not args.no_captions,
-        per_line=args.per_line, crf=args.crf,
+        per_line=args.per_line, caption_style=args.caption_style, crf=args.crf,
         width=size[0], height=size[1], codec=args.codec, ten_bit=args.ten_bit,
         preset=args.preset, tracks=tracks, src=src_dims,
         on_clip=lambda i, total, clip, path: log(f"      -> {path}"),

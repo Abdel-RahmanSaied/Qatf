@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core.constants import (
     CAPTION_MAX_WORDS,
+    DEFAULT_CAPTION_STYLE,
     DEFAULT_FONT,
     DEFAULT_TRACK_TIER,
     LANGUAGE_TAG_PATTERN,
@@ -200,6 +201,18 @@ class JobOptions(BaseModel):
     captions: bool = Field(True, description="burn captions into the video")
     per_line: int = Field(CAPTION_MAX_WORDS, ge=1, le=8,
                           description="max words per caption line")
+    caption_style: Literal["youtube", "pop"] = Field(
+        DEFAULT_CAPTION_STYLE,
+        description="how captions are drawn. `youtube` positions every word "
+                    "absolutely and puts the word currently being spoken in a "
+                    "filled capsule, on Arabic as well as Latin. `pop` is the "
+                    "original style: one caption line at a time, with per-word "
+                    "colouring on Latin only. `youtube` needs shaped word "
+                    "measurement on the RENDERING host; where that is "
+                    "unavailable the job falls back to `pop`, logs why, and "
+                    "reports the style it actually used — check "
+                    "`caption_pill_ready` on /healthz before submitting.",
+    )
     transcript_source: Literal["auto", "captions", "whisper"] = Field(
         "auto",
         description="where stage 2's words come from. `auto` (the default) uses "

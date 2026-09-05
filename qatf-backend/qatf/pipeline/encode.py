@@ -17,7 +17,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from ..core.constants import CAPTION_MAX_WORDS, DEFAULT_FONT, TARGET_H, TARGET_W
+from ..core.constants import (
+    CAPTION_MAX_WORDS,
+    DEFAULT_CAPTION_STYLE,
+    DEFAULT_FONT,
+    TARGET_H,
+    TARGET_W,
+)
 from ..core.errors import ReframeNotConfigured
 from ..core.types import Clip, Track, Word
 from ..core.utils import run, slugify
@@ -313,6 +319,7 @@ def _track_args(track: Track | None, cmd_path: Path,
 def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
                work: Path, *, mode: str = "crop", font: str = DEFAULT_FONT,
                captions: bool = True, per_line: int = CAPTION_MAX_WORDS,
+               caption_style: str = DEFAULT_CAPTION_STYLE,
                crf: int = 20, fps: float | None = None,
                width: int = TARGET_W, height: int = TARGET_H,
                codec: str = DEFAULT_CODEC, ten_bit: bool = False,
@@ -332,7 +339,14 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
 
     `tracks` is one solved Track per clip, positionally. It is only read in
     `track` mode, and a missing or empty one degrades to a centre crop for that
-    clip alone — one clip where no face was found must not fail the batch."""
+    clip alone — one clip where no face was found must not fail the batch.
+
+    `caption_style` is forwarded to `build_ass` as `style=`. Passing it through
+    unresolved (rather than a pre-resolved value) is deliberate: `build_ass`
+    already carries its own fallback to `pop` when word measurement is
+    unavailable, so this stays the single place that decision is made — see
+    `captions.resolve_style` for the same decision made a second time, purely
+    for the caller's warning and record."""
     if mode == "track" and src is None:
         raise ReframeNotConfigured(
             "track mode needs the source dimensions as src=(w, h) — stage 4c "
@@ -343,7 +357,8 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
         if should_stop and should_stop():
             break
         stem = clip_stem(i, clip)
-        ass = (build_ass(clip, words, work / f"{stem}.ass", per_line=per_line, font=font)
+        ass = (build_ass(clip, words, work / f"{stem}.ass", per_line=per_line,
+                         font=font, style=caption_style)
                if captions else None)
         cmd_path, x0 = (_track_args(tracks[i - 1] if tracks and i <= len(tracks) else None,
                                     work / f"{stem}.cmd", src)

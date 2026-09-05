@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from qatf import pipeline
 from qatf.api import create_app
+from qatf.api.schemas import JobOptions
 from qatf.core.config import EDITABLE, Settings
 from qatf.core.types import Clip, Keyframe, Track, Transcript, Word
 from qatf.jobs import RUNNING_STATE_VALUES, JobStore, worker
@@ -637,6 +638,30 @@ with TestClient(app) as client:
               len(r.json().get("detail", "")) > 20, r.text[:120])
     check("the reason and location still reach the caller",
           "end" in bad.json()["detail"], bad.json()["detail"][:160])
+
+    check("caption_style defaults to youtube",
+          JobOptions().caption_style == "youtube")
+    check("caption_style accepts pop", JobOptions(caption_style="pop").caption_style == "pop")
+    _r = client.post("/jobs", json={"path": "talk.mp4", "caption_style": "sparkly"})
+    check("an unknown caption_style is refused at the boundary", _r.status_code == 422)
+    check("and the 422 does not echo the rejected value back",
+          "sparkly" not in _r.text, _r.text[:200])
+
+    # Task 6's gate — `resolve_style` and `store.update(caption_style_used=...)`
+    # both run only under `opts.get("captions", True)` — is pinned from OUTSIDE
+    # the worker here: a job that burns in no captions must not claim a style
+    # was used. `caption_style_used` is not on the wire (JobResponse carries no
+    # such field yet), so it is read off the store directly, same depth as the
+    # restart-recovery check reads `store.get(jid)` further down this file.
+    _r = client.post("/jobs", json={"path": "talk.mp4", "captions": False})
+    check("captions-disabled job accepted", _r.status_code == 202, str(_r.status_code))
+    _nocap_jid = _r.json()["id"]
+    _nocap_job = wait(client, _nocap_jid, {"done", "failed"})
+    check("captions-disabled job finishes", _nocap_job["state"] == "done",
+          _nocap_job.get("error") or "")
+    check("caption_style_used stays empty when captions are off",
+          app.state.store.get(_nocap_jid).caption_style_used == "",
+          repr(app.state.store.get(_nocap_jid).caption_style_used))
 
     section("plan round trip")
     edited = [{"start": 20.0, "end": 61.0, "title": "hand edited",
