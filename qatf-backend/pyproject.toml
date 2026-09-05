@@ -92,8 +92,22 @@ track = [
 youtube = [
     "yt-dlp>=2024.1",
 ]
+# stage 5a — only the `youtube` caption style needs this. Its own extra for the
+# same reason `track` and `youtube` have theirs: the pipeline must keep
+# installing, and rendering, without it.
+#
+# uharfbuzz rather than Pillow+Raqm: Raqm is only present if Pillow was BUILT
+# with libraqm, and when it is not, Pillow silently falls back to BASIC layout
+# and gets Arabic advances wrong without erroring. Silent-and-wrong on the
+# Arabic path is this project's worst failure mode.
+#
+# It is also the engine libass shapes with, so we measure with exactly what will
+# draw the frame.
+captions = [
+    "uharfbuzz>=0.39",
+]
 all = [
-    "qatf[api,anthropic,openai,track,youtube]",
+    "qatf[api,anthropic,openai,track,youtube,captions]",
 ]
 dev = [
     "httpx>=0.27",

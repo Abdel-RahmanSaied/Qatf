@@ -179,6 +179,42 @@ check("empty line does not crash", tl.visual_order([], base_rtl=True) == [])
 check("is_rtl moved but is still importable from captions",
       captions.is_rtl is tl.is_rtl)
 
+section("textlayout: measurement")
+
+# font_file must not raise when fontconfig is absent — same "cannot tell, never
+# missing" rule installed_fonts() follows.
+_ff = tl.font_file("Noto Sans Arabic")
+check("font_file returns a Path or None, never raises",
+      _ff is None or _ff.suffix.lower() in (".ttf", ".otf", ".ttc"), str(_ff))
+
+# The fallback is the load-bearing behaviour: it must be None, not an exception,
+# because a missing wheel has to degrade to the `pop` style rather than fail a job.
+check("load_measurer on a font that cannot exist returns None",
+      tl.load_measurer("NoSuchFamily\u0000Ever", 64) is None)
+
+
+# A fake measurer is how every layout check runs on a host without uharfbuzz.
+class FakeMeasurer:
+    line_height = 80.0
+
+    def advance(self, text: str) -> float:
+        return 10.0 * len(text)
+
+
+_fake = FakeMeasurer()
+check("fake measurer satisfies the Measurer protocol",
+      isinstance(_fake, tl.Measurer))
+
+_m = tl.load_measurer(DEFAULT_FONT, 64)
+if _m is None:
+    check("SKIP real measurement (uharfbuzz or font unavailable)", True)
+else:
+    check("a longer word measures wider", _m.advance("hello") > _m.advance("hi"))
+    check("the space has a real advance", _m.advance(" ") > 0)
+    check("arabic measures non-zero", _m.advance("البرمجة") > 0)
+    check("line height is positive and sane for 64px",
+          40 < _m.line_height < 200, str(_m.line_height))
+
 section("ass generation, continued")
 for tmp in (path, braced):
     tmp.unlink(missing_ok=True)
