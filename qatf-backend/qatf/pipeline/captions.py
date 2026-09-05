@@ -27,13 +27,14 @@ from ..core.constants import (
     CAPSULE_KAPPA,
     CAPTION_MAX_CHARS,
     CAPTION_MAX_WORDS,
+    DEFAULT_CAPTION_STYLE,
     DEFAULT_FONT,
     TARGET_H,
     TARGET_W,
 )
 from ..core.types import Clip, Word
 from ..core.utils import ts_ass
-from . import textlayout  # noqa: F401 — unused here; later tasks call textlayout.load_measurer
+from . import textlayout
 from .cuts import words_in
 from .textlayout import is_rtl
 
@@ -236,9 +237,103 @@ def _clamp(start: float, end: float, next_start: float | None) -> float:
     return end
 
 
+def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
+                      measurer, per_line: int, font: str) -> Path:
+    """Captions with every word positioned absolutely and the spoken one pilled.
+
+    THE REASON THIS WORKS ON ARABIC: each `Dialogue` event holds exactly one
+    word, so there is no multi-word bidi run for an override tag to split. The
+    scrambling that forced RTL onto one-cue-per-line simply has no surface here.
+    The price is that libass no longer lays out the line, which is what
+    `textlayout` is for.
+
+    Three events per word, on three layers:
+
+        0   every word, dimmed, outline kept     spans the WHOLE line window
+        1   the capsule                           only while that word is active
+        2   the word again, bright, no outline    only while that word is active
+
+    Layer 0 carries identical timings for every word in a line, so only the
+    capsule and the bright word need per-word windows. The ordering is also what
+    lets the active word have no outline: the dimmed copy underneath still has
+    one, and the capsule paints over it — which is why PILL_PAD_X must exceed
+    OUTLINE."""
+    from ..core.constants import (
+        CAPTION_DIM_ALPHA,
+        CAPTION_SIDE_MARGIN,
+        PILL_FILL,
+        PILL_PAD_X,
+        PILL_PAD_Y,
+    )
+    from . import textlayout as tl
+
+    lines = [ASS_HEADER.replace("{FONT}", safe_font(font))
+                        .replace("{SIZE}", str(FONT_SIZE))
+                        .replace("{OUTLINE}", str(OUTLINE))]
+
+    usable = TARGET_W - 2 * CAPTION_SIDE_MARGIN
+    in_clip = [w for w in words_in(clip, words) if w.text]
+    texts = [escape(w.text) for w in in_clip]
+    chunks = tl.chunk_by_width(texts, measurer, usable, per_line)
+
+    # Vertical: reproduce where MarginV 300 puts a bottom-aligned line today, so
+    # a style change does not silently move captions up the frame.
+    baseline_y = TARGET_H - 300 - measurer.line_height / 2
+    pill_fill = ass_bgr(PILL_FILL)
+    dim = f"\\alpha&H{CAPTION_DIM_ALPHA:02X}&"
+
+    for ci, chunk in enumerate(chunks):
+        chunk_words = [in_clip[i] for i in chunk]
+        chunk_texts = [texts[i] for i in chunk]
+        base_rtl = is_rtl(" ".join(chunk_texts))
+        line = tl.solve_line(chunk_texts, measurer, usable, base_rtl)
+
+        next_start = (in_clip[chunks[ci + 1][0]].start - clip.start
+                      if ci + 1 < len(chunks) else None)
+        l_start = chunk_words[0].start - clip.start
+        l_end = _clamp(l_start,
+                       chunk_words[-1].end - clip.start + LAST_WORD_HOLD,
+                       next_start)
+
+        for bi, box in enumerate(line.boxes):
+            cx = CAPTION_SIDE_MARGIN + box.x + box.width / 2
+            w_active = chunk_words[bi]
+            a_start = w_active.start - clip.start
+            if bi + 1 < len(chunk_words):
+                a_end = _clamp(a_start, chunk_words[bi + 1].start - clip.start,
+                               next_start)
+            else:
+                a_end = l_end
+
+            # 0 — dimmed, whole line window
+            lines.append(
+                f"Dialogue: 0,{ts_ass(l_start)},{ts_ass(l_end)},Pop,,0,0,0,,"
+                f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{dim}}}{box.text}")
+
+            # 1 — the capsule
+            pw = int(round(box.width)) + 2 * PILL_PAD_X
+            ph = int(round(line.height)) + 2 * PILL_PAD_Y
+            px = cx - pw / 2
+            py = baseline_y - ph / 2
+            lines.append(
+                f"Dialogue: 1,{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
+                f"{{\\pos({px:.0f},{py:.0f})\\an7\\p1\\c{pill_fill}"
+                f"\\bord0\\shad0}}{capsule_path(pw, ph)}{{\\p0}}")
+
+            # 2 — the active word, no outline; the pill carries contrast
+            lines.append(
+                f"Dialogue: 2,{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
+                f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5\\bord0\\shad0}}{box.text}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def build_ass(clip: Clip, words: list[Word], path: Path,
               per_line: int = CAPTION_MAX_WORDS, font: str = DEFAULT_FONT,
-              highlight: bool | None = None) -> Path:
+              highlight: bool | None = None,
+              style: str = DEFAULT_CAPTION_STYLE, measurer=None) -> Path:
     """Captions timed relative to the clip start.
 
     Relative because `-ss` before `-i` resets timestamps to 0.
@@ -247,7 +342,23 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
     LTR text and disables it for RTL, which is the only combination that renders
     correctly — see the module docstring. Pass True to force it on RTL anyway;
     the line will be scrambled, and the only reason to do that is to re-measure
-    the bug."""
+    the bug.
+
+    `style` picks the emitter: `youtube` (the default) positions every word
+    absolutely and pills the active one — see `build_ass_youtube`. `pop` is the
+    original single-line style this docstring otherwise describes, and every
+    measured number in CLAUDE.md and docs/quality.md depends on `pop` being
+    untouched by the addition. `measurer` is normally left to be resolved from
+    `font`; the caller passes one directly only where fontconfig or uharfbuzz is
+    known to be unavailable (i.e. the test suite)."""
+    if style == "youtube":
+        m = measurer if measurer is not None else \
+            textlayout.load_measurer(safe_font(font), FONT_SIZE)
+        if m is not None:
+            return build_ass_youtube(clip, words, path, m, per_line, font)
+        # No measurement available. Fall THROUGH to `pop` rather than raise —
+        # see `resolve_style`. The caller is responsible for warning.
+
     lines = [ASS_HEADER.replace("{FONT}", safe_font(font))
                         .replace("{SIZE}", str(FONT_SIZE))
                         .replace("{OUTLINE}", str(OUTLINE))]

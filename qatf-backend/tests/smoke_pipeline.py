@@ -41,6 +41,20 @@ def words(n: int = 100, step: float = 0.5) -> list[Word]:
     return [Word(f"w{i}", i * step, i * step + step * 0.9) for i in range(n)]
 
 
+# A fake measurer is how every layout check runs on a host without uharfbuzz.
+# Defined here, ahead of every section, because `build_ass(..., style="youtube")`
+# is now exercised as early as the "caption cues must be disjoint" check below —
+# it needs a measurer long before "textlayout: measurement" gets to introduce it.
+class FakeMeasurer:
+    line_height = 80.0
+
+    def advance(self, text: str) -> float:
+        return 10.0 * len(text)
+
+
+_M = FakeMeasurer()          # 10px per character, 80px line height
+
+
 def _capture(kind, fn, *args):
     """The exception `fn` raises, for asserting on its MESSAGE.
 
@@ -130,24 +144,46 @@ def cue_times(ass_body: str) -> list[tuple[float, float]]:
 # Invisible in the .ass file, which reads as entirely correct. Only a rendered
 # frame or this assertion catches it.
 section("caption cues must be disjoint")
-for label, mk_words in (
-    ("ltr, word-by-word highlighting", lambda: words(40)),
-    ("rtl, one cue per line", lambda: [Word("مرحبا", i * 0.5, i * 0.5 + 0.45)
-                                       for i in range(40)]),
-    # Continuous speech with no silence is the case that produced the overlap:
-    # every line's neighbour starts inside the hold window.
-    ("gapless speech", lambda: [Word("word", i * 0.3, i * 0.3 + 0.3)
-                                for i in range(40)]),
-):
-    _p = captions.build_ass(Clip(0.0, 30.0, "t"), mk_words(), Path("_tmp_ov.ass"))
-    _cues = cue_times(_p.read_text(encoding="utf-8"))
-    _bad = [(a, b) for a, b in zip(_cues, _cues[1:], strict=False) if b[0] < a[1]]
-    check(f"{label}: no two cues are ever on screen together",
-          not _bad, f"{len(_bad)} of {max(0, len(_cues) - 1)} pairs overlap, "
-                    f"e.g. {_bad[0] if _bad else ''}")
-    check(f"{label}: and every cue still has a visible duration",
-          all(e > s for s, e in _cues), str([c for c in _cues if c[1] <= c[0]][:3]))
-    _p.unlink(missing_ok=True)
+# Per LINE, not per event. On the `youtube` style every word of a line is live
+# simultaneously by design, at different x positions — that is the feature. The
+# bug this check exists for is two LINES on screen at once, which libass stacks
+# vertically, and that is still forbidden. Weakening it to "cues may overlap"
+# would delete the check rather than update it.
+def line_windows(body: str, style: str) -> list[tuple[float, float]]:
+    cues = cue_times(body)
+    if style == "pop":
+        return cues
+    # youtube: layer-0 events span the whole line, so the distinct layer-0
+    # windows ARE the line windows.
+    out = []
+    for ln in body.split("[Events]")[1].splitlines():
+        if ln.startswith("Dialogue: 0,"):
+            f = ln.split(",", 10)
+            def secs(t):
+                h, m, rest = t.split(":")
+                return int(h) * 3600 + int(m) * 60 + float(rest)
+            w = (secs(f[1]), secs(f[2]))
+            if w not in out:
+                out.append(w)
+    return out
+
+for style in ("pop", "youtube"):
+    for label, mk_words in (
+        ("ltr", lambda: words(40)),
+        ("rtl", lambda: [Word("مرحبا", i * 0.5, i * 0.5 + 0.45) for i in range(40)]),
+        ("gapless speech", lambda: [Word("word", i * 0.3, i * 0.3 + 0.3)
+                                    for i in range(40)]),
+    ):
+        _p = captions.build_ass(Clip(0.0, 30.0, "t"), mk_words(),
+                                Path("_tmp_ov.ass"), style=style, measurer=_M)
+        _w = line_windows(_p.read_text(encoding="utf-8"), style)
+        _bad = [(a, b) for a, b in zip(_w, _w[1:], strict=False) if b[0] < a[1]]
+        check(f"{style}/{label}: no two caption LINES are on screen together",
+              not _bad, f"{len(_bad)} of {max(0, len(_w) - 1)} pairs overlap, "
+                        f"e.g. {_bad[0] if _bad else ''}")
+        check(f"{style}/{label}: every line still has a visible duration",
+              all(e > s for s, e in _w), str([c for c in _w if c[1] <= c[0]][:3]))
+        _p.unlink(missing_ok=True)
 
 # The hold is what makes a caption linger past the last word; clamping must not
 # silently delete it where there IS room. A trailing gap leaves the full hold.
@@ -240,14 +276,8 @@ check("load_measurer on a font that cannot exist returns None",
       tl.load_measurer("NoSuchFamily\u0000Ever", 64) is None)
 
 
-# A fake measurer is how every layout check runs on a host without uharfbuzz.
-class FakeMeasurer:
-    line_height = 80.0
-
-    def advance(self, text: str) -> float:
-        return 10.0 * len(text)
-
-
+# FakeMeasurer and _M are defined near the top of this file, ahead of every
+# section — see the comment there.
 _fake = FakeMeasurer()
 check("fake measurer satisfies the Measurer protocol",
       isinstance(_fake, tl.Measurer))
@@ -263,8 +293,6 @@ else:
           40 < _m.line_height < 200, str(_m.line_height))
 
 section("textlayout: line solving")
-
-_M = FakeMeasurer()          # 10px per character, 80px line height
 
 # Three 2-char words: 3*20 advance + 2 spaces of 10 = 80
 _line = tl.solve_line(["ab", "cd", "ef"], _M, usable=900, base_rtl=False)
@@ -2155,5 +2183,94 @@ check("capsule path closes on its start point",
       _toks[-2:] == [str(80 // 2), "0"], " ".join(_toks[-4:]))
 check("a capsule on a tiny box does not invert",
       "-" not in captions.capsule_path(10, 80))
+
+section("captions: youtube pill style")
+
+
+def dialogue_lines(body: str) -> list[list[str]]:
+    """Each Dialogue split into its 10 header fields plus the text."""
+    return [ln.split(",", 9) for ln in body.split("[Events]")[1].splitlines()
+            if ln.startswith("Dialogue")]
+
+
+_ltr = [Word("hello", 0.0, 0.4), Word("world", 0.4, 0.9)]
+_ar = [Word("إحنا", 0.0, 0.4), Word("بنتكلم", 0.4, 0.9), Word("عن", 0.9, 1.2)]
+
+_yp = captions.build_ass(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_yt.ass"),
+                         style="youtube", measurer=_M)
+_body = _yp.read_text(encoding="utf-8")
+_dl = dialogue_lines(_body)
+
+check("every word is positioned absolutely", all("\\pos(" in d[9] for d in _dl))
+check("three events per word", len(_dl) == 3 * len(_ltr))
+check("layers 0, 1 and 2 are all used",
+      {d[0].split(":")[1].strip() for d in _dl} == {"0", "1", "2"})
+check("the capsule is a drawing event",
+      any("\\p1" in d[9] and "m " in d[9] for d in _dl))
+check("the capsule uses the measured pill fill",
+      any(captions.ass_bgr(K.PILL_FILL) in d[9] for d in _dl))
+check("inactive words are dimmed",
+      any(f"\\alpha&H{K.CAPTION_DIM_ALPHA:02X}&" in d[9] for d in _dl))
+# CORRECTED from the plan: the capsule event also carries \bord0 and no \alpha,
+# so without excluding \p1 this check passes even if the active word keeps its
+# outline. Dropping the outline on the active word is load-bearing — it is the
+# entire reason the pill colour was deepened to a 4.91:1 contrast ratio.
+check("the active word drops its outline",
+      any("\\bord0" in d[9] and "\\alpha" not in d[9] and "\\p1" not in d[9]
+          for d in _dl))
+# The whole point of the feature: one word per event, so nothing can bidi-split.
+for d in _dl:
+    if "\\p1" in d[9]:
+        continue
+    _txt = re.sub(r"\{[^}]*\}", "", d[9])
+    check(f"event carries exactly one word ({_txt!r})", " " not in _txt.strip())
+
+# RTL: the first logical word must sit furthest RIGHT.
+#
+# CORRECTED from the plan: every word contributes THREE `\pos(` occurrences
+# (dimmed/capsule/bright), and layer 0 and layer 2 share the same centre `cx`
+# for a given word — so a flat regex scan of the whole body cannot tell "this
+# word's position" from "this same word's OTHER event". Verified by hand: with
+# `_ar`'s three words the raw scan gives [590, 552, 590, 530, 482, 530, 480,
+# 452, 480] — index 0 and index `len(_ar) - 1 == 2` are BOTH word 0 (590 vs
+# 590, never >). Layer 0 alone carries exactly one entry per word, emitted in
+# logical order, which is what "first word vs last word" actually needs.
+_ap = captions.build_ass(Clip(0.0, 5.0, "t"), _ar, Path("_tmp_yt_ar.ass"),
+                         style="youtube", measurer=_M)
+_ap_layer0 = [d for d in dialogue_lines(_ap.read_text(encoding="utf-8"))
+              if d[0].split(":")[1].strip() == "0"]
+_xs = [float(m) for d in _ap_layer0
+       for m in re.findall(r"\\pos\((\d+(?:\.\d+)?),", d[9])]
+check("arabic places the first word right of the last", _xs[0] > _xs[-1],
+      f"{_xs[0]} vs {_xs[-1]}")
+
+# The trust boundary is unchanged.
+_evil = [Word("a\nDialogue: 0,0:00:00.00,0:00:01.00,Pop,,0,0,0,,pwned", 0.0, 0.5)]
+_ep = captions.build_ass(Clip(0.0, 5.0, "t"), _evil, Path("_tmp_yt_evil.ass"),
+                         style="youtube", measurer=_M)
+check("a newline in word text cannot inject a Dialogue line",
+      len(dialogue_lines(_ep.read_text(encoding="utf-8"))) == 3)
+
+# `pop` must be untouched — every measured number depends on it.
+_pop = captions.build_ass(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_pop.ass"),
+                          style="pop")
+check("pop emits no positioning and no drawing",
+      "\\pos(" not in _pop.read_text(encoding="utf-8")
+      and "\\p1" not in _pop.read_text(encoding="utf-8"))
+
+# Spec risk 1: we own line layout but libass still DRAWS each word, so our
+# measured advance has to match what it renders. That only holds while the Style
+# line neither scales glyphs nor adds letter-spacing. If someone sets ScaleX to
+# 105 or Spacing to 1 for a look, every capsule silently drifts off its word and
+# nothing else in the suite would notice. Pin it.
+_style_line = next(ln for ln in _body.splitlines() if ln.startswith("Style:"))
+_f = _style_line.split(",")
+check("ScaleX and ScaleY are 100 - our advances assume unscaled glyphs",
+      (_f[11].strip(), _f[12].strip()) == ("100", "100"), _style_line)
+check("Spacing is 0 - our advances assume no added letter-spacing",
+      _f[13].strip() == "0", _style_line)
+
+for _t in (_yp, _ap, _ep, _pop):
+    _t.unlink(missing_ok=True)
 
 raise SystemExit(report())
