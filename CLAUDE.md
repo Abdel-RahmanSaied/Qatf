@@ -789,9 +789,14 @@ only counts responses — which is why the refused clips are now reported in
 in range to **8 of 8**, durations 36-50s. Scaling 8B -> 235B had bought exactly
 one clip. `build_transcript_blocks` emits only block starts, so copying two
 start labels is the only span the prompt format affords — the models were never
-doing bad arithmetic, they had nothing to subtract. Numbers in
-`docs/quality.md`. **Not implemented yet**; the measurement was taken against a
-patched prompt in a scratch script.
+doing bad arithmetic, they had nothing to subtract.
+
+**Implemented 2026-08-22**, and re-measured through the real `pick_clips` path:
+8 of 8 in range, durations 37-52s. `build_transcript_blocks` now emits
+`[MM:SS-MM:SS]`, a block's end being the next block's start. The core invariant
+is untouched — the model still answers in `MM:SS` and stage 4 still snaps every
+boundary onto a real word; it gets a better VIEW, not more authority. Numbers in
+`docs/quality.md`.
 
 ---
 

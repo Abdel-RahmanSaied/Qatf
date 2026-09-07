@@ -24,7 +24,7 @@ from ..llm import LLMProvider, build_provider
 
 PROMPT = """You are selecting standalone short-form clips from a long video transcript.
 
-Each transcript line is prefixed with its start time as [MM:SS].
+Each transcript line is prefixed with the span it covers as [MM:SS-MM:SS].
 
 Pick the {n} strongest candidate clips. A strong clip:
 - is self-contained — understandable with zero context from the rest of the video
@@ -84,8 +84,31 @@ CLIP_SCHEMA = {
 def build_transcript_blocks(words: list[Word],
                             block_seconds: float = BLOCK_SECONDS) -> str:
     """Timestamped transcript. Coarse blocks keep the token count sane and stop
-    the model from inventing precise timings it can't actually know."""
-    lines, buf, block_start = [], [], words[0].start if words else 0.0
+    the model from inventing precise timings it can't actually know.
+
+    Each line is labelled with the SPAN it covers, `[MM:SS-MM:SS]`, not just
+    where it starts. That one change was worth more than three model sizes.
+
+    Measured on the same Arabic transcript at `--clips 8 --min-len 30
+    --max-len 52`: start labels alone gave `qwen3-235b` 2 clips in range, six of
+    the eight clustered at ~24s; span labels gave 8 of 8 at 36-50s. Scaling the
+    model 8B -> 14B -> 235B had moved that number by exactly one.
+
+    The models were never doing bad arithmetic. With only start labels the sole
+    timestamps in the prompt are block STARTS, so copying two of them is the one
+    span the format affords — 2 x 12.2s = 24.4s falls out of the shape of the
+    prompt, not out of any judgment about how long a clip should be. Give the
+    line an end and the durations move. Numbers in `docs/quality.md`.
+
+    A block's end is the next block's start, and the last block ends at the last
+    word's end. Contiguous by construction: a gap would invite a boundary inside
+    it, which is a timestamp nothing can snap to.
+
+    This does NOT weaken the core invariant. The model still answers in `MM:SS`
+    and stage 4 still snaps every boundary onto a real word. It gets a better
+    VIEW of the transcript, not more authority over timing."""
+    lines: list[tuple[float, float, str]] = []
+    buf, block_start = [], words[0].start if words else 0.0
     # `block_open` tracks block MEMBERSHIP — has this block seen any word at
     # all, blank included — separately from `buf`, which tracks only the TEXT
     # that gets joined into the line. Before the blank-token guard below was
@@ -103,7 +126,7 @@ def build_transcript_blocks(words: list[Word],
     block_open = False
     for w in words:
         if w.start - block_start >= block_seconds and block_open:
-            lines.append(f"[{ts_human(block_start)}] {' '.join(buf)}")
+            lines.append((block_start, w.start, " ".join(buf)))
             buf, block_start, block_open = [], w.start, False
         block_open = True
         # `health.repair` blanks a decoder repetition loop's duplicates rather
@@ -116,8 +139,12 @@ def build_transcript_blocks(words: list[Word],
         if w.text:
             buf.append(w.text)
     if block_open:
-        lines.append(f"[{ts_human(block_start)}] {' '.join(buf)}")
-    return "\n".join(lines)
+        # The last block ends where the audio does, not at a rounded guess.
+        lines.append((block_start, words[-1].end if words else block_start,
+                      " ".join(buf)))
+    return "\n".join(
+        f"[{ts_human(start)}-{ts_human(end)}] {text}"
+        for start, end, text in lines)
 
 
 def parse_response(raw: str) -> list[Clip]:

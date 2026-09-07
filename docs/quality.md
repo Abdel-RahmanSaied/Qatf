@@ -787,9 +787,19 @@ qwen3-235b + span labels      real spans            8
 
 30x the parameters bought one clip. The label format bought six.
 
-**Variant B is not implemented yet.** The measurement above was taken against a
-patched prompt in a scratch script; `build_transcript_blocks` still emits
-`[MM:SS]`.
+**Implemented 2026-08-22.** `build_transcript_blocks` emits `[MM:SS-MM:SS]`.
+Re-measured afterwards through the real `pick_clips` path rather than a scratch
+script, same transcript, `--clips 8 --min-len 30 --max-len 52`:
+
+```text
+durations   [52.4, 49.1, 37.2, 50.6, 50.5, 48.9, 49.6, 48.9]
+in range    8 of 8      (2 of 8 before)
+```
+
+Variant C — the same labels plus an explicit "COMPUTE end minus start"
+instruction — scored 7 of 8 and was NOT taken. The more emphatic prompt was the
+worse one: it pushed the model into a narrow 36-38s band and left a 25.4s
+straggler. Try the minimal change before the forceful one.
 
 **Before switching the Arabic path to a local model, count the clips that
 survive the duration filter, not the clips the model returns.** A provider that
