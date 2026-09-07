@@ -96,8 +96,19 @@ class Measurer(Protocol):
     testable if the suite can simulate the dependency being absent."""
 
     line_height: float
+    ascender: float          # px above the baseline, from the font's line box
 
     def advance(self, text: str) -> float: ...
+
+    def ink_extents(self, text: str) -> tuple[float, float]:
+        """(top, bottom) in pixels relative to the baseline, y-up.
+
+        `top` is positive and `bottom` is normally negative; visual height is
+        `top - bottom`. This is the ink the text actually puts on screen, as
+        opposed to `line_height`, which is the font's reserved line box and is
+        routinely far taller — Noto Sans Arabic reserves room for diacritics
+        most words never carry."""
+        ...
 
 
 @functools.lru_cache(maxsize=32)
@@ -151,9 +162,12 @@ class _HarfBuzzMeasurer:
         self._upem = face.upem
         self._font.scale = (self._upem, self._upem)
         self._px = size / self._upem
-        self.line_height = self._measure_line_height() * self._px
+        line_height, ascender = self._measure_line_extents()
+        self.line_height = line_height * self._px
+        self.ascender = ascender * self._px
 
-    def _measure_line_height(self) -> float:
+    def _measure_line_extents(self) -> tuple[float, float]:
+        """(line height, ascender), in FONT UNITS — the caller scales to px."""
         for name in ("get_font_h_extents", "get_font_extents"):
             fn = getattr(self._font, name, None)
             if fn is None:
@@ -165,11 +179,12 @@ class _HarfBuzzMeasurer:
             asc = getattr(ext, "ascender", None)
             desc = getattr(ext, "descender", None)
             if asc is not None and desc is not None:
-                return float(asc) - float(desc)
-        # Last resort: the em box. Slightly tight for faces with tall
+                return float(asc) - float(desc), float(asc)
+        # Last resort: the em box, ascender split evenly across it since
+        # nothing tells us the real split. Slightly tight for faces with tall
         # ascenders, and only reached on a uharfbuzz that exposes neither
         # extents call — which the probe in this task's Step 2 checks for.
-        return float(self._upem)
+        return float(self._upem), float(self._upem) / 2.0
 
     def advance(self, text: str) -> float:
         buf = self._hb.Buffer()
@@ -177,6 +192,39 @@ class _HarfBuzzMeasurer:
         buf.guess_segment_properties()
         self._hb.shape(self._font, buf)
         return sum(p.x_advance for p in buf.glyph_positions) * self._px
+
+    def ink_extents(self, text: str) -> tuple[float, float]:
+        """(top, bottom) in pixels relative to the baseline, y-up.
+
+        Shapes `text`, then unions each glyph's ink extents. HarfBuzz reports
+        `y_bearing` as the top edge (positive up) and `height` as NEGATIVE,
+        extending downward, so a glyph's bottom is `y_bearing + height`.
+
+        A glyph with no ink — a space, or a font that reports nothing for a
+        codepoint — comes back with all fields zero rather than raising, so it
+        is excluded from the union explicitly. If NO glyph contributes ink
+        (an empty string, an all-space chunk, or an exotic font), the line box
+        is returned instead of a zero-height pill — today's behaviour, not a
+        new failure mode."""
+        buf = self._hb.Buffer()
+        buf.add_str(text)
+        buf.guess_segment_properties()
+        self._hb.shape(self._font, buf)
+
+        top: float | None = None
+        bottom: float | None = None
+        for info in buf.glyph_infos:
+            ext = self._font.get_glyph_extents(info.codepoint)
+            if ext.width == 0 and ext.height == 0:
+                continue                  # no ink: a space, or nothing reported
+            g_top = ext.y_bearing
+            g_bottom = ext.y_bearing + ext.height
+            top = g_top if top is None else max(top, g_top)
+            bottom = g_bottom if bottom is None else min(bottom, g_bottom)
+
+        if top is None or bottom is None:
+            return self.ascender, self.ascender - self.line_height
+        return top * self._px, bottom * self._px
 
 
 def load_measurer(family: str, size: float) -> Measurer | None:

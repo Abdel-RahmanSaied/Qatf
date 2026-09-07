@@ -289,6 +289,21 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
         base_rtl = is_rtl(" ".join(chunk_texts))
         line = tl.solve_line(chunk_texts, measurer, usable, base_rtl)
 
+        # The capsule is sized from the ink this LINE actually puts on
+        # screen, not the font's line box — see textlayout.Measurer.ink_extents.
+        # Computed once per line, not per word: every capsule on a line must
+        # be the same height, or pills would change size as the highlight
+        # moves across it.
+        line_text = " ".join(box.text for box in line.boxes)
+        ink_top, ink_bot = measurer.ink_extents(line_text)
+        # `\an5` centres the LINE BOX on baseline_y, so the baseline itself
+        # sits here — the ink is not centred within that box, which is why the
+        # capsule is positioned from the baseline rather than from baseline_y.
+        baseline_screen = (baseline_y - measurer.line_height / 2
+                            + measurer.ascender)
+        ph = int(round(ink_top - ink_bot)) + 2 * PILL_PAD_Y
+        pill_cy = baseline_screen - (ink_top + ink_bot) / 2
+
         next_start = (in_clip[chunks[ci + 1][0]].start - clip.start
                       if ci + 1 < len(chunks) else None)
         l_start = chunk_words[0].start - clip.start
@@ -312,7 +327,6 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
                 f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{dim}}}{box.text}")
 
             # 1 — the capsule
-            ph = int(round(line.height)) + 2 * PILL_PAD_Y
             # capsule_path floors its own width to 2*radius so the rounded caps
             # cannot invert on a short word. That floor has to be applied HERE
             # too, before px is computed — otherwise px centres the un-clamped
@@ -322,7 +336,7 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
             r = max(1, ph // 2)
             pw = max(int(round(box.width)) + 2 * PILL_PAD_X, 2 * r)
             px = cx - pw / 2
-            py = baseline_y - ph / 2
+            py = pill_cy - ph / 2
             lines.append(
                 f"Dialogue: 1,{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
                 f"{{\\pos({px:.0f},{py:.0f})\\an7\\p1\\c{pill_fill}"

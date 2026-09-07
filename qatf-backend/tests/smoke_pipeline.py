@@ -47,12 +47,18 @@ def words(n: int = 100, step: float = 0.5) -> list[Word]:
 # it needs a measurer long before "textlayout: measurement" gets to introduce it.
 class FakeMeasurer:
     line_height = 80.0
+    ascender = 60.0
 
     def advance(self, text: str) -> float:
         return 10.0 * len(text)
 
+    def ink_extents(self, text: str) -> tuple[float, float]:
+        # Deliberately distinct from line_height (80): visual height 50, so a
+        # capsule sized from this must differ from one sized off the line box.
+        return (40.0, -10.0)
 
-_M = FakeMeasurer()          # 10px per character, 80px line height
+
+_M = FakeMeasurer()          # 10px per character, 80px line height, 50px ink
 
 
 def _capture(kind, fn, *args):
@@ -2216,7 +2222,8 @@ check("the capsule uses the measured pill fill",
 # line height, capsule_path silently drew wider than `px` assumed and the pill
 # rendered off-centre on its word. Invisible in the .ass file, the exact
 # failure class this project records twice already. "hi" under FakeMeasurer
-# gives pw=56 against ph=96 (2*radius), which trips the clamp by 20px.
+# gives pw=56 against ph=66 (round(50) + 2*8, Task 5b's ink-based height;
+# 2*radius=66), which trips the clamp by 10px.
 _short = [Word("hi", 0.0, 0.5)]
 _sp = captions.build_ass(Clip(0.0, 5.0, "t"), _short, Path("_tmp_yt_short.ass"),
                          style="youtube", measurer=_M)
@@ -2233,6 +2240,109 @@ check("the capsule is centred on its word even when the width clamp fires",
       abs((_cap_px + _drawn_width / 2) - _word_cx) <= 1.0,
       f"px={_cap_px}, drawn_width={_drawn_width}, word_cx={_word_cx}")
 _sp.unlink(missing_ok=True)
+
+# Task 5b: the capsule is sized from measured INK, not the font's line box.
+# A render probe found the pill ~2x too tall (Noto Sans Arabic's hhea reserves
+# room for diacritics most words never carry), which also forced the width
+# clamp above to fire on ordinary words, rendering them as circles.
+#
+# FakeMeasurer's ink_extents (top=40, bottom=-10, visual height 50) is
+# deliberately distinct from its line_height (80), so sizing off the wrong
+# metric is visible rather than accidentally matching.
+
+
+def _capsule_dims(dialogue_text: str) -> tuple[int, int]:
+    """(w, h) as passed to `capsule_path`, recovered from its drawn tokens.
+
+    The path is only `m x y` / `l x y` / `b x1 y1 x2 y2 x3 y3` — always x,y
+    pairs in that order — so the max of the even-indexed (x) and odd-indexed
+    (y) numbers recovers exactly what was drawn, without assuming w == h."""
+    body = dialogue_text.split("}", 1)[1].rsplit("{", 1)[0]
+    nums = [int(tok) for tok in body.split() if tok not in ("m", "l", "b")]
+    return max(nums[0::2]), max(nums[1::2])
+
+
+_multi = [Word("hello", 0.0, 0.4), Word("there", 0.4, 0.9), Word("hi", 0.9, 1.1)]
+_ip = captions.build_ass(Clip(0.0, 5.0, "t"), _multi, Path("_tmp_yt_ink.ass"),
+                         style="youtube", measurer=_M)
+_idl = dialogue_lines(_ip.read_text(encoding="utf-8"))
+_icaps = [d for d in _idl if d[0].split(":")[1].strip() == "1"]
+_iheights = {_capsule_dims(d[9])[1] for d in _icaps}
+
+# Check 1: sized from ink (50 visual), not the line box (80). Must fail if
+# someone reverts `ph` to `line.height`.
+check("the capsule height comes from ink extents, not the line box",
+      _iheights == {50 + 2 * K.PILL_PAD_Y},
+      f"heights={_iheights}, line-box would give {80 + 2 * K.PILL_PAD_Y}")
+
+# Check 3: ph/pill_cy must be computed once per LINE, not per word — else
+# capsules change size as the highlight moves across a multi-word line.
+check("every capsule on the line has the same height",
+      len(_iheights) == 1, str(_iheights))
+
+# Check 2: padding is symmetric around the ink, in screen space. Computed
+# independently of captions.py's formula, from FakeMeasurer's own numbers.
+_baseline_y = TARGET_H - 300 - _M.line_height / 2
+_baseline_screen = _baseline_y - _M.line_height / 2 + _M.ascender
+_ink_top_screen = _baseline_screen - 40.0      # ink_top
+_ink_bot_screen = _baseline_screen - (-10.0)   # ink_bot
+_cap0 = _icaps[0]
+_py0 = float(re.search(r"\\pos\((-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\)",
+                       _cap0[9]).group(2))
+_h0 = _capsule_dims(_cap0[9])[1]
+check("the capsule's top edge sits PILL_PAD_Y above the ink top on screen",
+      abs((_ink_top_screen - _py0) - K.PILL_PAD_Y) < 0.5,
+      f"ink_top_screen={_ink_top_screen}, py={_py0}")
+check("the capsule's bottom edge sits PILL_PAD_Y below the ink bottom on screen",
+      abs(((_py0 + _h0) - _ink_bot_screen) - K.PILL_PAD_Y) < 0.5,
+      f"pill_bottom={_py0 + _h0}, ink_bot_screen={_ink_bot_screen}")
+_ip.unlink(missing_ok=True)
+
+# Check 5: with no glyph contributing ink (an exotic font, or an all-space
+# chunk), `_HarfBuzzMeasurer.ink_extents` must degrade to the line box rather
+# than a zero-height pill. Tested against the REAL method by constructing an
+# instance without running __init__ (no font file or fontconfig needed) and
+# injecting fakes for the two things it touches — `self._hb` and
+# `self._font` — the same "simulate the dependency being absent" approach
+# `Measurer`'s own docstring already commits this suite to.
+
+
+class _NoExtentsFont:
+    def get_glyph_extents(self, codepoint):
+        return types.SimpleNamespace(x_bearing=0, y_bearing=0, width=0, height=0)
+
+
+class _NoExtentsBuffer:
+    def add_str(self, text: str) -> None:
+        self._n = len(text)
+
+    def guess_segment_properties(self) -> None:
+        pass
+
+    @property
+    def glyph_infos(self):
+        return [types.SimpleNamespace(codepoint=i) for i in range(self._n)]
+
+
+class _NoExtentsHB:
+    Buffer = _NoExtentsBuffer
+
+    @staticmethod
+    def shape(font, buf):
+        pass
+
+
+_hbm = object.__new__(tl._HarfBuzzMeasurer)
+_hbm._hb = _NoExtentsHB()
+_hbm._font = _NoExtentsFont()
+_hbm._px = 1.0
+_hbm.ascender = 60.0
+_hbm.line_height = 80.0
+check("the no-extents fallback returns the line box",
+      _hbm.ink_extents("anything") == (60.0, 60.0 - 80.0),
+      str(_hbm.ink_extents("anything")))
+check("an empty string also falls back to the line box",
+      _hbm.ink_extents("") == (60.0, -20.0))
 
 check("inactive words are dimmed",
       any(f"\\alpha&H{K.CAPTION_DIM_ALPHA:02X}&" in d[9] for d in _dl))
