@@ -601,10 +601,14 @@ Four things that look worth optimizing and are not:
   while adding a sorted-input assumption to the function that guards the core
   invariant. **Re-measured for `youtube`**, which was flagged as a risk before
   it landed (three `Dialogue` events per word instead of one cue per several
-  words): `build_ass` x20 is 140-158ms across four runs on the same transcript,
-  roughly 3x `pop` — the event-count rise the design predicted, not a surprise.
-  Still two orders of magnitude under a job's dominant costs (stage 2, stage
-  5's encoder), so the headroom does transfer.
+  words) — measured on a synthetic transcript in the same container as the
+  render sweep above (ffmpeg + fontconfig + Noto + uharfbuzz), not necessarily
+  the host the `48ms` figure came from, whose environment was never recorded:
+  `build_ass` x20 is 140-158ms across four runs on the same transcript, against
+  `pop` re-measured in that same container run at 47ms — roughly 3x, the
+  event-count rise the design predicted, not a surprise. Still two orders of
+  magnitude under a job's dominant costs (stage 2, stage 5's encoder), so the
+  headroom does transfer regardless.
 - **`model_construct` in `to_response`.** It is *slower* than full validation
   (10.3us vs 6.9us) — it still builds the model.
 

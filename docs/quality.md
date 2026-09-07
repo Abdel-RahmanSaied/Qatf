@@ -423,11 +423,16 @@ that guards the core invariant. Don't.
 transcript and 20-clip plan, because the design that added it flagged its own
 risk: three `Dialogue` events per word instead of one cue per several words is
 roughly a 3x rise in event count, and "the `ass` filter is 2.1% of a render"
-above was measured against the old one-cue-per-line shape.
+above was measured against the old one-cue-per-line shape. **Measured on a
+synthetic transcript, in the same container as the render measurement below**
+(ffmpeg 7.1.5 + fontconfig + Noto + uharfbuzz 0.56.1) — not necessarily the
+host the `47.54ms` figure above came from, whose environment was never
+recorded, so treat the ratio below as the load-bearing number rather than a
+strict before/after on identical hardware.
 
 ```text
 build_ass x20 (whole plan), youtube     140-158 ms   (four runs: 140, 146, 156, 158)
-build_ass x20 (whole plan), pop           47 ms      (same harness, sanity-checks the 47.54ms above)
+build_ass x20 (whole plan), pop           47 ms      (same container run, not a repeat of the 47.54ms above)
 ratio                                    ~3x
 ```
 
@@ -435,8 +440,8 @@ The ratio lands almost exactly on the ~3x the event count predicts — the
 headroom the design assumed does transfer. Still two orders of magnitude under
 a job's dominant costs (stage 2's transcription, stage 5's encoder), so this
 is not a lever worth pulling. `pop` is unmoved: the 47ms re-measurement in the
-same harness is a sanity check, not a new number, and every figure on this page
-that depends on `pop` is unaffected by any of this.
+same container run is a sanity check, not a new number, and every figure on
+this page that depends on `pop` is unaffected by any of this.
 
 ### The API layer
 
