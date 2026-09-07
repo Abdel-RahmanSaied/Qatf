@@ -470,6 +470,103 @@ every number above was measured against the two static graphs, and a mode that
 did not exist cannot invalidate them. Read open risk #2 before promising anything
 about it.
 
+### YouTube-style pill captions (stage 5a)
+
+`caption_style: "youtube" | "pop"` (CLI: `--caption-style`), default `youtube`.
+Every word positioned absolutely, the unspoken ones dimmed to 45%, the spoken
+one sitting in a filled capsule — the YouTube Shorts idiom, and the first
+word-level caption style this project has that works **on Arabic**, which is
+the differentiator against every English-first competitor (Opus Clip, Klap,
+Vizard, Submagic, Choppity, quso, 2short).
+
+**Why absolute positioning, not a fix to the old style.** "The RTL caption
+bug" below is a hard limit of the old approach, not a bug with headroom left in
+it: any override tag inside a multi-word `Dialogue` line gives libass a reason
+to split it into an independently-reordered bidi run, and nothing short of
+owning line layout ourselves removes that surface. Giving every word its own
+`Dialogue` event leaves no multi-word run for a tag to split — bidi has
+nothing left to reorder. The price is that libass stops laying out the line
+for us, which is what the new `pipeline/textlayout.py` module is for: it
+measures words and solves a line into boxes, and `captions.build_ass_youtube`
+turns those boxes into three `Dialogue` events per word (dimmed base layer,
+capsule, bright active word) plus a `\p1` capsule drawing. Full mechanism,
+including the false-pass traps that apply here too, is in "The RTL caption
+bug" below.
+
+**Measurement, not `Pillow`.** Advances and ink extents come from `uharfbuzz`
+— the exact shaping engine libass itself uses to draw the frame — via a font
+file resolved by `fc-match -f "%{file}"`, the same tool `installed_fonts`
+already depends on. Both are behind the `captions` extra (`uharfbuzz>=0.39`,
+in `all`); Pillow+Raqm was rejected because Raqm is only present if Pillow was
+*built* with libraqm, and when it is not, Pillow falls back to BASIC layout and
+gets Arabic advances wrong **without erroring** — silent-and-wrong on the
+Arabic path is this project's worst failure mode, and shaping with a different
+engine than the one that draws the frame reopens exactly the gap approach 1
+depends on staying closed. **Licence checked, not assumed**: uharfbuzz is
+Apache-2.0; the HarfBuzz it wraps is the Old MIT License — both permissive,
+neither the AGPL-3.0/non-commercial-weights problem that ruled out
+ultralytics/insightface for stage 4b.
+
+**Contrast is computed, not eyeballed** — one of the few caption decisions
+arithmetic can settle without a render:
+
+```text
+white on #E8A317 (the existing highlight yellow)   2.17:1   below even the 3:1 large-text floor
+white on #B4560A (the chosen pill fill)            4.91:1   clears 4.5:1, lets the active word drop its outline
+white on #A34708 (considered, rejected)            6.07:1   stops reading as the product's accent
+```
+
+The existing highlight yellow would need to keep its outline to stay legible,
+and outline-on-pill is the muddy combination — worse on Arabic than Latin,
+since Naskh and the sans Arabic faces have finer connected strokes than Latin
+and a heavy outline thickens the joins until letterforms bleed together (the
+reason the caption stroke itself was already cut from 7px to 4px). Deepening
+only the pill (`PILL_FILL = "#B4560A"`) keeps every other property — constant
+white text, saffron family — and buys enough contrast for the active word to
+drop its outline entirely; `smoke_pipeline.py` computes this ratio from the
+constant with the actual WCAG relative-luminance formula, not a pinned literal,
+so a future edit to `PILL_FILL` that quietly weakens the contrast fails the
+suite instead of only disagreeing with a comment.
+
+**The capsule is sized from ink, not the line box — and getting this wrong
+produces circles, not rectangles.** Noto Sans Arabic's `hhea` line box reserves
+room for diacritics almost no word carries, so at `FONT_SIZE` 64 the line box
+is roughly 1.9x the ink a real line puts on screen. Sizing the capsule from the
+line box makes every capsule twice as tall as it should be — and because the
+capsule's minimum width is clamped to its own height (so the rounded ends of a
+short word cannot invert), an over-tall capsule forces every short word to
+render as a circle instead of a pill. Both symptoms were one bug: measuring
+`ink_extents` per line, not the font's reserved box, fixed both at once.
+Font-metric numbers are in `docs/quality.md`.
+
+**`CAPTION_MAX_CHARS` is retired on this path, not fixed.** It was always a
+*proxy* for width — its own comment warns it must move with `FONT_SIZE`, from a
+"roughly half the em" estimate — and measuring the real advance shows the
+proxy has drifted about 20% optimistic. The `youtube` path chunks by measured
+width instead (`textlayout.chunk_by_width`); `CAPTION_MAX_CHARS` stays exactly
+as it was for `pop`, which is untouched by any of this — every measured number
+elsewhere in this file that depends on `pop` still holds.
+
+**Fallback is a warning, never a refusal** — the `font_warning` policy, not the
+`--device cuda` policy, because there is a correct alternative to fall back to
+here and it is a rendered-and-verified path (`pop`). `captions.resolve_style`
+needs uharfbuzz importable **and** a font file resolvable for the requested
+family; if either is missing it logs why, renders `pop`, and reports the style
+actually used — same discipline as `transcribe_device` under `device: auto`.
+`GET /healthz` gains `caption_pill_ready` so an operator can tell **before**
+submitting whether the pill path will silently degrade on this host, the same
+job `cuda_devices` and `transcribe_device` already do for stage 2.
+
+**Verified by rendering, the same way the original RTL bug was found.**
+`tests/verify_render.py`'s fixture C walks the active capsule along a rendered
+line and tracks its horizontal centroid — English must sweep left to right,
+Arabic must sweep right to left, and the `pop` style (rendered as its own
+control) must show no pill movement at all, because a control that cannot fail
+measures nothing. All three held, **in a container** (ffmpeg + fontconfig +
+Noto + uharfbuzz) against a synthetic transcript — not yet through the real job
+pipeline on real video, and not yet against real Whisper Arabic word timings.
+See "Verification status" below for exactly what that does and does not cover.
+
 ### Performance — measured, and mostly negative results
 
 Synthetic 1080p source, 4 clips x 18s to 1080x1920, 16 cores. Ratios transfer;
@@ -499,9 +596,15 @@ Four things that look worth optimizing and are not:
 - **The filter chain.** The `ass` filter is 2.1% of a render; `flags=lanczos`
   measured *faster* than bicubic; `+faststart` is free. Leave all three.
 - **Stage 4 and 5a.** On a 27,000-word transcript with a 20-clip plan: `snap`
-  x20 is 95ms, `build_ass` x20 is 48ms. `snap`'s two linear scans per clip are
-  the obvious `bisect` target and converting them would buy nothing while adding
-  a sorted-input assumption to the function that guards the core invariant.
+  x20 is 95ms, `build_ass` x20 is 48ms for `pop`. `snap`'s two linear scans per
+  clip are the obvious `bisect` target and converting them would buy nothing
+  while adding a sorted-input assumption to the function that guards the core
+  invariant. **Re-measured for `youtube`**, which was flagged as a risk before
+  it landed (three `Dialogue` events per word instead of one cue per several
+  words): `build_ass` x20 is 140-158ms across four runs on the same transcript,
+  roughly 3x `pop` — the event-count rise the design predicted, not a surprise.
+  Still two orders of magnitude under a job's dominant costs (stage 2, stage
+  5's encoder), so the headroom does transfer.
 - **`model_construct` in `to_response`.** It is *slower* than full validation
   (10.3us vs 6.9us) — it still builds the model.
 
@@ -889,7 +992,8 @@ Be honest about this in any session. It is the difference between a demo and a t
   with a seeded transcript cache standing in for stage 2 and `--plan` for stage
   3). Output is 1080x1920, 30fps, yuv420p, audio intact, captions burned in.
 - Both filtergraphs (`crop`, `blur`) produce 1080x1920 output with correct duration
-- `tests/verify_render.py` (11 checks without OpenCV, 19 with it): the `track`
+- `tests/verify_render.py` (11 checks with neither optional dependency, 19 with
+  OpenCV, 14 with fontconfig+uharfbuzz but no OpenCV, 22 with both): the `track`
   path rendered through real ffmpeg and measured — the tracked render holds the
   subject in every probed frame and the `crop` control provably loses it. Plus
   stage 4b's decoder, which needs ffmpeg but **not** OpenCV and so runs where
@@ -897,7 +1001,14 @@ Be honest about this in any session. It is the difference between a demo and a t
   instants, that a failed decode raises instead of reading as "no faces", that
   abandoning a decode does not deadlock, and that a missing ffmpeg arrives as
   `FFmpegNotFound`. The re-sampling check found a real drift bug (3.334 vs
-  3.333 for one instant) that one run alone cannot show.
+  3.333 for one instant) that one run alone cannot show. **Fixture C** (3
+  checks, needs fontconfig + uharfbuzz, skips without them) walks the active
+  pill capsule along a rendered line and tracks its horizontal centroid: English
+  sweeps left to right, Arabic sweeps right to left, and the `pop` style —
+  rendered as its own control — shows no pill movement at all. Run **in a
+  container** (ffmpeg 7.1.5 + fontconfig + Noto + uharfbuzz 0.56.1) against a
+  synthetic transcript, not a real recording — see "YouTube-style pill
+  captions" above and open risk #1.
 - Captions burn in and render inside frame — confirmed by extracting PNGs and
   looking at them, in English **and** Arabic
 - RTL word order, after the fix — Arabic reads correctly right-to-left with
@@ -915,7 +1026,7 @@ Be honest about this in any session. It is the difference between a demo and a t
   gets its own connection object while the same thread reuses one, a failed
   transaction leaves nothing behind, and a corrupt file raises rather than
   quietly returning an empty database.
-- `tests/smoke_pipeline.py` (354 checks): timestamp formatting and carry, slugify,
+- `tests/smoke_pipeline.py` (509 checks): timestamp formatting and carry, slugify,
   caption grouping under both budgets, ASS escaping, RTL detection and the
   no-per-word-tags rule, filtergraph escaping and mode rejection, encoder flags
   (no forced `-r`, crf forwarded), device resolution and the CUDA-to-CPU
@@ -927,14 +1038,30 @@ Be honest about this in any session. It is the difference between a demo and a t
   family warns, that an absent `fc-list` skips the check rather than warning,
   and that the lookup uses `safe_font`'s output), and the trust boundaries —
   that caption text and font names cannot inject ASS directives, and that
-  `language` cannot escape the work directory through the cache filename
+  `language` cannot escape the work directory through the cache filename. Also
+  the `youtube` pill style with a fake `Measurer` (so it runs with no uharfbuzz
+  installed): direction-run reversal and the embedded-Latin-run case, chunking
+  by measured width with the over-wide single word centred rather than dropped,
+  the capsule path well-formed and closed with integer coordinates, the capsule
+  sized from ink extents rather than the line box (and the width clamp that
+  keeps a short word's pill centred on it), the line-disjointness invariant
+  **reshaped to a per-line window** rather than per-event (many events are
+  simultaneous by design here — every word of a line is live at once, at
+  different x positions — so the check now groups by caption line first; still
+  fails if `_clamp`'s ceiling is removed, which is what makes it worth keeping),
+  and the fallback path (no uharfbuzz, or an unresolvable font, both fall
+  through to `pop` with a warning that names the reason and never echoes the
+  caller's font name back). Plus a check that computes the WCAG contrast ratio
+  of white against `PILL_FILL` from the actual formula rather than pinning the
+  hex literal, so a future edit that quietly weakens the contrast fails the
+  suite instead of only disagreeing with a comment.
 - `tests/smoke_llm.py` (38 checks): provider request shapes with the SDK client
   faked — that Anthropic gets `output_config.format` and no sampling params,
   that GPT-5 gets `max_completion_tokens`, that Kimi/GLM/Ollama downgrade to
   `json_object` rather than erroring, that vLLM keeps `json_schema`, refusal and
   truncation handling, the context guard, and `parse_response` across all three
   output tiers. Proves request *shape*, not that any endpoint accepts it.
-- `tests/smoke_api.py` (154 checks): job state machine, transcript cache round
+- `tests/smoke_api.py` (205 checks): job state machine, transcript cache round
   trip, the transcript correction round trip (correction reaches the burned-in
   captions, cut points provably unchanged, retiming/add/remove all refused, the
   overlay stays out of the cache file), plan replace with and without re-snap,
@@ -946,9 +1073,22 @@ Be honest about this in any session. It is the difference between a demo and a t
   and the OpenAPI document — that every
   operation is summarised, described, tagged and hand-named, that every failure
   a caller can hit is declared and typed as `ErrorResponse`, and that a status
-  code shared by two failures keeps both descriptions. It fakes
+  code shared by two failures keeps both descriptions. Also that
+  `caption_style` and its fallback warning round-trip through `POST /jobs`, that
+  the worker forwards the resolved `caption_style` into `render_all` ->
+  `build_ass` rather than leaving it at the `build_ass` default (caught with a
+  wiring check that captures the value `encode.py` actually calls with, not the
+  module's own reference — patching `captions.build_ass` after `encode.py` has
+  already done `from .captions import build_ass` would silently test nothing),
+  and that `caption_pill_ready` reaches `GET /healthz` as a real boolean, not a
+  key the response model silently drops. It fakes
   `pipeline.audio.run`, `pipeline.encode.run`, `pipeline.asr.transcribe` and
   `pipeline.select.pick_clips`, so it proves nothing about those four.
+- `qatf-frontend`'s `npm test` (47 checks, vitest): the client-side rule
+  mirrors in `src/lib/rules.ts`, `src/lib/format.ts`'s progress-bar arithmetic,
+  and the API client. Type-checked separately by `npm run build` (`tsc --noEmit`
+  then `vite build`), which is what catches a wire-contract mirror — like
+  `Health.caption_pill_ready` — falling out of step with `qatf/api/schemas.py`.
 
 - **The whole product has now run on real material** — a 12-minute 4K ProRes
   Arabic video, 75 GB, recorded in a car. All five stages: demux, Whisper on a
@@ -985,6 +1125,18 @@ Be honest about this in any session. It is the difference between a demo and a t
 - Whisper word-timestamp *accuracy* on Arabic. Transcription spelling is now
   measured, but nobody has checked whether the word boundaries `snap` relies on
   land where the words actually start. Clip edges are the thing to inspect.
+- **The `youtube` pill caption style has never rendered through the real job
+  pipeline on real video.** The sweep-direction measurement above is real — it
+  rendered actual frames through actual ffmpeg and libass — but the transcript
+  behind it is synthetic and the host was a container built for that one
+  measurement, not the server image. The 12-minute 4K ProRes run that verified
+  the rest of the Arabic path predates this feature and used `pop`, the only
+  style that existed at the time; it says nothing about `youtube`. And this
+  feature makes the still-unmeasured line above **more** consequential, not
+  less: today a whole Arabic caption line appears and clears at once, so a word
+  boundary landing 200ms late is invisible. A pill sitting on the wrong word is
+  not. If the pill looks wrong on real Arabic footage, diagnose stage 2 first —
+  it will look like a stage 5a bug and very likely not be one.
 - **The API on a GPU host.** It has now run a real video end to end with a real
   key, but `transcribe_device` was `cpu` throughout — `cuda_devices: 0`. Nothing
   about the server's GPU behaviour, or `QATF_WORKERS > 1` contending for one, has
@@ -1003,9 +1155,18 @@ Choppity, quso, 2short) is English-first.
 - **RTL shaping and bidi: measured, and it was broken.** libass starts a new bidi
   run wherever an override tag causes an actual style change, so per-word
   highlighting chopped an RTL line into independently-reordered runs and
-  scrambled the word order. Fixed by not highlighting per word on RTL — see
-  "The RTL caption bug" below. Arabic now renders correctly: right-to-left order,
-  connected letterforms, inside frame, confirmed on rendered frames.
+  scrambled the word order. Fixed for `pop` by not highlighting per word on
+  RTL — see "The RTL caption bug" below. Arabic now renders correctly:
+  right-to-left order, connected letterforms, inside frame, confirmed on
+  rendered frames.
+- **Word-level tracking on RTL, once ruled out, is now built.** The `youtube`
+  caption style gives every word its own absolutely-positioned `Dialogue`
+  event, so there is no multi-word run for an override tag to split — bidi has
+  nothing to reorder, and the pill sweeps right to left on Arabic exactly as
+  measured on English's left-to-right sweep. See "YouTube-style pill captions"
+  under Architecture. **This makes the line below more urgent, not less**: a
+  whole-line cue could never expose a mistimed word boundary; a pill sitting on
+  the wrong word can and will.
 - **Whisper word timestamps on Arabic** degrade relative to English. This feeds
   `snap` directly, so it degrades cut quality, not just captions. **Still
   unmeasured** — it needs a real Arabic recording, not a synthetic transcript.
@@ -1160,16 +1321,31 @@ hebrew  (RTL)   sweep >>>    BAD
 **What does not fix it:** Unicode bidi controls (RLE/PDF, RLM, FSI/PDI isolates,
 per-word isolates), pre-reversing the words, and `\k` karaoke. All still split.
 
-**The fix in place:** `build_ass` does not emit per-word tags when the line
-contains any RTL character (`captions.is_rtl`). RTL lines get one cue spanning
-the whole caption line, which lays out correctly because nothing splits the run.
-LTR is untouched and keeps word-by-word highlighting. Pass `highlight=True` to
-force the old behaviour — the only reason to is to re-measure the bug.
+**The fix in place, and where it now applies:** this is the `pop` style's fix,
+not the whole caption system's. `build_ass` does not emit per-word tags when
+the line contains any RTL character (`captions.is_rtl`) and `style="pop"`. RTL
+lines get one cue spanning the whole caption line, which lays out correctly
+because nothing splits the run. LTR is untouched and keeps word-by-word
+highlighting. Pass `highlight=True` to force the old behaviour on `pop` — the
+only reason to is to re-measure the bug.
 
-**The cost:** Arabic captions appear and clear per line rather than tracking the
-spoken word. If word-level highlight on RTL ever becomes a requirement, it needs
-per-word `\pos` with measured text widths, or a renderer other than libass.
-Neither is warranted yet.
+**The `youtube` style resolves the limitation instead of living with it.**
+Per-word `\pos` with measured text widths is exactly the "if this ever becomes
+a requirement" escape hatch this section used to name as unwarranted — it is
+now built, in `pipeline/textlayout.py` and `captions.build_ass_youtube`. Every
+word gets its own `Dialogue` event at an absolute position, so there is no
+multi-word run left for an override tag to split: bidi has nothing to reorder.
+Measured the same way the original bug was found — walking the active capsule
+along a rendered line and tracking its horizontal centroid — English sweeps
+left to right and Arabic sweeps right to left, both confirmed on real frames in
+`tests/verify_render.py`. See "YouTube-style pill captions" above for the
+design and its own caveats (this was measured in a container, on a synthetic
+transcript, not yet against a real end-to-end render).
+
+**`pop` still carries the cost as documented, unchanged:** Arabic captions
+appear and clear per line rather than tracking the spoken word, and every
+measured number elsewhere in this file that depends on `pop` still holds
+exactly because nothing about that style moved.
 
 ---
 

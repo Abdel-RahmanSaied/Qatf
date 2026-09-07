@@ -408,16 +408,35 @@ The whole deterministic middle of the pipeline, on a 27,000-word transcript
 (3.4 hours) with a 20-clip plan:
 
 ```text
-snap x20 (whole plan)          94.76 ms
-build_ass x20 (whole plan)     47.54 ms
-build_transcript_blocks         1.78 ms
-json.loads whole transcript    16.26 ms   (1.6 MB)
+snap x20 (whole plan)                    94.76 ms
+build_ass x20 (whole plan), pop          47.54 ms
+build_transcript_blocks                   1.78 ms
+json.loads whole transcript              16.26 ms   (1.6 MB)
 ```
 
 `snap` allocates two 27k-float lists and scans both linearly **per clip** — the
 obvious `bisect` target. At 4.7 ms per call against a multi-minute render it is
 noise, and converting it would add a sorted-input assumption to the one function
 that guards the core invariant. Don't.
+
+**Re-measured for the `youtube` pill style**, on the same 27,000-word
+transcript and 20-clip plan, because the design that added it flagged its own
+risk: three `Dialogue` events per word instead of one cue per several words is
+roughly a 3x rise in event count, and "the `ass` filter is 2.1% of a render"
+above was measured against the old one-cue-per-line shape.
+
+```text
+build_ass x20 (whole plan), youtube     140-158 ms   (four runs: 140, 146, 156, 158)
+build_ass x20 (whole plan), pop           47 ms      (same harness, sanity-checks the 47.54ms above)
+ratio                                    ~3x
+```
+
+The ratio lands almost exactly on the ~3x the event count predicts — the
+headroom the design assumed does transfer. Still two orders of magnitude under
+a job's dominant costs (stage 2's transcription, stage 5's encoder), so this
+is not a lever worth pulling. `pop` is unmoved: the 47ms re-measurement in the
+same harness is a sanity check, not a new number, and every figure on this page
+that depends on `pop` is unaffected by any of this.
 
 ### The API layer
 
@@ -547,9 +566,93 @@ long words. `WrapStyle` must be `0` — with `2` (no wrapping) lines get clipped
 both edges, and that passed every dimension check before someone looked at a
 frame.
 
-Arabic captions appear and clear **per line** rather than tracking the spoken
-word. That is the cost of the RTL fix, and it is deliberate — see
-[troubleshooting.md](troubleshooting.md#the-rtl-caption-bug).
+On the `pop` style, Arabic captions still appear and clear **per line** rather
+than tracking the spoken word — that is the cost of the RTL fix on that style,
+and it is deliberate and unchanged. See
+[troubleshooting.md](troubleshooting.md#the-rtl-caption-bug). The `youtube`
+style below resolves this instead of living with it.
+
+### The `youtube` pill style — contrast, font metrics, and what it costs
+
+**Contrast is computed, not eyeballed** (WCAG relative luminance):
+
+```text
+white on #E8A317 (the existing highlight yellow)   2.17:1   below even the 3:1 large-text floor
+white on #B4560A (the chosen pill fill)            4.91:1   clears 4.5:1, lets the active word drop its outline
+white on #A34708 (considered, rejected)            6.07:1   stops reading as the product's accent
+```
+
+`smoke_pipeline.py` computes this ratio from `PILL_FILL` with the actual WCAG
+formula rather than pinning the hex literal against itself — a check that only
+compares a constant to a string cannot catch the *4.91:1* claim in its own
+label being wrong.
+
+**Font metrics, Noto Sans Arabic at `FONT_SIZE` 64** (measured in a container
+with uharfbuzz 0.56.1):
+
+```text
+hhea ascender/descender      1374 / -738  -> 135.17px line box
+ink extents, arabic line     top 46.72  bot -25.15 -> 71.87px visual
+ink extents, arabic word     top 46.72  bot -14.85 -> 61.57px
+ink extents, latin line      top 45.70  bot   0.00 -> 45.70px
+ink extents, tall + desc     top 55.81  bot -14.85 -> 70.66px
+```
+
+The line box is **~1.9x the ink** because Noto Sans Arabic reserves vertical
+room for diacritics most words never carry. Sizing the capsule from the line
+box made it twice too tall — and because the capsule's minimum width equals
+its own height (so a short word's rounded ends cannot invert), an over-tall
+capsule also forced short words to render as **circles**. Both were one bug:
+`build_ass_youtube` sizes the capsule from `ink_extents` per line, not from
+`Measurer.line_height`.
+
+**Shaping is genuinely active, not per-character widths** — the check that
+proves HarfBuzz is actually shaping the text rather than summing isolated
+glyph advances:
+
+```text
+البرمجة shaped  182.08px   vs isolated-glyph sum 244.54px
+```
+
+**The caption line budget has drifted, as its own comment predicted:**
+
+```text
+measured Latin advance  ~38.4 px/char at size 64  -> ~23 chars fit the 900px usable width
+CAPTION_MAX_CHARS assumes 28, from a "roughly half the em" estimate
+```
+
+The proxy is optimistic by about 20%. `CAPTION_MAX_CHARS` still governs the
+`pop` path unchanged; the `youtube` path chunks by measured width instead
+(`textlayout.chunk_by_width`), which is what retires the proxy rather than
+recalibrating it.
+
+**Render measurement** (`verify_render.py` fixture C, in a container with
+ffmpeg 7.1.5 + fontconfig + Noto + uharfbuzz 0.56.1) — the direct analogue of
+the measurement that caught the original RTL bug, walking the active capsule
+along a rendered line and tracking its horizontal centroid:
+
+```text
+english: the pill sweeps left to right    [0.28939, 0.49970, 0.71090]
+arabic:  the pill sweeps RIGHT TO LEFT    [0.63591, 0.47874, 0.34197]
+CONTROL: the pop style has no pill at all [None, None, None]
+14 passed, 0 failed
+```
+
+The `pop` control is load-bearing, not decoration: it must show no pill
+movement, because a control that cannot fail measures nothing — `verify_render.py`
+has twice reported a broken control (not this one) as a broken feature, in the
+`track`-mode fixtures above. **This ran against a synthetic transcript, in a
+container built for the measurement, not through the real job pipeline on real
+video** — see CLAUDE.md's verification status and open risk 1 for exactly what
+that does and does not cover.
+
+**Dependency.** `uharfbuzz` 0.56.1, Apache-2.0; the HarfBuzz it wraps is the
+Old MIT License. Both permissive, non-copyleft — verified against the wheel's
+own metadata before the dependency landed, the same bar that ruled out
+ultralytics (AGPL-3.0) and insightface (non-commercial weights) for stage 4b.
+Behind the `captions` extra, in `all`; the pipeline keeps installing and
+rendering without it, falling back to `pop` with a logged reason — see
+`captions.resolve_style` and `GET /healthz`'s `caption_pill_ready`.
 
 ---
 

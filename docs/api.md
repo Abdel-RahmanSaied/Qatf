@@ -366,6 +366,36 @@ recalculated — edit a clip to 20s and it comes back marked `short`.
 
 ---
 
+## Caption style: `youtube` pill or `pop`
+
+`caption_style` (`JobOptions`, default `"youtube"`) picks between two burned-in
+styles. `youtube` puts every word in its own filled capsule when it is being
+spoken, dims the rest of the line, and works on Arabic as well as Latin. `pop`
+is the original style: one caption line at a time, with per-word colour
+highlighting on Latin only.
+
+`youtube` needs shaped word measurement **on the rendering host** — under the
+API that is the server, not the caller. Where it is unavailable (the
+`captions` extra not installed, or the requested font unresolvable by
+fontconfig) the job logs why, renders `pop` instead, and never fails for it.
+The style actually used is on the job record:
+
+```json
+{ "options": { "caption_style": "youtube" }, "caption_style_used": "pop" }
+```
+
+`caption_style_used` differs from `options.caption_style` exactly when that
+fallback fired. It is empty on a record written before this field existed, and
+on any job with `captions: false` — nothing was burned in to have a style.
+
+**Check readiness before submitting, not after rendering.** `GET /healthz`
+reports `caption_pill_ready`: `false` means every job that asks for `youtube`
+on this host will silently fall back, the same way `cuda_devices` and
+`transcribe_device` let you tell before an hour of audio whether stage 2 will
+run on a GPU.
+
+---
+
 ## The hand-edit round trip
 
 This is the part worth understanding, because it is what makes iteration cheap:
@@ -445,6 +475,7 @@ request. Same names and defaults as the CLI flags.
 | `font` | `Arial` | must be installed **on the server** |
 | `captions` | `true` | |
 | `per_line` | `4` | 1–8 words |
+| `caption_style` | `youtube` | `youtube` · `pop` — see [below](#caption-style-youtube-pill-or-pop) |
 | `auto_render` | `true` | `false` stops at `planned` |
 
 `min_len > max_len` is rejected at the boundary, as is an unparseable
@@ -518,6 +549,7 @@ and the individual flags.
   "llm_error": "provider 'openrouter' needs an API key — set OPENROUTER_API_KEY",
   "cuda_devices": 1,
   "transcribe_device": "cuda",
+  "caption_pill_ready": true,
   "providers": [ ... ]
 }
 ```
@@ -535,6 +567,11 @@ a second under load — see
   `nvidia-smi` reports. A card the installed CTranslate2 cannot use (compute
   capability, driver mismatch) is not a usable device, and only the engine knows.
 - **`transcribe_device`** is what stage 2 will pick under `device: auto`.
+- **`caption_pill_ready`** — whether the `youtube` pill caption style can
+  actually render on this host. `false` means `uharfbuzz` is not installed or
+  fontconfig cannot resolve the default font, and every job that asks for it
+  will silently fall back to `pop` — see
+  [Caption style](#caption-style-youtube-pill-or-pop).
 - **`providers`** carries the whole stage-3 roster with each entry's
   structured-output tier, so a client can offer a provider picker without
   hardcoding one.

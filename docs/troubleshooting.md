@@ -79,20 +79,80 @@ hebrew  (RTL)   sweep >>>    BAD
 Unicode bidi controls (RLE/PDF, RLM, FSI/PDI isolates, per-word isolates),
 pre-reversing the words, and `\k` karaoke. All still split the run.
 
-### The fix in place
+### The fix in place — and where it applies
 
-`build_ass` does not emit per-word tags when the line contains any RTL character
-(`captions.is_rtl`). RTL lines get one cue spanning the whole caption line, which
-lays out correctly because nothing splits the run. LTR is untouched and keeps
-word-by-word highlighting.
+This is the `pop` style's fix, not the whole caption system's. `build_ass` does
+not emit per-word tags when the line contains any RTL character
+(`captions.is_rtl`) and `style="pop"`. RTL lines get one cue spanning the whole
+caption line, which lays out correctly because nothing splits the run. LTR is
+untouched and keeps word-by-word highlighting.
 
-Pass `highlight=True` to force the old behaviour — the only reason to is to
-re-measure the bug.
+Pass `highlight=True` to force the old behaviour on `pop` — the only reason to
+is to re-measure the bug.
 
-**The cost.** Arabic captions appear and clear per line rather than tracking the
-spoken word. If word-level highlight on RTL ever becomes a requirement, it needs
-per-word `\pos` with measured text widths, or a renderer other than libass.
-Neither is warranted yet.
+**`pop`'s cost, unchanged.** Arabic captions appear and clear per line rather
+than tracking the spoken word.
+
+**The `youtube` style resolves this instead of living with it.** Per-word
+`\pos` with measured text widths — exactly the escape hatch this section used
+to describe as unwarranted — is now built: every word gets its own `Dialogue`
+event at an absolute position, so there is no multi-word run left for an
+override tag to split. Measured the same way this bug was originally found —
+walking the active pill capsule along a rendered line and tracking its
+horizontal centroid — English sweeps left to right and Arabic sweeps right to
+left, both confirmed on real rendered frames. See
+[quality.md](quality.md#the-youtube-pill-style--contrast-font-metrics-and-what-it-costs)
+for the measurement and its caveats (run in a container, against a synthetic
+transcript — not yet through a real end-to-end job).
+
+---
+
+## Captions render as one line at a time even though I asked for the pill
+
+**Symptom.** `caption_style` (or `--caption-style`) was set to `youtube`, but
+the rendered clip shows the original single-line style with no capsule at all.
+
+**Cause.** Shaped word measurement was unavailable on the **rendering host** —
+under the API that is the server, not the caller's machine — so
+`captions.resolve_style` fell back to `pop` and logged why. This is a warning,
+never a refusal: the job still renders rather than failing an hour into stage 2
+over a missing wheel or an unresolvable font. Two independent things can cause
+it:
+
+- `uharfbuzz` is not installed on the host.
+- `fc-match` cannot resolve the requested font family (`--font` / `font`) to a
+  file — including the default, if the image does not carry it.
+
+**Fix.**
+
+```bash
+pip install 'qatf[captions]'          # already included in [all]
+```
+
+Check readiness **before** submitting rather than reading it off the rendered
+clips:
+
+```bash
+curl -s localhost:8000/healthz | jq .caption_pill_ready
+```
+
+`false` means every job asking for `youtube` on this host will silently
+degrade — fix the host, not the request. Then confirm the font itself resolves
+the way `textlayout.font_file` will resolve it:
+
+```bash
+fc-match -f "%{file}\t%{family}\n" "Noto Sans Arabic"
+```
+
+If that prints a family other than the one you asked for, fontconfig
+substituted silently — the same "always returns something" behaviour
+`captions.installed_fonts` already warns about — and `resolve_style` treats
+that as unresolvable rather than measuring the wrong face. Pass a family
+`fc-list : family` actually reports.
+
+The job record's `caption_style_used` confirms which style a **specific** job
+rendered with, which may differ from what was requested even after the host is
+fixed — it reflects the host at the time that job ran, not now.
 
 ---
 

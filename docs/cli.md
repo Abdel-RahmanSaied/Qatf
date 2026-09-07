@@ -129,6 +129,7 @@ See [quality.md](quality.md) for what each of these was actually worth.
 | --- | --- | --- |
 | `--font NAME` | `Arial` | must be installed on the rendering host |
 | `--per-line N` | `4` | max words per caption line |
+| `--caption-style youtube\|pop` | `youtube` | `youtube` = per-word pill, needs `qatf[captions]`; `pop` = one line at a time |
 | `--no-captions` | off | render without burned-in text |
 
 `--font Arial` renders **tofu** on Arabic. libass falls back silently, so a
@@ -137,11 +138,21 @@ face — `--font "Traditional Arabic"` is the tested one.
 
 Lines are budgeted by **both** word count and character count
 (`CAPTION_MAX_CHARS` 22): four 12-character words at 82 px is wider than the
-1080 px frame.
+1080 px frame. That budget governs `pop`; `youtube` chunks by measured text
+width instead — see [quality.md](quality.md#the-youtube-pill-style--contrast-font-metrics-and-what-it-costs).
 
-Arabic captions appear and clear per line rather than tracking the spoken word.
-That is a deliberate consequence of the RTL fix — see
-[troubleshooting.md](troubleshooting.md#the-rtl-caption-bug).
+**`youtube` (the default) puts every word in its own filled capsule when it is
+spoken, on Arabic as well as Latin.** It needs `uharfbuzz` (`pip install
+'qatf[captions]'`, already in the `[all]` extra) and a font file fontconfig can
+resolve for `--font`; where either is missing the job logs why, renders `pop`
+instead, and reports the style it actually used — check `caption_pill_ready` on
+`GET /healthz` before submitting rather than reading it off the rendered clips.
+
+**`pop`'s Arabic captions still appear and clear per line** rather than
+tracking the spoken word — a deliberate, unchanged consequence of the RTL fix
+on that style. See
+[troubleshooting.md](troubleshooting.md#the-rtl-caption-bug) for both styles'
+story, including why `youtube` does not inherit the limitation.
 
 ---
 

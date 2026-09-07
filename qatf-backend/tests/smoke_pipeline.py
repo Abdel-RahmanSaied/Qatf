@@ -2177,6 +2177,32 @@ from qatf.core import constants as K  # noqa: E402
 check("ASS colour is BGR, not RGB", captions.ass_bgr("#B4560A") == "&H000A56B4&")
 check("ass_bgr tolerates a missing hash", captions.ass_bgr("B4560A") == "&H000A56B4&")
 check("the chosen pill fill is the measured 4.91:1 colour", K.PILL_FILL == "#B4560A")
+
+
+def _wcag_contrast(hex_color: str) -> float:
+    """WCAG 2.x contrast ratio of opaque white TEXT against `hex_color`.
+
+    Computed, not eyeballed — the whole point of this helper. The check above
+    pins `PILL_FILL` against its own literal, which cannot catch the *4.91:1*
+    claim in that check's own label being wrong: swap the constant for any
+    other 7-character string and it still passes. This one does the actual
+    WCAG relative-luminance arithmetic, so the documented ratio is falsifiable
+    rather than decorative. White's relative luminance is exactly 1.0, so it
+    never needs computing on the numerator side."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+    def _lin(channel: int) -> float:
+        c = channel / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    lum = 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+    return (1.0 + 0.05) / (lum + 0.05)
+
+
+_pill_contrast = _wcag_contrast(K.PILL_FILL)
+check("computed contrast of white on the pill fill clears the 4.5:1 floor",
+      _pill_contrast >= 4.5, f"{_pill_contrast:.2f}:1")
 check("dim alpha is 45% opacity, inverted as ASS wants",
       K.CAPTION_DIM_ALPHA == 0x8C)
 # Not cosmetic: the capsule paints over the dimmed layer's outline, so padding

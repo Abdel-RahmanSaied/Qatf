@@ -242,4 +242,11 @@ export interface Health {
   providers: ProviderInfo[];
   cuda_devices: number;
   transcribe_device: string;
+  /** Whether the `youtube` pill caption style can actually render on this
+   * host. False means uharfbuzz is missing or fontconfig cannot resolve the
+   * default font, and every job that asks for it will silently fall back to
+   * `pop` — see `captions.resolve_style` on the backend. Worth checking
+   * before submitting a job rather than reading it off the rendered clips
+   * afterwards. */
+  caption_pill_ready: boolean;
 }
