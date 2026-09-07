@@ -13,7 +13,6 @@ that libass stops laying out the line for us.
 
 from __future__ import annotations
 
-import functools
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,7 +110,11 @@ class Measurer(Protocol):
         ...
 
 
-@functools.lru_cache(maxsize=32)
+#: Successes only — see `font_file`'s docstring for why a miss is never cached
+#: here the way `captions.installed_fonts` caches for the life of the process.
+_font_file_cache: dict[str, Path] = {}
+
+
 def font_file(family: str) -> Path | None:
     """The file fontconfig resolves this family to, or None.
 
@@ -119,7 +122,22 @@ def font_file(family: str) -> Path | None:
     `captions.installed_fonts` follows. fc-match always returns SOMETHING (that
     is the silent-fallback behaviour being worked around), so the caller must
     still confirm the family it got is the family it asked for; that check lives
-    in `load_measurer`."""
+    in `load_measurer`.
+
+    **Only a resolved path is memoised.** `installed_fonts` caches a miss for
+    the life of the process too, and that is fine there: a stale "not
+    installed" costs one spurious or missing log line under a font set that
+    cannot change without a new Docker image anyway. A miss here is different
+    in kind, not just in cost — `resolve_style` reads `load_measurer`
+    returning `None` as "fall back to `pop`", and a `None` cached forever
+    turns one transient failure (the 5s `fc-match` timeout under load, a cold
+    subprocess-spawn burst) into every later job losing the `youtube` style
+    for the rest of the process, recoverable only by a restart. So a success
+    is cached; a failure is re-derived on the next call, at the cost of
+    re-running `fc-match` on every miss — cheap next to what a wrong cached
+    answer would cost."""
+    if family in _font_file_cache:
+        return _font_file_cache[family]
     try:
         out = subprocess.run(
             ["fc-match", "-f", "%{file}\t%{family}", family],
@@ -141,7 +159,17 @@ def font_file(family: str) -> Path | None:
     if not any(a.strip().casefold() == wanted for a in families.split(",")):
         return None
     p = Path(path_s.strip())
-    return p if p.is_file() else None
+    try:
+        # Inside the try, not after it: `Path.is_file()` swallows ENOENT but
+        # propagates other OSErrors (EACCES, say) — this function's contract,
+        # like `load_measurer`'s, is to never raise.
+        exists = p.is_file()
+    except OSError:
+        return None
+    if not exists:
+        return None
+    _font_file_cache[family] = p
+    return p
 
 
 class _HarfBuzzMeasurer:
@@ -198,7 +226,17 @@ class _HarfBuzzMeasurer:
 
         Shapes `text`, then unions each glyph's ink extents. HarfBuzz reports
         `y_bearing` as the top edge (positive up) and `height` as NEGATIVE,
-        extending downward, so a glyph's bottom is `y_bearing + height`.
+        extending downward, so a glyph's bottom is `y_bearing + height` — both
+        relative to where the glyph is actually PLACED, not to the baseline.
+        For most glyphs that is the same thing, but a mark (an Arabic harakat,
+        say) is placed via `glyph_positions[i].y_offset`, and a shaping font
+        that pushes a mark up or down moves its ink with it. Reading
+        `y_bearing` alone — the glyph's extents in its own local space — and
+        ignoring the offset that places it is how a mark ends up outside the
+        capsule this method sizes: harmless when the offset happens to be
+        small relative to the glyph, wrong in general, and wrong in exactly
+        the direction (marks placed higher than their own box) that matters
+        for Arabic diacritics.
 
         A glyph with no ink — a space, or a font that reports nothing for a
         codepoint — comes back with all fields zero rather than raising, so it
@@ -213,12 +251,12 @@ class _HarfBuzzMeasurer:
 
         top: float | None = None
         bottom: float | None = None
-        for info in buf.glyph_infos:
+        for info, pos in zip(buf.glyph_infos, buf.glyph_positions, strict=True):
             ext = self._font.get_glyph_extents(info.codepoint)
             if ext.width == 0 and ext.height == 0:
                 continue                  # no ink: a space, or nothing reported
-            g_top = ext.y_bearing
-            g_bottom = ext.y_bearing + ext.height
+            g_top = ext.y_bearing + pos.y_offset
+            g_bottom = ext.y_bearing + ext.height + pos.y_offset
             top = g_top if top is None else max(top, g_top)
             bottom = g_bottom if bottom is None else min(bottom, g_bottom)
 

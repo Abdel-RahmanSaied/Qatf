@@ -73,6 +73,13 @@ RTL caption rendering here is *measured*, not assumed — including a libass bid
 bug that scrambles Arabic word order and which every obvious test reports as
 passing. See [the RTL caption bug](docs/troubleshooting.md#the-rtl-caption-bug).
 
+**Word-level captions, on Arabic too.** The default `youtube` caption style
+pills the spoken word in a moving highlighted capsule, one word at a time —
+including RTL, where each word gets its own cue instead of sharing one that a
+highlight tag would scramble. `pop` (one caption line at a time) is still
+available, and is what a job renders automatically wherever shaped word
+measurement isn't. See [captions](docs/cli.md#captions--stage-5a).
+
 **The model never emits timing.** It reads the transcript at ~12-second
 resolution and returns `MM:SS`. Stage 4 then snaps those onto real word
 boundaries from Whisper. Semantic boundaries come from the model, acoustic

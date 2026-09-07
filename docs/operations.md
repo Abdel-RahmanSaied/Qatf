@@ -10,7 +10,8 @@ anything real.
 ```bash
 cd qatf-backend
 pip install -e ".[all]"              # api + every provider SDK
-pip install -e ".[api,anthropic]"    # or just the one you use
+pip install -e ".[api,anthropic]"    # or just the one you use — without `captions`, so the
+                                      # default caption style falls back to `pop` at runtime
 pip install -e ".[api,openai]"       # also drives kimi, glm, vllm, ollama, openrouter
 pip install -e ".[dev]"              # httpx + ruff, for the smoke suites
 ```

@@ -34,6 +34,11 @@ export function HealthBanner() {
     warnings.push("Transcription will run on CPU — large-v3 on an hour of audio is slow. " +
       "Consider whisper=small while iterating.");
   }
+  if (!info.caption_pill_ready) {
+    warnings.push(
+      "The server cannot render the \"youtube\" pill caption style — " +
+      "jobs requesting it will silently fall back to \"pop\".");
+  }
   if (warnings.length === 0) return null;
   return (
     <div className={`banner ${info.status === "degraded" ? "banner-error" : "banner-warn"}`}>

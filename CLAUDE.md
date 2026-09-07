@@ -41,6 +41,7 @@ qatf-backend/      the Python pipeline, CLI and API — everything below lives h
       detect.py      4b. find faces               OpenCV, cached against the video
       framing.py     4c. solve the crop path      deterministic
       captions.py    5a. ASS generation           deterministic
+      textlayout.py  5a'. word measurement + line layout  pure, no ASS or ffmpeg knowledge
       encode.py      5b. reframe + burn + encode  ffmpeg
     llm/             stage 3 providers — the only swappable part of the pipeline
       base.py        the contract: complete_json + declared Capabilities

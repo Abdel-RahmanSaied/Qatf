@@ -241,6 +241,7 @@ check("font_file returns a Path or None, never raises",
 # _fake_fc below (which mocks captions.subprocess.run), aimed at
 # tl.subprocess.run instead, so those branches run deterministically everywhere.
 _real_run_tl = tl.subprocess.run
+_real_path_tl = tl.Path
 _here = Path(__file__)  # any real file on disk — font_file only checks p.is_file()
 
 
@@ -255,7 +256,7 @@ def _fake_fc_tl(stdout: str = "", returncode: int = 0, boom: Exception | None = 
         return types.SimpleNamespace(stdout=stdout, returncode=returncode)
 
     tl.subprocess.run = fake
-    tl.font_file.cache_clear()
+    tl._font_file_cache.clear()
     return calls
 
 
@@ -279,8 +280,44 @@ _fake_fc_tl("/no/such/path/does-not-exist.ttf\tTest Sans")
 check("a resolved path that does not exist on disk is refused",
       tl.font_file("Test Sans") is None)
 
+# A miss must NOT be memoised the way `installed_fonts` memoises for the life
+# of the process: `captions.resolve_style` reads a `None` from `font_file` (via
+# `load_measurer`) as "fall back to `pop`", so a transient fc-match failure — the
+# 5s timeout, a cold-cache burst — cached forever would downgrade every later
+# job for the rest of the process, recoverable only by a restart. Prove it by
+# following a miss with a fake that would succeed, with NO intervening
+# cache_clear: a cached `None` would keep returning `None` here regardless.
+_fake_fc_tl(f"{_here}\tOther Family")
+check("a substitution miss is not cached", tl.font_file("Test Sans") is None)
+tl.subprocess.run = lambda cmd, **kwargs: types.SimpleNamespace(
+    stdout=f"{_here}\tTest Sans", returncode=0)
+check("the very next call re-derives instead of replaying a cached miss",
+      tl.font_file("Test Sans") == _here, str(tl.font_file("Test Sans")))
+
+# `Path.is_file()` swallows ENOENT but propagates other OSErrors (EACCES, say);
+# `font_file`'s contract — like `load_measurer`'s — is to never raise, so that
+# has to be caught explicitly rather than relying on `is_file()`'s own handling.
+_fake_fc_tl(f"{_here}\tTest Sans")
+
+
+class _BoomPath:
+    """Stands in for a real path whose `is_file()` raises rather than returning
+    False — e.g. a permissions error on the family fc-match resolved to."""
+
+    def __init__(self, *args) -> None:
+        pass
+
+    def is_file(self) -> bool:
+        raise PermissionError("EACCES (simulated)")
+
+
+tl.Path = _BoomPath
+check("an OSError from p.is_file() is swallowed, not propagated",
+      tl.font_file("Test Sans") is None)
+tl.Path = _real_path_tl
+
 tl.subprocess.run = _real_run_tl
-tl.font_file.cache_clear()
+tl._font_file_cache.clear()
 
 # The fallback is the load-bearing behaviour: it must be None, not an exception,
 # because a missing wheel has to degrade to the `pop` style rather than fail a job.
@@ -2386,6 +2423,13 @@ class _NoExtentsBuffer:
     def glyph_infos(self):
         return [types.SimpleNamespace(codepoint=i) for i in range(self._n)]
 
+    @property
+    def glyph_positions(self):
+        # No ink means the loop `continue`s before `y_offset` is ever read,
+        # but `zip(glyph_infos, glyph_positions)` still dereferences this
+        # property to build its iterator — it must exist and match length.
+        return [types.SimpleNamespace(y_offset=0.0) for _ in range(self._n)]
+
 
 class _NoExtentsHB:
     Buffer = _NoExtentsBuffer
@@ -2406,6 +2450,62 @@ check("the no-extents fallback returns the line box",
       str(_hbm.ink_extents("anything")))
 check("an empty string also falls back to the line box",
       _hbm.ink_extents("") == (60.0, -20.0))
+
+# Check 6: `y_offset` — a mark placed away from its own glyph-space origin —
+# must shift into the union too. `glyph_infos[i]` pairs with
+# `glyph_positions[i]`; two glyphs with real ink at DIFFERENT offsets prove
+# each is shifted by its OWN offset, not a shared one applied once at the end.
+
+
+class _OffsetFont:
+    _EXTENTS = {
+        0: types.SimpleNamespace(x_bearing=0, y_bearing=100.0, width=20, height=-40.0),
+        1: types.SimpleNamespace(x_bearing=0, y_bearing=50.0, width=20, height=-30.0),
+    }
+
+    def get_glyph_extents(self, codepoint):
+        return self._EXTENTS[codepoint]
+
+
+class _OffsetBuffer:
+    def add_str(self, text: str) -> None:
+        pass
+
+    def guess_segment_properties(self) -> None:
+        pass
+
+    @property
+    def glyph_infos(self):
+        return [types.SimpleNamespace(codepoint=0), types.SimpleNamespace(codepoint=1)]
+
+    @property
+    def glyph_positions(self):
+        return [types.SimpleNamespace(y_offset=10.0), types.SimpleNamespace(y_offset=-5.0)]
+
+
+class _OffsetHB:
+    Buffer = _OffsetBuffer
+
+    @staticmethod
+    def shape(font, buf):
+        pass
+
+
+_hbm2 = object.__new__(tl._HarfBuzzMeasurer)
+_hbm2._hb = _OffsetHB()
+_hbm2._font = _OffsetFont()
+_hbm2._px = 1.0
+_hbm2.ascender = 60.0
+_hbm2.line_height = 80.0
+# Unshifted (the pre-fix bug): top = max(100, 50) = 100, bottom = min(60, 20) = 20.
+# Correct, with each glyph's own y_offset applied before the union:
+# glyph 0 -> top 110, bottom 70; glyph 1 -> top 45, bottom 15;
+# union -> top 110, bottom 15.
+_off_top, _off_bot = _hbm2.ink_extents("xy")
+check("ink_extents shifts each glyph's top by its OWN y_offset before unioning",
+      _off_top == 110.0, f"top={_off_top}")
+check("ink_extents shifts each glyph's bottom by its OWN y_offset before unioning",
+      _off_bot == 15.0, f"bottom={_off_bot}")
 
 check("inactive words are dimmed",
       any(f"\\alpha&H{K.CAPTION_DIM_ALPHA:02X}&" in d[9] for d in _dl))

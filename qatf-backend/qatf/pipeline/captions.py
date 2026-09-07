@@ -12,9 +12,16 @@ watching its horizontal centre move LEFT to RIGHT on Arabic and Hebrew, when RTL
 must move right to left. Neither Unicode bidi controls (RLE/PDF, RLM, FSI/PDI)
 nor `\\k` karaoke avoid the split.
 
-So `build_ass` does not highlight per word on RTL text. It emits one cue per
-caption line instead, which lays out correctly because nothing splits the run.
-LTR is unaffected and keeps word-by-word highlighting.
+That is the `pop` style's bug, and `pop`'s fix: on RTL text `build_ass` does
+not highlight per word there, emitting one cue per caption line instead, which
+lays out correctly because nothing splits the run. LTR is unaffected and keeps
+word-by-word highlighting on `pop`.
+
+`youtube` (the default) resolves the bug instead of living with it: every word
+gets its own absolutely-positioned `Dialogue` event (`build_ass_youtube`), so
+there is no multi-word run left for an override tag to split, on Arabic or
+Latin alike. See `textlayout.py`'s module docstring for why that also means
+libass stops laying out the line for us.
 """
 
 from __future__ import annotations
