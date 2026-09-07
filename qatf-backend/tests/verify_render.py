@@ -9,7 +9,7 @@ NOT one of the dependency-free suites. `smoke_pipeline.py`, `smoke_llm.py` and
 a filtergraph must be verified by rendering a clip and looking at a frame — this
 automates the looking, so the check survives into the next refactor.
 
-Two fixtures, deliberately different in what they can prove:
+Three fixtures, deliberately different in what they can prove:
 
   A. synthetic   a red bar on a known path, detections hand-built.
                  Exercises framing + sendcmd + the filtergraph with NO detector,
@@ -17,13 +17,20 @@ Two fixtures, deliberately different in what they can prove:
   B. real face   a public-domain headshot composited onto a known path.
                  Exercises YuNet as well, and scores detection against a
                  ground truth known in closed form.
+  C. pill        `youtube` caption style over a flat background, one frame
+                 per word. Measures where the capsule actually lands rather
+                 than trusting the `.ass` file — the same discipline as the
+                 RTL sweep measurement below, applied to the newer feature
+                 that can fail the exact same invisible way.
 
-Both render `crop` alongside `track` as a control, and both ASSERT THE CONTROL
-FAILS to hold the subject. That is not decoration: the first version of fixture
-A produced a source with no subject in it at all (ffmpeg's `drawbox` evaluates
-`x` once at init, where `t` is undefined, so the expression silently yields NaN).
-Track and crop both reported "subject absent" and it read exactly like a broken
-feature. A control that cannot fail is measuring nothing.
+Fixtures A and B both render `crop` alongside `track` as a control, and both
+ASSERT THE CONTROL FAILS to hold the subject. That is not decoration: the first
+version of fixture A produced a source with no subject in it at all (ffmpeg's
+`drawbox` evaluates `x` once at init, where `t` is undefined, so the expression
+silently yields NaN). Track and crop both reported "subject absent" and it read
+exactly like a broken feature. A control that cannot fail is measuring nothing.
+Fixture C's control is the `pop` style, which draws no capsule at all — if
+`pill_centre` finds one there, it is matching something else.
 
 Measure position, never pixel equality — see the RTL section in CLAUDE.md for
 what byte-for-byte frame diffs did to a caption test.
@@ -43,10 +50,11 @@ from pathlib import Path
 import score_transcript
 from _harness import check, report, section
 
+from qatf.core.constants import DEFAULT_FONT, PILL_FILL
 from qatf.core.errors import CommandFailed, FFmpegNotFound
-from qatf.core.types import Clip, Detection
+from qatf.core.types import Clip, Detection, Word
 from qatf.core.utils import binary, check_ffmpeg
-from qatf.pipeline import detect, encode, framing
+from qatf.pipeline import captions, detect, encode, framing
 
 WORK = Path(__file__).resolve().parent / ".render-check"
 SRC_W, SRC_H = 1280, 720
@@ -99,6 +107,47 @@ def red_centre(video: Path, t: float) -> float | None:
     return None if not total else weighted / total / OUT_W
 
 
+#: PILL_FILL as (r, g, b), 0-255 each. Derived from the constant rather than
+#: hardcoded so this test cannot silently drift from the colour production
+#: actually paints — see `captions.ass_bgr` for the same hex string read the
+#: other direction (into ASS's BGR literal).
+_PILL_RGB = tuple(int(PILL_FILL[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def pill_centre(video: Path, t: float) -> float | None:
+    """Horizontal centre of pill-coloured pixels, 0..1 of frame width, or None.
+
+    Same decode path and **bgr24** gotcha as `red_centre` — read it as rgb24
+    and this reports the capsule absent from every frame, the same false
+    "feature broken" result that reading order produced once already in this
+    file.
+
+    PILL_FILL (`#B4560A` -> RGB 180/86/10) round-trips through yuv420p and a
+    lossy h264 encode with some drift, so this matches a band around the fill
+    rather than the exact triple — wide enough to survive that drift, narrow
+    enough that it cannot also catch the dimmed caption text (near-white,
+    alpha-blended over the flat grey background, so R==G==B) or the flat grey
+    background itself (`0x4a4a4a`, also R==G==B). The `red > green > blue`
+    ordering is what actually excludes both of those: neither is a genuinely
+    orange colour, no matter how the tolerance band is widened."""
+    raw = raw_frame(video, t)
+    if raw is None:
+        return None
+    r0, g0, b0 = _PILL_RGB
+    tol = 45
+    total = weighted = 0
+    for y in range(0, OUT_H, 4):
+        row = y * OUT_W * 3
+        for x in range(OUT_W):
+            i = row + x * 3
+            blue, green, red = raw[i], raw[i + 1], raw[i + 2]
+            if (abs(red - r0) <= tol and abs(green - g0) <= tol
+                    and abs(blue - b0) <= tol and red > green > blue):
+                total += 1
+                weighted += x
+    return None if not total else weighted / total / OUT_W
+
+
 def face_centre(video: Path, t: float) -> float | None:
     """Where a detector finds the face in a RENDERED frame, 0..1 of width.
 
@@ -144,6 +193,24 @@ def score(label: str, tracked: list, control: list) -> None:
     check(f"{label}: CONTROL — static crop loses the subject, proving the "
           f"measurement is real",
           len(ctrl) < len(control), f"crop held it in {len(ctrl)}/{len(control)}")
+
+
+def spoken(tokens: tuple[str, ...], spans: tuple[tuple[float, float], ...]) -> list[Word]:
+    """One `Word` per token, timed by `spans` — (start, end) pairs, positional."""
+    return [Word(tok, s, e) for tok, (s, e) in zip(tokens, spans, strict=True)]
+
+
+def render_pill(video: Path, clip: Clip, words: list[Word], style: str,
+                font: str, work: Path, stem: str) -> Path:
+    """Build one `style`-caption track and burn it onto `video`.
+
+    `mode="crop"` on a source already at OUT_W x OUT_H is a no-op reframe —
+    `crop`'s width is `min(iw, ih*9/16)`, which is `iw` here — so a flat
+    background stays exactly the colour ffmpeg was asked for; nothing in this
+    path scales or resamples it."""
+    ass = captions.build_ass(clip, words, work / f"{stem}.ass", font=font, style=style)
+    return encode.render(video, clip, ass, work / f"{stem}.mp4", "crop",
+                         codec="h264", preset="veryfast")
 
 
 try:
@@ -374,6 +441,77 @@ else:
         t_b, c_b = render_pair(face_vid, clip_b, track_b, "b")
         score("real face", [face_centre(t_b, t) for t in PROBES],
               [face_centre(c_b, t) for t in PROBES])
+
+# ---------------------------------------------------------------- fixture C
+section("fixture C — pill captions: sweep direction (LTR vs RTL) and the "
+        "no-pill control")
+# `resolve_style` is the ONE place that decides whether a real Measurer is
+# available (fontconfig resolving the font to a file, uharfbuzz shaping it) —
+# `build_ass` falls through to the same decision when asked for "youtube" and
+# gets none. Trust that decision rather than re-deriving it: a host missing
+# either dependency returns "pop" here, silently, and rendering anyway would
+# measure a `pop` file while believing it was testing `youtube`.
+_style_used, _style_warning = captions.resolve_style("youtube", DEFAULT_FONT)
+if _style_used != "youtube":
+    print(f"  SKIP  pill captions unavailable on this host: {_style_warning}")
+else:
+    PILL_DUR = 3.0
+    # (start, end) for three words, spaced so each has an unhurried, unambiguous
+    # active window — see the comment on PILL_PROBES below.
+    _spans = ((0.3, 0.9), (1.2, 1.8), (2.1, 2.7))
+
+    # Three words is enough to prove a monotonic sweep and short enough to sit
+    # on one caption line (CAPTION_MAX_WORDS=5, and none of these six words is
+    # remotely close to the per-line width budget) — one chunk, one pill
+    # sweeping across it, no line break to reset the x position partway through.
+    en_words = spoken(("yellow", "pizza", "rocket"), _spans)
+    ar_words = spoken(("الطقس", "اليوم", "جميل"), _spans)   # "the weather today [is] beautiful"
+    clip_c = Clip(0.0, PILL_DUR, "pill")
+
+    # Each word's ACTIVE window (start of one word to the start of the next,
+    # per `build_ass_youtube`) covers its own midpoint, so probing there always
+    # lands on that word's pill and never on a neighbour's.
+    PILL_PROBES = tuple((s + e) / 2 for s, e in _spans)
+
+    # A flat, neutral grey background — NOT testsrc2. A busy test pattern hid
+    # the highlight entirely on the first pass of the original RTL sweep
+    # measurement (see CLAUDE.md's RTL section); this is that same measurement
+    # applied to the pill, so it gets the same background.
+    bg = WORK / "c-bg.mp4"
+    ff("-f", "lavfi",
+       "-i", f"color=c=0x4a4a4a:s={OUT_W}x{OUT_H}:d={PILL_DUR}:r=25",
+       "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(bg))
+
+    en_video = render_pill(bg, clip_c, en_words, "youtube", DEFAULT_FONT, WORK, "c-en")
+    ar_video = render_pill(bg, clip_c, ar_words, "youtube", DEFAULT_FONT, WORK, "c-ar")
+    # The control: same words, `pop` style, which draws no capsule at all.
+    pop_video = render_pill(bg, clip_c, en_words, "pop", DEFAULT_FONT, WORK, "c-pop")
+
+    en_centres = [pill_centre(en_video, t) for t in PILL_PROBES]
+    ar_centres = [pill_centre(ar_video, t) for t in PILL_PROBES]
+    pop_centres = [pill_centre(pop_video, t) for t in PILL_PROBES]
+
+    # `and` short-circuits, so the ordering comparisons never run against a
+    # None when a pill went missing — that failure surfaces as "not found in
+    # every frame" rather than a TypeError.
+    check("english: the pill sweeps left to right",
+          all(v is not None for v in en_centres)
+          and all(b > a for a, b in zip(en_centres, en_centres[1:], strict=False)),
+          str(en_centres))
+    # THE POINT OF THE FEATURE. If this sweeps left to right, the bidi
+    # handling is wrong and the feature is broken in exactly the way the
+    # original RTL bug was — invisible in the .ass file, invisible in a
+    # dimension check, visible only here.
+    check("arabic: the pill sweeps RIGHT TO LEFT",
+          all(v is not None for v in ar_centres)
+          and all(b < a for a, b in zip(ar_centres, ar_centres[1:], strict=False)),
+          str(ar_centres))
+    # If the control also finds a "pill", `pill_centre` is matching something
+    # other than the capsule and neither check above proves anything — the
+    # same rule fixtures A and B hold their crop control to.
+    check("CONTROL — the pop style has no pill at all, proving the "
+          "measurement is finding the capsule and not some other artefact",
+          all(c is None for c in pop_centres), str(pop_centres))
 
 print(f"\nartifacts left in {WORK} — open the two .mp4 pairs to look at them")
 sys.exit(report())
