@@ -1085,6 +1085,26 @@ blocks = select.build_transcript_blocks(words(100), block_seconds=12.0)
 lines = blocks.splitlines()
 check("blocked at ~12s", len(lines) == 5, f"{len(lines)} lines for 50s of words")
 check("every line is MM:SS prefixed", all(line.startswith("[") for line in lines))
+# MEASURED: labelling each block with the SPAN it covers instead of only where
+# it starts took qwen3-235b from 2 of 8 clips in range to 8 of 8 on the same
+# transcript (durations 36-50s vs a cluster at 24s). The models were never doing
+# bad arithmetic — with only start labels in the prompt, copying two of them is
+# the only span the format affords, and 2 x 12.2s = 24.4s falls straight out of
+# that. Numbers in docs/quality.md.
+check("every line is labelled with the SPAN it covers, not just its start",
+      all(re.match(r"^\[\d\d:\d\d-\d\d:\d\d\] ", ln) for ln in lines),
+      lines[0][:24])
+_spans = [re.match(r"^\[(\d\d):(\d\d)-(\d\d):(\d\d)\]", ln).groups()
+          for ln in lines]
+check("each block's end is the next block's start — no gap, no overlap",
+      all(_spans[i][2:] == _spans[i + 1][:2] for i in range(len(_spans) - 1)),
+      str(_spans[:3]))
+_w = words(100)
+check("the last block ends at the last word's end, not at a guess",
+      _spans[-1][2:] == (f"{int(_w[-1].end) // 60:02d}", f"{int(_w[-1].end) % 60:02d}"),
+      f"{_spans[-1][2:]} vs {_w[-1].end}")
+check("a span is never zero-length",
+      all(sp[:2] != sp[2:] for sp in _spans), str(_spans))
 check("no word lost", sum(len(line.split(" ")) - 1 for line in lines) == 100)
 check("empty input is empty output", select.build_transcript_blocks([]) == "")
 
@@ -1106,7 +1126,11 @@ check("a block boundary still fires on schedule during an all-blank run — "
       "real1 is labelled from its OWN start (00:13), not the stale "
       "block_start (00:00) a blank-only leading block would otherwise leave "
       "behind",
-      "[00:13] real1 real2" in _blocked.splitlines(), repr(_blocked))
+      # The label now carries a span, so the assertion moved with the
+      # format — but it still checks the same thing: real1's block STARTS
+      # at 00:13, not at the 00:00 a blank-only leading block would leave.
+      any(ln.startswith("[00:13-") and ln.endswith("real1 real2")
+          for ln in _blocked.splitlines()), repr(_blocked))
 
 section("plan round trip")
 original = [Clip(1.5, 2.5, "t", "h", "w", 0.4)]
