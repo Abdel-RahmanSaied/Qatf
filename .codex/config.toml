@@ -1,0 +1,6 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+QATF_FFMPEG = 'E:\Qutf\tools\ffmpeg\bin\ffmpeg.exe'
+QATF_FFPROBE = 'E:\Qutf\tools\ffmpeg\bin\ffprobe.exe'
