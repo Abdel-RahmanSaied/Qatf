@@ -113,6 +113,49 @@ def red_centre(video: Path, t: float) -> float | None:
 #: other direction (into ASS's BGR literal).
 _PILL_RGB = tuple(int(PILL_FILL[i:i + 2], 16) for i in (1, 3, 5))
 
+#: Minimum consecutive matching pixels in one scanline to count as capsule
+#: rather than an antialiased glyph edge.
+#:
+#: NOT A HYPOTHETICAL — a real false positive, found by rendering fixture C in
+#: a container with real fonts. `pop`'s per-word highlight (`captions.HILITE`,
+#: `&H00E0FF&` = RGB 255/224/0) sweeps across the same flat grey background
+#: (`0x4a4a4a`) this fixture uses, and the ANTIALIASED EDGE between that
+#: yellow and the grey passes through a narrow band of colours that genuinely
+#: ARE within `tol` of PILL_FILL and genuinely DO satisfy `red > green >
+#: blue` — solving the blend fraction against the highlight gives roughly
+#: [0.337, 0.38], and a second window opens around 0.50-0.55 against the dark
+#: outline colour. Confirmed independently by rendering words through ffmpeg
+#: `drawtext` at the same crf and running this exact colour test: 4, 10 and 4
+#: matching pixels on three different probe words, whose centroid swept LEFT
+#: TO RIGHT with the highlight — the false "pill" this constant exists to
+#: reject. Neither `tol` nor the `red > green > blue` ordering can exclude
+#: these pixels on colour alone, because they are not an approximation of
+#: orange, they ARE a genuinely orange blend.
+#:
+#: Density is what actually separates a capsule from an edge: capsule radius
+#: is half its height, so a capsule's minimum possible width equals its
+#: height — on the order of ~88px at this file's real font metrics — while an
+#: antialiased edge is 1-3px wide. 20 sits comfortably below the narrowest
+#: real capsule and far above any edge, so counting a pixel only when it is
+#: part of a horizontal run at least this long keeps the capsule and drops
+#: the edge.
+#:
+#: Do NOT "fix" a future false positive by narrowing `tol` instead of raising
+#: this. `tol` is already load-bearing for surviving yuv420p drift on the
+#: REAL capsule; tightening it trades a false positive here for a false
+#: negative on the sweep checks, which is the direction this test can least
+#: afford to be wrong in.
+PILL_MIN_RUN = 20
+
+#: A second, independent guard: the total matching pixel count across every
+#: sampled row. A handful of runs that individually happen to clear
+#: PILL_MIN_RUN — unlikely, but not provably impossible on a busier render —
+#: still cannot alone produce a centroid. A real capsule, sampled every 4
+#: rows, contributes on the order of thousands of matching pixels; this floor
+#: sits far below that and comfortably above anything edge noise could
+#: plausibly accumulate.
+PILL_MIN_PIXELS = 200
+
 
 def pill_centre(video: Path, t: float) -> float | None:
     """Horizontal centre of pill-coloured pixels, 0..1 of frame width, or None.
@@ -124,12 +167,13 @@ def pill_centre(video: Path, t: float) -> float | None:
 
     PILL_FILL (`#B4560A` -> RGB 180/86/10) round-trips through yuv420p and a
     lossy h264 encode with some drift, so this matches a band around the fill
-    rather than the exact triple — wide enough to survive that drift, narrow
-    enough that it cannot also catch the dimmed caption text (near-white,
-    alpha-blended over the flat grey background, so R==G==B) or the flat grey
-    background itself (`0x4a4a4a`, also R==G==B). The `red > green > blue`
-    ordering is what actually excludes both of those: neither is a genuinely
-    orange colour, no matter how the tolerance band is widened."""
+    rather than the exact triple. That band is deliberately NOT tight enough
+    on its own to be the only line of defence — see `PILL_MIN_RUN` for the
+    real false positive that produced (matching `pop`'s own highlight, at an
+    antialiased edge) and why a density requirement, not a tighter tolerance,
+    is the fix. A pixel only counts toward the centroid when it is part of a
+    horizontal run of at least `PILL_MIN_RUN` consecutive matches; the whole
+    frame is then held to a `PILL_MIN_PIXELS` floor as a second guard."""
     raw = raw_frame(video, t)
     if raw is None:
         return None
@@ -138,14 +182,30 @@ def pill_centre(video: Path, t: float) -> float | None:
     total = weighted = 0
     for y in range(0, OUT_H, 4):
         row = y * OUT_W * 3
-        for x in range(OUT_W):
-            i = row + x * 3
-            blue, green, red = raw[i], raw[i + 1], raw[i + 2]
-            if (abs(red - r0) <= tol and abs(green - g0) <= tol
-                    and abs(blue - b0) <= tol and red > green > blue):
-                total += 1
-                weighted += x
-    return None if not total else weighted / total / OUT_W
+        run_start = None
+        # Scan one past the last column so a run touching the frame edge is
+        # flushed by the same code path as an interior one — `matched` is
+        # forced False on that extra iteration, closing any open run.
+        for x in range(OUT_W + 1):
+            matched = False
+            if x < OUT_W:
+                i = row + x * 3
+                blue, green, red = raw[i], raw[i + 1], raw[i + 2]
+                matched = (abs(red - r0) <= tol and abs(green - g0) <= tol
+                          and abs(blue - b0) <= tol and red > green > blue)
+            if matched:
+                if run_start is None:
+                    run_start = x
+                continue
+            if run_start is not None:
+                run_len = x - run_start
+                if run_len >= PILL_MIN_RUN:
+                    total += run_len
+                    # sum of x in [run_start, x-1]; (a+b)*n is always even
+                    # for a run of consecutive integers, so // 2 is exact.
+                    weighted += (run_start + x - 1) * run_len // 2
+                run_start = None
+    return None if total < PILL_MIN_PIXELS else weighted / total / OUT_W
 
 
 def face_centre(video: Path, t: float) -> float | None:
