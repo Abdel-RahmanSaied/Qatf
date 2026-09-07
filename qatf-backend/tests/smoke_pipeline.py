@@ -53,9 +53,15 @@ class FakeMeasurer:
         return 10.0 * len(text)
 
     def ink_extents(self, text: str) -> tuple[float, float]:
-        # Deliberately distinct from line_height (80): visual height 50, so a
-        # capsule sized from this must differ from one sized off the line box.
-        return (40.0, -10.0)
+        # Deliberately TEXT-SENSITIVE, and distinct from line_height (80). A
+        # constant here would let a regression that calls ink_extents(box.text)
+        # per word, instead of once per line on the joined line text, still
+        # produce equal-height capsules — the "same height" check would stay
+        # green while the constraint it exists to guard (ph computed once per
+        # LINE) is broken. Found by review; see CLAUDE.md's own collection of
+        # checks that read as verification and cannot fail for their claimed
+        # reason.
+        return (20.0 + len(text), -10.0 - len(text))
 
 
 _M = FakeMeasurer()          # 10px per character, 80px line height, 50px ink
@@ -2221,10 +2227,17 @@ check("the capsule uses the measured pill fill",
 # be computed from the UN-floored width — so for any word narrower than the
 # line height, capsule_path silently drew wider than `px` assumed and the pill
 # rendered off-centre on its word. Invisible in the .ass file, the exact
-# failure class this project records twice already. "hi" under FakeMeasurer
-# gives pw=56 against ph=66 (round(50) + 2*8, Task 5b's ink-based height;
-# 2*radius=66), which trips the clamp by 10px.
-_short = [Word("hi", 0.0, 0.5)]
+# failure class this project records twice already.
+#
+# "a" (one character) under FakeMeasurer: box.width=10 -> pw candidate
+# 10 + 2*18 = 46. ink_extents("a") = (21, -11) -> visual height 32 -> ph =
+# 32 + 2*8 = 48 -> r = 24 -> 2*radius = 48. pw = max(46, 48) = 48, which
+# trips the clamp by 2px. (A longer word, e.g. the original "hi", no longer
+# trips this clamp once ink_extents is text-length-sensitive: its ph grows
+# faster than a short word's width, so the floor stops binding past one
+# character under these fake numbers — this test only needs SOME word that
+# still trips it.)
+_short = [Word("a", 0.0, 0.5)]
 _sp = captions.build_ass(Clip(0.0, 5.0, "t"), _short, Path("_tmp_yt_short.ass"),
                          style="youtube", measurer=_M)
 _sdl = dialogue_lines(_sp.read_text(encoding="utf-8"))
@@ -2246,9 +2259,18 @@ _sp.unlink(missing_ok=True)
 # room for diacritics most words never carry), which also forced the width
 # clamp above to fire on ordinary words, rendering them as circles.
 #
-# FakeMeasurer's ink_extents (top=40, bottom=-10, visual height 50) is
-# deliberately distinct from its line_height (80), so sizing off the wrong
-# metric is visible rather than accidentally matching.
+# FakeMeasurer.ink_extents is TEXT-SENSITIVE (round 2, post-review): the first
+# version returned a constant regardless of `text`, which let a regression
+# that calls `ink_extents(box.text)` per word — instead of once per line on
+# the JOINED line text — still produce equal-height capsules, since every
+# word got the identical constant back. "Every capsule on the line has the
+# same height" stayed green while the constraint it exists to guard (ph
+# computed once per LINE, not per word) was silently unverifiable. The three
+# words below have different lengths for exactly this reason: "hello" and
+# "there" happen to share a length (5) under this fake, but "hi" (2) does
+# not, so a per-word regression still produces a divergent height and both
+# checks below can catch it — verified by deliberate breakage (see the task
+# report).
 
 
 def _capsule_dims(dialogue_text: str) -> tuple[int, int]:
@@ -2269,14 +2291,29 @@ _idl = dialogue_lines(_ip.read_text(encoding="utf-8"))
 _icaps = [d for d in _idl if d[0].split(":")[1].strip() == "1"]
 _iheights = {_capsule_dims(d[9])[1] for d in _icaps}
 
-# Check 1: sized from ink (50 visual), not the line box (80). Must fail if
-# someone reverts `ph` to `line.height`.
+# The oracle for checks 1 and 2 is `_M.ink_extents` applied to the JOINED
+# line text — exactly the string a correct `build_ass_youtube` must build
+# (`" ".join(box.text for box in line.boxes)`) and pass ONCE. This is fixture
+# data, not the thing under test: production either does or does not call
+# `ink_extents` this way, and if it instead calls it per word (with a
+# shorter, per-word string) the result diverges from this oracle, which is
+# exactly the regression these checks exist to catch.
+_line_text = " ".join(w.text for w in _multi)
+_ink_top, _ink_bot = _M.ink_extents(_line_text)          # (34.0, -24.0)
+_expected_ph = int(round(_ink_top - _ink_bot)) + 2 * K.PILL_PAD_Y   # 74
+
+# Check 1: sized from ink (58 visual height for the 14-char joined line), not
+# the line box (80). Must fail if someone reverts `ph` to `line.height`.
 check("the capsule height comes from ink extents, not the line box",
-      _iheights == {50 + 2 * K.PILL_PAD_Y},
-      f"heights={_iheights}, line-box would give {80 + 2 * K.PILL_PAD_Y}")
+      _iheights == {_expected_ph},
+      f"heights={_iheights}, expected {{{_expected_ph}}}, "
+      f"line-box would give {int(round(_M.line_height)) + 2 * K.PILL_PAD_Y}")
 
 # Check 3: ph/pill_cy must be computed once per LINE, not per word — else
-# capsules change size as the highlight moves across a multi-word line.
+# capsules change size as the highlight moves across a multi-word line. With
+# a text-sensitive ink_extents, a per-word regression is visible here too
+# (not just in check 1), because "hi" (length 2) diverges from "hello" and
+# "there" (length 5 each) even though those two happen to coincide.
 check("every capsule on the line has the same height",
       len(_iheights) == 1, str(_iheights))
 
@@ -2284,8 +2321,8 @@ check("every capsule on the line has the same height",
 # independently of captions.py's formula, from FakeMeasurer's own numbers.
 _baseline_y = TARGET_H - 300 - _M.line_height / 2
 _baseline_screen = _baseline_y - _M.line_height / 2 + _M.ascender
-_ink_top_screen = _baseline_screen - 40.0      # ink_top
-_ink_bot_screen = _baseline_screen - (-10.0)   # ink_bot
+_ink_top_screen = _baseline_screen - _ink_top
+_ink_bot_screen = _baseline_screen - _ink_bot
 _cap0 = _icaps[0]
 _py0 = float(re.search(r"\\pos\((-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\)",
                        _cap0[9]).group(2))
