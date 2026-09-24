@@ -1,0 +1,113 @@
+/* StageTimeline — styles for components/StageTimeline.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+.timeline {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline-step {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .55rem;
+  min-width: 0;
+  text-align: center;
+  color: var(--dim);
+  font-size: .74rem;
+}
+/* the connecting rail, drawn from each step back to the previous one */
+.timeline-step::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  inset-inline-end: calc(50% + 15px);
+  inset-inline-start: calc(-50% + 15px);
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.timeline-step:first-child::before { display: none; }
+
+.timeline-dot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  background: var(--ink-sunken);
+  color: var(--ink);
+  flex: none;
+}
+
+/* The DOT carries the --dim "not reached yet" signal; the label is a word the
+   reader has to read, so it never drops below --muted. */
+.timeline-label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  letter-spacing: .03em;
+  color: var(--muted);
+}
+
+.timeline-step.is-done::before { background: var(--sabr); }
+.timeline-step.is-done .timeline-dot { background: var(--sabr); border-color: var(--sabr); }
+.timeline-step.is-done .timeline-label { color: var(--sabr); }
+
+.timeline-step.is-current .timeline-dot {
+  border-color: var(--saffron);
+  background: var(--ink);
+  box-shadow: 0 0 0 5px rgba(232,163,61,.14);
+}
+.timeline-step.is-current .timeline-dot::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--saffron);
+  animation: breathe 1.8s ease-in-out infinite;
+}
+.timeline-step.is-current .timeline-label { color: var(--parchment); font-weight: 600; }
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(.6); opacity: .6; }
+}
+
+/* Skipped: a stage that never ran for this job (fetching, on anything but a
+   URL source). A HOLLOW, dashed node, so it cannot be mistaken at a glance for
+   either a filled "done" node or a plain "not yet" one — the shape carries the
+   meaning, not just the colour. */
+.timeline-step.is-skipped .timeline-dot {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--dim);
+}
+.timeline-step.is-skipped .timeline-label {
+  color: var(--dim);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+/* Under 640px only the CURRENT stage keeps its word; the rest carry theirs in
+   `title`. Seven labels in a phone's width would all truncate to nothing. */
+@media (max-width: 640px) {
+  .timeline-label { visibility: hidden; }
+  .timeline-step.is-current .timeline-label { visibility: visible; overflow: visible; }
+  .timeline-dot { width: 20px; height: 20px; }
+  .timeline-step::before { top: 9px; inset-inline-end: calc(50% + 12px); inset-inline-start: calc(-50% + 12px); }
+}
+
+:lang(ar) .timeline-label { font-family: var(--font-ar); letter-spacing: 0; font-size: .74rem; }

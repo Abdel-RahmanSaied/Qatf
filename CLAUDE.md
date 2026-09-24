@@ -934,11 +934,45 @@ would have let you fix.
 ### Design system
 
 One dark theme, warm rather than blue-gray, and the tokens at the top of
-`styles.css` are the whole palette: two accents with fixed jobs — saffron for
-action and picked spans, olive for done. `styles.css` is the ONLY stylesheet;
-components carry class names and no inline styles, the single exception being a
-percentage computed at runtime (the harvest strip's spans, the upload progress
-fill, and the two download bars below), which cannot live in a stylesheet.
+`src/styles/base.css` are the whole palette: two accents with fixed jobs —
+saffron for action and picked spans, olive for done. Components carry class
+names and no inline styles, the single exception being a percentage computed at
+runtime (the harvest strip's spans, the upload progress fill, and the two
+download bars below), which cannot live in a stylesheet.
+
+**Files.** `styles/base.css` (tokens, reset, shell, and every building block
+more than one page uses) is loaded once by `main.tsx`. Each page lives in its
+own folder with its own stylesheet — `pages/<name>/<Name>Page.tsx` + `.css` —
+and each shared component that needs styles imports a sibling `.css`. Pages
+are `React.lazy` routes, so a page's JS and CSS download the first time it is
+opened. A page stylesheet may use base tokens and classes; it must not restyle
+another page's classes.
+
+Type is four faces with fixed jobs: Instrument Serif for display (page, card
+and section titles, big numbers), IBM Plex Sans for UI, Plex Mono for data and
+eyebrows, Aref Ruqaa for the brand mark only. In Arabic, IBM Plex Sans Arabic
+takes the UI and display roles (Instrument Serif has no Arabic letters) and
+spaced-out mono labels become plain text: letter-spacing breaks Arabic joins.
+Icons are Hugeicons free (MIT), the stroke set the Saudi DGA "Platforms Code"
+design system is drawn in, reached only through `components/Icon.tsx` and
+imported per icon — never unicode glyphs or emoji. The shell is a sticky sidebar
+(brand, the one `Add video` action, nav, the language switch, a live
+`ServerStatus` light) that folds into a top bar under 1024px. Every page opens
+with `PageHeader`. The New job page is two numbered steps plus a sticky summary;
+its advanced option groups are `<details>` that show their current values while
+closed and are forced open while they hold a validation error.
+
+**Language.** Every visible word lives in `src/i18n/en.ts` (the source) and
+`src/i18n/ar.ts` (typed as the same shape, so a missing translation is a
+compile error). Copy is plain language for someone who has never heard of
+Whisper or CRF: say what happens, not what the software is called. The
+provider sets `<html lang dir>`, and every stylesheet uses logical properties
+(`inset-inline-start`, `margin-inline-end`, `text-align: start`) so RTL is a
+mirror, not a second layout. Exceptions that must NOT mirror: the harvest strip
+(a time axis positioned with runtime `left` percentages) and numeric inputs.
+Server-written text (`job.message`, API error details) is English and is shown
+with `dir="auto"`. `lib/rules.ts` still writes developer English; the UI shows
+the dictionary's message for the same field instead.
 
 The **harvest strip** is the signature element and it is honest by
 construction: the API exposes no source-video duration, so the track spans

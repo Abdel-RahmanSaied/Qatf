@@ -2,7 +2,10 @@ import { useState } from "react";
 import { ApiError, putPlan } from "../api/client";
 import { RUNNING_STATES } from "../api/types";
 import type { ClipModel, JobResponse } from "../api/types";
+import { Icon } from "./Icon";
 import { useToast } from "./Toasts";
+import { useI18n } from "../i18n/I18nProvider";
+import "./PlanEditor.css";
 import { durationWarning } from "../lib/rules";
 import { formatSeconds } from "../lib/format";
 
@@ -22,6 +25,8 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
   const [saving, setSaving] = useState(false);
   const [snapped, setSnapped] = useState(false);
   const { push } = useToast();
+  const { t } = useI18n();
+  const p = t.plan;
 
   // Mirror the server's rule, which is `not running` — NOT `planned or done`.
   // `PUT /plan` is accepted on a failed or cancelled job too, and being
@@ -62,7 +67,7 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
       const start = last ? last.end + 1 : 0;
       return [...current, {
         start, end: start + job.options.min_len,
-        title: "clip", hook: "", why: "", score: 0,
+        title: p.newTitle, hook: "", why: "", score: 0,
       }];
     });
   };
@@ -70,12 +75,12 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
   async function save() {
     for (const [i, clip] of draft.entries()) {
       if (clip.end <= clip.start) {
-        push(`Clip ${i + 1}: end must be after start.`);
+        push(p.toastOrder(i + 1));
         return;
       }
     }
     if (draft.length === 0) {
-      push("A plan needs at least one clip — delete the job instead.");
+      push(p.toastEmpty);
       return;
     }
     setSaving(true);
@@ -83,7 +88,7 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
       const stored = await putPlan(jobId, draft);
       setDraft(stored.map((clip) => ({ ...clip })));
       setSnapped(true);
-      push("Plan saved — boundaries re-snapped onto word times.", "ok");
+      push(p.toastSaved, "ok");
       await onSaved();
     } catch (exc) {
       push(exc instanceof ApiError ? exc.message : String(exc));
@@ -92,29 +97,33 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
     }
   }
 
-  const warnings = draft.reduce(
-    (n, clip) => n + (durationWarning(clip, job.options.max_len) ? 1 : 0), 0);
+  const maxLen = job.options.max_len;
+  // `durationWarning` decides WHETHER to warn — it mirrors the server's rule —
+  // but writes developer English, so the words shown come from the dictionary.
+  const warningText = (clip: ClipModel) => {
+    if (!durationWarning(clip, maxLen)) return null;
+    return clip.end - clip.start <= 0 ? p.endBeforeStart : p.tooLong(maxLen);
+  };
+  const warnings = draft.reduce((n, clip) => n + (warningText(clip) ? 1 : 0), 0);
   const picked = draft.reduce((total, clip) => total + Math.max(0, clip.end - clip.start), 0);
 
   return (
     <div className="card">
       <div className="card-head">
-        <h2 className="card-title">Plan</h2>
-        <p className="card-sub">
-          The model chooses the passage; the server snaps each boundary onto a Whisper
-          word time on save.
-        </p>
+        <h2 className="card-title">{p.title}</h2>
+        <p className="card-sub">{p.sub}</p>
       </div>
 
       {!editable && (
         <div className="banner banner-warn">
-          The plan is read-only while the job is working. It opens again once the job
-          reaches planned or done.
+          <Icon name="clock" />
+          <span>{p.locked}</span>
         </div>
       )}
       {snapped && (
-        <div className="banner banner-info">
-          These are the snapped boundaries the render will use.
+        <div className="banner banner-info" role="status">
+          <Icon name="check" />
+          <span>{p.snapped}</span>
         </div>
       )}
 
@@ -123,29 +132,29 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
           <thead>
             <tr>
               <th>#</th>
-              <th>start (s)</th>
-              <th>end (s)</th>
-              <th>length</th>
-              <th>title</th>
-              <th>score</th>
-              <th><span className="dim">actions</span></th>
+              <th>{p.colStart}</th>
+              <th>{p.colEnd}</th>
+              <th>{p.colLength}</th>
+              <th>{p.colTitle}</th>
+              <th title={p.colScoreTip}>{p.colScore}</th>
+              <th><span className="visually-hidden">{p.colActions}</span></th>
             </tr>
           </thead>
           <tbody>
             {draft.map((clip, i) => {
-              const warning = durationWarning(clip, job.options.max_len);
+              const warning = warningText(clip);
               return (
                 <tr key={i}>
-                  <td className="mono dim">{String(i + 1).padStart(2, "0")}</td>
+                  <td className="plan-idx mono">{String(i + 1).padStart(2, "0")}</td>
                   <td className="plan-num">
-                    <input type="number" step={0.01} min={0} value={clip.start}
-                      aria-label={`Clip ${i + 1} start in seconds`}
+                    <input type="number" lang="en" step={0.01} min={0} value={clip.start} dir="ltr"
+                      aria-label={p.startAria(i + 1)}
                       disabled={!editable}
                       onChange={(e) => update(i, { start: Number(e.target.value) })} />
                   </td>
                   <td className="plan-num">
-                    <input type="number" step={0.01} min={0} value={clip.end}
-                      aria-label={`Clip ${i + 1} end in seconds`}
+                    <input type="number" lang="en" step={0.01} min={0} value={clip.end} dir="ltr"
+                      aria-label={p.endAria(i + 1)}
                       disabled={!editable}
                       onChange={(e) => update(i, { end: Number(e.target.value) })} />
                   </td>
@@ -155,22 +164,23 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
                   </td>
                   <td>
                     <input value={clip.title} dir="auto" disabled={!editable}
-                      aria-label={`Clip ${i + 1} title`}
-                      title={clip.hook ? `hook: ${clip.hook}\nwhy: ${clip.why}` : undefined}
+                      aria-label={p.titleAria(i + 1)}
+                      title={clip.hook ? `${clip.hook}
+${clip.why}` : undefined}
                       onChange={(e) => update(i, { title: e.target.value })} />
                   </td>
-                  <td className="mono muted">{clip.score.toFixed(2)}</td>
+                  <td className="plan-score mono" title={p.colScoreTip}>{clip.score.toFixed(2)}</td>
                   <td>
-                    <div className="row">
-                      <button className="btn btn-sm" disabled={!editable || i === 0}
-                        aria-label={`Move clip ${i + 1} up`}
-                        onClick={() => move(i, -1)}>↑</button>
-                      <button className="btn btn-sm" disabled={!editable || i === draft.length - 1}
-                        aria-label={`Move clip ${i + 1} down`}
-                        onClick={() => move(i, 1)}>↓</button>
-                      <button className="btn btn-sm btn-danger" disabled={!editable}
-                        aria-label={`Remove clip ${i + 1}`}
-                        onClick={() => remove(i)}>✕</button>
+                    <div className="row row-tight">
+                      <button className="btn btn-sm btn-icon" disabled={!editable || i === 0}
+                        aria-label={p.up(i + 1)} title={p.up(i + 1)}
+                        onClick={() => move(i, -1)}><Icon name="arrowUp" size={14} /></button>
+                      <button className="btn btn-sm btn-icon" disabled={!editable || i === draft.length - 1}
+                        aria-label={p.down(i + 1)} title={p.down(i + 1)}
+                        onClick={() => move(i, 1)}><Icon name="arrowDown" size={14} /></button>
+                      <button className="btn btn-sm btn-icon btn-danger" disabled={!editable}
+                        aria-label={p.remove(i + 1)} title={p.remove(i + 1)}
+                        onClick={() => remove(i)}><Icon name="trash" size={14} /></button>
                     </div>
                   </td>
                 </tr>
@@ -180,28 +190,19 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
         </table>
       </div>
 
-      <p className="field-help">
-        Typed seconds are semantic guesses — the server snaps them onto Whisper word
-        boundaries on save. Titles become the output filenames (ASCII-slugified).
-      </p>
+      <p className="field-help">{p.help}</p>
 
       <div className="sticky-bar">
-        <div className="sticky-bar-status">
-          {draft.length === 0 ? (
-            <span>No clips left. Add one, or reset to the stored plan.</span>
-          ) : (
-            <>
-              <span className="tnum">{draft.length}</span>{" "}
-              <span>clip{draft.length === 1 ? "" : "s"}, </span>
-              <span className="tnum">{formatSeconds(picked)}</span>{" "}
-              <span>picked</span>
-              {warnings > 0 && (
-                <span className="plan-warn"> · {warnings} clip{warnings === 1 ? "" : "s"} run
-                  past max_len {job.options.max_len}s
-                </span>
-              )}
-            </>
-          )}
+        <div className={`sticky-bar-status ${warnings > 0 ? "is-error" : ""}`}>
+          <span className="status-dot" aria-hidden="true" />
+          <span>
+            {draft.length === 0
+              ? p.empty
+              : <>
+                  {p.status(draft.length, formatSeconds(picked))}
+                  {warnings > 0 && p.statusLong(warnings, maxLen)}
+                </>}
+          </span>
         </div>
         <div className="sticky-bar-actions">
           <button className="btn btn-ghost" disabled={!editable}
@@ -209,11 +210,14 @@ export function PlanEditor({ jobId, job, onSaved }: Props) {
               setDraft(job.clips.map((clip) => ({ ...clip })));
               setSnapped(false);
             }}>
-            Reset to stored plan
+            {p.undo}
           </button>
-          <button className="btn" disabled={!editable} onClick={add}>Add clip</button>
+          <button className="btn" disabled={!editable} onClick={add}>
+            <Icon name="plus" size={16} />
+            {p.add}
+          </button>
           <button className="btn btn-primary" disabled={!editable || saving} onClick={save}>
-            {saving ? "Saving…" : "Save plan"}
+            {saving ? t.common.saving : p.save}
           </button>
         </div>
       </div>
