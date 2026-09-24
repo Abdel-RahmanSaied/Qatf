@@ -4,6 +4,9 @@ import { RUNNING_STATES } from "../api/types";
 import type {
   JobResponse, SuggestionModel, TranscriptResponse, WordModel,
 } from "../api/types";
+import { Icon } from "./Icon";
+import { useI18n } from "../i18n/I18nProvider";
+import "./TranscriptEditor.css";
 import { useToast } from "./Toasts";
 import { transcriptEditGuard } from "../lib/rules";
 
@@ -39,6 +42,8 @@ export function TranscriptEditor({ jobId, job }: Props) {
   const [passInfo, setPassInfo] = useState<{ dropped: number; terms: number; model: string } | null>(null);
   const [thinking, setThinking] = useState(false);
   const { push } = useToast();
+  const { t, languageName } = useI18n();
+  const tx = t.transcript;
 
   const running = RUNNING_STATES.has(job.state);
 
@@ -56,12 +61,10 @@ export function TranscriptEditor({ jobId, job }: Props) {
       setPass(r.suggestions);
       setPassInfo({ dropped: r.dropped, terms: r.terms_used, model: r.model });
       if (r.suggestions.length === 0) {
-        push(r.terms_used === 0
-          ? "No terms to match against — add some vocabulary first."
-          : `Nothing to suggest (${r.dropped} refused).`);
+        push(r.terms_used === 0 ? tx.noTerms : tx.noSuggestions(r.dropped));
       }
     } catch (e) {
-      push(e instanceof ApiError ? e.message : "the model could not be reached");
+      push(e instanceof ApiError ? e.message : tx.aiDown);
     } finally {
       setThinking(false);
     }
@@ -123,9 +126,9 @@ export function TranscriptEditor({ jobId, job }: Props) {
     if (!transcript) return;
     const edited: WordModel[] = transcript.words.map((word, i) =>
       i in edits ? { ...word, text: edits[i] } : word);
-    const problem = transcriptEditGuard(transcript.words, edited);
-    if (problem) {
-      push(problem);
+    // The guard decides; the reader gets the plain-language reason.
+    if (transcriptEditGuard(transcript.words, edited)) {
+      push(tx.guard);
       return;
     }
     setSaving(true);
@@ -133,9 +136,7 @@ export function TranscriptEditor({ jobId, job }: Props) {
       const response = await putTranscript(jobId, edited);
       setTranscript(response);
       setEdits({});
-      const stale = response.edits_stale > 0
-        ? ` (${response.edits_stale} stale — the transcript moved underneath them)` : "";
-      push(`${response.edits_applied} correction(s) in effect${stale}.`, "ok");
+      push(tx.saved(response.edits_applied, response.edits_stale), "ok");
     } catch (exc) {
       push(exc instanceof ApiError ? exc.message : String(exc));
     } finally {
@@ -147,12 +148,12 @@ export function TranscriptEditor({ jobId, job }: Props) {
 
   if (!transcript) {
     return loading ? (
-      <div className="skeleton-row" aria-label="Loading the transcript" />
+      <div className="skeleton-row" aria-busy="true" aria-label={tx.title} />
     ) : (
       <div className="empty">
-        <p className="empty-title">The transcript did not load</p>
-        <p className="empty-body">The server refused or could not be reached.</p>
-        <button className="btn" onClick={() => void load()}>Load the transcript</button>
+        <p className="empty-title">{tx.failTitle}</p>
+        <p className="empty-body">{tx.failBody}</p>
+        <button className="btn" onClick={() => void load()}>{tx.retry}</button>
       </div>
     );
   }
@@ -165,31 +166,26 @@ export function TranscriptEditor({ jobId, job }: Props) {
   return (
     <div>
       <div className="transcript-head">
+        <span className="transcript-stat">{tx.words(transcript.word_count)}</span>
         <span className="transcript-stat">
-          <span className="tnum">{transcript.word_count}</span> words
-        </span>
-        <span className="transcript-stat">
-          {transcript.language ?? "language unknown"}
+          {languageName(transcript.language) ?? t.common.notYet}
           {transcript.language_probability !== null
-            ? ` · p=${transcript.language_probability.toFixed(3)}` : ""}
+            ? ` · ${tx.confidence(Math.round(transcript.language_probability * 1000) / 10)}` : ""}
         </span>
-        <span className="transcript-stat" title="Caption tracks carry a start and no end, so a word's end is the next word's start — an upper bound, not a measurement.">
-          timings from {transcript.timing_source}
+        <span className="transcript-stat" title={tx.timingTip}>
+          {transcript.timing_source === "captions" ? tx.timingCaptions : tx.timingAsr}
         </span>
-        <span className="transcript-stat">
-          <span className="tnum">{transcript.edits_applied}</span>{" "}
-          {transcript.edits_applied === 1 ? "correction" : "corrections"} in effect
-        </span>
+        <span className="transcript-stat">{tx.fixesSaved(transcript.edits_applied)}</span>
         {transcript.edits_stale > 0 && (
-          <span className="transcript-stat" title="The transcript moved underneath these corrections — a different Whisper size, or denoise toggled.">
-            <span className="tnum">{transcript.edits_stale}</span> stale
+          <span className="transcript-stat is-warn" title={tx.staleTip}>
+            {tx.stale(transcript.edits_stale)}
           </span>
         )}
       </div>
 
-      <p className="muted">
-        Click a word to correct its text. Timings are not editable — a correction
-        changes what a caption reads and can never move a cut.
+      <p className="transcript-hint">
+        {tx.hint}
+        <span className="legend"><span className="legend-swatch" aria-hidden="true" /> {tx.legend}</span>
       </p>
 
       <div className="words" dir={dir} lang={language ?? undefined}>
@@ -236,80 +232,65 @@ export function TranscriptEditor({ jobId, job }: Props) {
       {pass && pass.length > 0 && passInfo && (
         <div className="banner banner-warn suggest">
           <p className="suggest-head">
-            <span className="tnum">{pass.length}</span>{" "}
-            {pass.length === 1 ? "suggestion" : "suggestions"} from{" "}
-            <span className="mono">{passInfo.model}</span>, matched against{" "}
-            <span className="tnum">{passInfo.terms}</span> terms
-            {passInfo.dropped > 0 && (
-              <> — <span className="tnum">{passInfo.dropped}</span> refused by the
-                server for proposing something outside that list</>
-            )}
-            . Nothing is applied until you accept, and nothing is saved until you
-            press Save corrections.
+            {tx.suggestions(pass.length, passInfo.model, passInfo.terms)}
+            {passInfo.dropped > 0 && tx.rejected(passInfo.dropped)}{" "}
+            {tx.suggestNote}
           </p>
           <ul className="suggest-list">
             {pass.map((s) => (
               <li className="suggest-item" key={s.index}>
                 <span className="tnum suggest-idx">{s.index}</span>
-                <span className="suggest-was">{s.was}</span>
-                <span className="suggest-arrow">→</span>
-                <span className="suggest-new">
-                  {s.text === "" ? <em>(delete)</em> : s.text}
+                <span className="suggest-was" dir="auto">{s.was}</span>
+                <Icon name="arrowRight" size={14} className="suggest-arrow" />
+                <span className="suggest-new" dir="auto">
+                  {s.text === "" ? <em>{tx.removeWord}</em> : s.text}
                 </span>
-                <span className="suggest-why">{s.why}</span>
+                <span className="suggest-why" dir="auto">{s.why}</span>
               </li>
             ))}
           </ul>
           <div className="row">
             <button className="btn btn-primary" onClick={acceptPass}>
-              Accept all {pass.length}
+              <Icon name="check" size={16} />
+              {tx.acceptAll(pass.length)}
             </button>
             <button
               className="btn btn-ghost"
               onClick={() => { setPass(null); setPassInfo(null); }}
             >
-              Discard suggestions
+              {tx.ignore}
             </button>
           </div>
         </div>
       )}
 
       <div className="sticky-bar">
-        <div className="sticky-bar-status">
-          {running
-            ? "The job is running — corrections are refused until it stops."
-            : dirty
-              ? <>
-                  <span className="tnum">{pending}</span>{" "}
-                  {pending === 1 ? "correction" : "corrections"} pending
-                </>
-              : "No corrections pending."}
+        <div className={`sticky-bar-status ${running ? "is-error" : dirty ? "is-ready" : ""}`}>
+          <span className="status-dot" aria-hidden="true" />
+          <span>{running ? tx.running : dirty ? tx.pending(pending) : tx.nonePending}</span>
         </div>
         <div className="sticky-bar-actions">
           <button
             className="btn"
             onClick={() => void enhance()}
             disabled={thinking || saving || running}
-            title="Ask the model which words look misheard. Nothing is applied until you accept."
+            title={tx.suggestTip}
           >
-            {thinking ? "Reading…" : "AI enhance"}
+            <Icon name="sparkle" size={16} />
+            {thinking ? tx.thinking : tx.suggest}
           </button>
           {dirty && (
             <button className="btn btn-ghost" onClick={() => setEdits({})} disabled={saving}>
-              Discard
+              {t.common.discard}
             </button>
           )}
           <button
             className="btn btn-primary"
             onClick={save}
             disabled={!dirty || saving || running}
-            title={running ? "The job is running — corrections are refused until it stops." : ""}
+            title={running ? tx.running : ""}
           >
-            {saving
-              ? "Saving…"
-              : pending === 0
-                ? "Save corrections"
-                : `Save ${pending} ${pending === 1 ? "correction" : "corrections"}`}
+            {saving ? t.common.saving : pending === 0 ? tx.save : tx.saveN(pending)}
           </button>
         </div>
       </div>

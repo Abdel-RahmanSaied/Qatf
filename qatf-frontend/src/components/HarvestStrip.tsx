@@ -1,5 +1,7 @@
 import type { ClipModel } from "../api/types";
+import { useI18n } from "../i18n/I18nProvider";
 import { formatSeconds } from "../lib/format";
+import "./HarvestStrip.css";
 
 interface Props {
   clips: ClipModel[];
@@ -26,13 +28,14 @@ function pct(value: number): number {
  * last pick, and says so.
  */
 export function HarvestStrip({ clips, mini = false }: Props) {
+  const { t } = useI18n();
   if (clips.length === 0) return null;
 
   const ends = clips.map((c) => c.end).filter((e) => Number.isFinite(e));
   const extent = ends.length > 0 ? Math.max(...ends) : 0;
   if (extent <= 0) return null;
 
-  const label = `${clips.length} clip${clips.length === 1 ? "" : "s"} picked`;
+  const label = t.job.mapPicked(clips.length);
 
   return (
     <div
@@ -66,8 +69,8 @@ export function HarvestStrip({ clips, mini = false }: Props) {
       {!mini && (
         <div className="strip-scale">
           <span>{formatSeconds(0)}</span>
-          <span className="muted">{label}</span>
-          <span title="End of the last clip. The source video may run longer — the API does not report its duration.">
+          <span className="muted" dir="auto">{label}</span>
+          <span title={t.job.mapEnd}>
             {formatSeconds(extent)}
           </span>
         </div>

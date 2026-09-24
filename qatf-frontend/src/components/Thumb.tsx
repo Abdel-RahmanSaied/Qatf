@@ -1,41 +1,32 @@
 import { clipUrl } from "../api/client";
 import type { ClipOutput, JobState } from "../api/types";
+import { useI18n } from "../i18n/I18nProvider";
+import { Icon } from "./Icon";
+import type { IconName } from "./Icon";
+import { TONE } from "./StateBadge";
 
-/** One character per state, for a job with nothing rendered yet. */
-const GLYPH: Record<JobState, string> = {
-  queued: "⋯",
-  fetching: "⋯",
-  extracting: "⋯",
-  transcribing: "⋯",
-  selecting: "⋯",
-  planned: "▣",
-  rendering: "⋯",
-  done: "▣",
-  failed: "✕",
-  cancelled: "⊘",
-};
-
-/** The state colours live in the design system; `.state--*` sets `color` only,
- * which is all the glyph needs — no `.state` wrapper, no compound selector. */
-const TONE: Record<JobState, string> = {
-  queued: "state--running",
-  fetching: "state--running",
-  extracting: "state--running",
-  transcribing: "state--running",
-  selecting: "state--running",
-  planned: "state--planned",
-  rendering: "state--running",
-  done: "state--done",
-  failed: "state--failed",
-  cancelled: "state--cancelled",
+/** One icon per state, for a job with nothing rendered yet. */
+const GLYPH: Record<JobState, IconName> = {
+  queued: "clock",
+  fetching: "download",
+  extracting: "audio",
+  transcribing: "text",
+  selecting: "scissors",
+  planned: "film",
+  rendering: "film",
+  done: "check",
+  failed: "x",
+  cancelled: "ban",
 };
 
 /**
- * A 9:16 tile for a job: the first rendered clip if there is one, otherwise a
- * glyph in the state's colour. Deliberately no autoplay and no controls — this
- * is a still identity for the row, not a player.
+ * A 9:16 tile for a job: the first rendered clip if there is one, otherwise an
+ * icon in the state's colour. Deliberately no autoplay and no controls — this
+ * is a still identity for the row, not a player. The `.state--*` modifiers set
+ * `color` only, which is all the icon needs.
  */
 export function Thumb({ outputs, state }: { outputs: ClipOutput[]; state: JobState }) {
+  const { t } = useI18n();
   if (outputs.length > 0) {
     return (
       <div className="job-thumb">
@@ -45,8 +36,8 @@ export function Thumb({ outputs, state }: { outputs: ClipOutput[]; state: JobSta
   }
   return (
     <div className="job-thumb">
-      <span className={`job-thumb-glyph ${TONE[state]}`} aria-label={state} role="img">
-        {GLYPH[state]}
+      <span className={`job-thumb-glyph ${TONE[state]}`}>
+        <Icon name={GLYPH[state]} size={22} label={t.state[state]} />
       </span>
     </div>
   );

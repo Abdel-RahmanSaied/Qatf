@@ -1,0 +1,256 @@
+/* JobsPage — styles for pages/jobs/JobsPage.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+/* ================================================================== chips === */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-bottom: 1.25rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  min-height: 32px;
+  padding: .28rem .8rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: .82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--fast) ease, border-color var(--fast) ease, background-color var(--fast) ease;
+}
+.chip:hover { color: var(--parchment); border-color: var(--line-strong); }
+.chip.active {
+  color: var(--saffron);
+  border-color: var(--saffron-dim);
+  background: var(--saffron-wash);
+}
+
+.chip-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .72rem;
+  padding: 0 .4rem;
+  border-radius: 999px;
+  background: var(--ink-raised-2);
+  color: var(--muted);
+}
+.chip.active .chip-count { color: var(--saffron); background: rgba(232,163,61,.14); }
+
+/* ================================================================== stats === */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .75rem;
+  margin: 0 0 1.5rem;
+}
+
+.stat {
+  position: relative;
+  padding: 1rem 1.1rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-raised);
+  box-shadow: var(--edge);
+  overflow: hidden;
+}
+
+.stat-label {
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stat-value {
+  margin: .35rem 0 0;
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  line-height: 1;
+  color: var(--parchment);
+}
+/* `.tnum` must not pull the display numerals back to mono here. */
+.stat-value.tnum { font-family: var(--font-display); font-variant-numeric: tabular-nums lining-nums; }
+
+.stat.is-hot { border-color: var(--saffron-dim); background: linear-gradient(160deg, rgba(232,163,61,.1), transparent 60%), var(--ink-raised); }
+.stat.is-hot .stat-value { color: var(--saffron); }
+
+@media (max-width: 720px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-value { font-size: 2rem; }
+}
+
+/* =============================================================== job list === */
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.job-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 1.1rem;
+  align-items: center;
+  padding: .85rem 1rem .85rem .85rem;
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--edge);
+  transition: border-color var(--fast) ease, background-color var(--fast) ease;
+}
+.job-row:hover { border-color: var(--line-strong); background: var(--ink-raised-2); }
+.job-row:has(.job-link:focus-visible) { outline: 2px solid var(--saffron); outline-offset: 2px; }
+
+.job-thumb {
+  width: 72px;
+  aspect-ratio: 9 / 16;
+  background: var(--ink-sunken);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+.job-thumb video,
+.job-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* colour comes from an inherited `.job-thumb` default, so adding a `.state--*`
+   modifier to this element wins without a compound selector */
+.job-thumb-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.job-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+
+.job-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+
+/* The row's one link, stretched over the whole card by its ::after, so the
+   card opens from a click anywhere. The actions column is lifted above it. */
+.job-link {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .95rem;
+  font-weight: 500;
+  color: var(--parchment);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.job-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.job-link:hover { color: var(--saffron); text-decoration: none; }
+.job-row:hover .job-link { color: var(--saffron); }
+
+.job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .2rem .9rem;
+  font-size: .8rem;
+  color: var(--muted);
+}
+.job-meta > span + span::before {
+  content: "·";
+  margin-inline-end: .9rem;
+  margin-inline-start: -.45rem;
+  color: var(--dim);
+}
+
+.job-msg {
+  font-size: .82rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-msg.is-error { color: var(--clay); }
+
+.job-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.job-cue {
+  padding: .2rem .6rem;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 600;
+  color: #1B1305;
+  background: var(--saffron);
+}
+
+.job-go {
+  color: var(--dim);
+  margin-inline-start: .25rem;
+  transition: transform var(--base) var(--ease-out), color var(--fast) ease;
+}
+.job-row:hover .job-go { color: var(--saffron); transform: translateX(3px); }
+
+@media (max-width: 560px) {
+  .job-row {
+    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-areas:
+      "thumb main"
+      "actions actions";
+    gap: .75rem;
+  }
+  .job-thumb   { grid-area: thumb; width: 56px; }
+  .job-main    { grid-area: main; }
+  .job-actions { grid-area: actions; justify-content: flex-start; }
+  .job-go      { margin-inline-start: auto; }
+}
+
+:lang(ar) .stat-label { font-family: var(--font-ar); letter-spacing: 0; text-transform: none; font-size: .8rem; }
+/* The hover nudge must keep the RTL mirror, or the arrow flips back. */
+[dir="rtl"] .job-row:hover .job-go { transform: scaleX(-1) translateX(3px); }
+
+/* The title is the video's file name now — a person's word, not an id — so it
+   sets in the UI face; the id follows in the meta line for anyone who needs it. */
+.job-link { font-family: var(--font-ui); font-size: 1rem; font-weight: 600; }
+.job-id { font-size: .74rem; color: var(--dim); }

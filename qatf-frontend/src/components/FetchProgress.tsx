@@ -1,4 +1,5 @@
 import type { FetchProgressModel } from "../api/types";
+import { useI18n } from "../i18n/I18nProvider";
 import { describeFetch } from "../lib/format";
 
 interface Props {
@@ -22,6 +23,7 @@ interface Props {
  * denominator, and there isn't one to be had.
  */
 export function FetchProgress({ progress }: Props) {
+  const { t } = useI18n();
   if (!progress) return null;
   const { percent, text } = describeFetch(progress);
   return (
@@ -30,7 +32,7 @@ export function FetchProgress({ progress }: Props) {
         <div
           className="progress"
           role="progressbar"
-          aria-label="Downloading the source video"
+          aria-label={t.job.downloadAria}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent}

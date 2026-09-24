@@ -1,0 +1,68 @@
+/* SettingsPage — styles for pages/settings/SettingsPage.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+/* ============================================================== settings === */
+
+/* One row per setting: its name, the value, where it came from, and the reset
+   that only appears when there is something to reset. */
+.settings { padding: .4rem 1.4rem; }
+
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  gap: .5rem 1.5rem;
+  align-items: start;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.setting-row:last-child { border-bottom: 0; }
+.setting-row.is-changed .setting-label { color: var(--saffron); }
+
+.setting-name { display: flex; flex-direction: column; gap: .1rem; padding-top: .45rem; min-width: 0; }
+.setting-label {
+  font-size: .9rem;
+  font-weight: 500;
+  color: var(--parchment);
+}
+.setting-key { font-size: .72rem; color: var(--muted); overflow-wrap: anywhere; }
+
+.setting-control { min-width: 0; }
+.setting-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .4rem .75rem;
+  margin-top: .45rem;
+}
+.setting-meta .field-help { margin: 0; }
+
+/* The source badge is the point of the row — it separates a value the operator
+   chose from one the container handed them. Saffron only for `saved`, because
+   that is the one that overrides something. */
+.setting-source {
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: .05rem .4rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted);
+}
+.setting-source--saved { border-color: var(--saffron-dim); color: var(--saffron); }
+
+.setting-changed {
+  font-size: .72rem;
+  font-style: italic;
+  color: var(--saffron);
+}
+
+@media (max-width: 640px) {
+  .settings { padding: .2rem 1rem; }
+  .setting-row { grid-template-columns: minmax(0, 1fr); }
+  .setting-name { padding-top: 0; }
+}
+
+/* The proposed pass. Same stacked-banner shape as the out-of-range notice —
+   a sentence over a list — because it is the same kind of statement: here is
+   what happened, you decide. */

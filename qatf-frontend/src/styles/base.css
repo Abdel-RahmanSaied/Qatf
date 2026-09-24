@@ -1,0 +1,1248 @@
+/* ============================================================================
+   qatf — "harvest studio" base: tokens, reset, the app shell and every
+   building block more than one page uses. Loaded once, in main.tsx.
+   Page and component styles live next to their .tsx and import on demand.
+   ========================================================================= */
+
+:root {
+  /* ground: warm brown-black, deliberately NOT blue-gray */
+  --ink:          #120E0A;
+  --ink-raised:   #1B1510;
+  --ink-raised-2: #231B14;   /* hover on a raised surface */
+  --ink-sunken:   #0B0806;
+  --line:         #2C231A;
+  --line-strong:  #45382A;
+
+  /* text — --muted is the floor for anything a reader must read (~6:1 on
+     --ink-raised); --dim is for marks and separators only */
+  --parchment:    #F3EADB;
+  --muted:        #A6967F;
+  --dim:          #6E6252;
+
+  /* accents — two with fixed jobs, plus two signals */
+  --saffron:        #E8A33D;   /* harvest: primary action, brand, picked spans */
+  --saffron-bright: #F4B654;
+  --saffron-dim:    #7A5518;
+  --saffron-wash:   rgba(232,163,61,.08);
+  --sabr:           #82A37E;   /* done: earthy olive, deliberately desaturated */
+  --clay:           #D2644B;   /* failure */
+  --sky:            #7C9CC0;   /* in-progress / info */
+
+  /* shape + depth */
+  --radius-lg:    18px;
+  --radius:       12px;
+  --radius-sm:    8px;
+  --gap:          1rem;
+  --edge:         inset 0 1px 0 rgba(243,234,219,.04);
+  --shadow:       0 1px 0 rgba(243,234,219,.05), 0 18px 40px -12px rgba(0,0,0,.6);
+
+  /* motion — one rhythm for the whole app */
+  --ease-out:     cubic-bezier(.2, .8, .2, 1);
+  --fast:         .14s;
+  --base:         .22s;
+
+  --font-ui:      "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-ar:      "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-brand:   "Aref Ruqaa", "IBM Plex Sans Arabic", serif;
+
+  --sidebar-w:    252px;
+
+  color-scheme: dark;
+}
+
+/* ---------------------------------------------------------------- reset --- */
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* Sticky chrome must never hide the element keyboard focus lands on. */
+  scroll-padding-bottom: 6rem;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  color: var(--parchment);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  /* The ground: a low saffron sun rising behind the content, and a darker
+     floor. Fixed, so it reads as the room rather than part of the page. */
+  background:
+    radial-gradient(1100px 520px at 18% -10%, rgba(232,163,61,.085), transparent 62%),
+    radial-gradient(900px 600px at 110% 110%, rgba(124,156,192,.04), transparent 60%),
+    var(--ink);
+  background-attachment: fixed;
+}
+
+/* NOTE: no `overflow-x: hidden` on body, deliberately. Hiding overflow does not
+   meet "no horizontal overflow" — it clips whatever overflows out of reach and
+   makes the failure invisible to a screenshot pass. It also turns body into a
+   scroll container, which is a footgun for the sticky chrome and sticky bars.
+   The one element wider than the viewport (`.plan`) scrolls inside `.card-body`. */
+
+/* Arabic content carries its own face wherever it appears. `dir="auto"` is
+   listed because an attribute selector matches the literal value, never the
+   direction the browser resolves: an Arabic clip title typed into a
+   `dir="auto"` input would otherwise fall through to a Latin-only face. */
+[dir="rtl"],
+[dir="auto"],
+[lang="ar"] { font-family: var(--font-ar); }
+
+h1, h2, h3, h4 { margin: 0 0 .5rem; line-height: 1.2; font-weight: 600; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: .95rem; }
+p  { margin: 0 0 .75rem; }
+
+/* Links rest neutral. Saffron is the harvest accent — action, brand, picked
+   spans — and it only reads as a signature while it stays scarce. */
+a {
+  color: var(--parchment);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+a:hover { color: var(--saffron); text-decoration-color: var(--saffron); }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
+
+img, video { max-width: 100%; }
+
+::selection { background: var(--saffron-dim); color: var(--parchment); }
+
+/* Every interactive element, one ring. */
+:focus-visible {
+  outline: 2px solid var(--saffron);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: -.2em;
+}
+
+* { scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
+
+.skip-link {
+  position: absolute;
+  inset-inline-start: 1rem;
+  top: -4rem;
+  z-index: 50;
+  padding: .6rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--saffron);
+  color: #1B1305;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top var(--fast) var(--ease-out);
+}
+.skip-link:focus { top: 1rem; }
+
+/* ================================================================== shell === */
+/* Desktop: a fixed sidebar that carries identity, the one primary action,
+   navigation, and the server's pulse. Under 1024px it folds into a top bar. */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100dvh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.75rem 1.25rem 1.25rem;
+  border-inline-end: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(27,21,16,.85), rgba(18,14,10,.6));
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: .6rem;
+  text-decoration: none;
+  color: inherit;
+  line-height: 1;
+}
+.brand:hover { text-decoration: none; color: inherit; }
+
+.brand-ar {
+  font-family: var(--font-brand);
+  font-size: 2.35rem;
+  font-weight: 700;
+  color: var(--saffron);
+  line-height: 1;
+  /* the one flourish: let the ruqaa sit properly on the baseline */
+  padding-bottom: .1em;
+  text-shadow: 0 0 28px rgba(232,163,61,.28);
+}
+
+.brand-latin {
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  font-weight: 500;
+  letter-spacing: .24em;
+  color: var(--muted);
+}
+
+.brand-tag {
+  margin: -.6rem 0 0;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.02rem;
+  line-height: 1.3;
+  color: var(--muted);
+}
+
+.sidebar-cta { width: 100%; }
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+}
+
+.nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  min-height: 40px;
+  padding: .5rem .75rem;
+  border-radius: var(--radius-sm);
+  font-size: .9rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color var(--fast) ease, background-color var(--fast) ease;
+}
+.nav-link:hover { color: var(--parchment); background: var(--ink-raised); text-decoration: none; }
+.nav-link.active { color: var(--parchment); background: var(--ink-raised-2); }
+/* The active marker is a saffron tick on the leading edge — position, not
+   colour alone, says where you are. */
+.nav-link.active::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: -1.25rem;
+  top: 25%;
+  bottom: 25%;
+  width: 3px;
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+  border-start-end-radius: 3px;
+  border-end-end-radius: 3px;
+  background: var(--saffron);
+}
+.nav-link.active .icon { color: var(--saffron); }
+
+.sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: .6rem; }
+
+.server-status {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-sunken);
+}
+
+.server-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dim);
+}
+.server-status.is-ok .server-status-dot   { background: var(--sabr); box-shadow: 0 0 0 3px rgba(130,163,126,.18); }
+.server-status.is-warn .server-status-dot { background: var(--saffron); box-shadow: 0 0 0 3px rgba(232,163,61,.18); }
+.server-status.is-down .server-status-dot {
+  background: var(--clay);
+  animation: pulse-clay 1.8s ease-in-out infinite;
+}
+
+.server-status-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.server-status-label { font-size: .8rem; font-weight: 500; color: var(--parchment); }
+.server-status-meta {
+  font-size: .7rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The language switch: each option is written in its own language, so a
+   reader who cannot read the current one can still find theirs. */
+.lang-switch {
+  display: flex;
+  align-items: center;
+  gap: .2rem;
+  padding: .25rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--ink-sunken);
+}
+.lang-switch-icon { color: var(--muted); margin-inline: .35rem .15rem; }
+.lang-option {
+  flex: 1 1 auto;
+  min-height: 30px;
+  padding: .2rem .7rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: .8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--fast) ease, background-color var(--fast) ease;
+}
+.lang-option[lang="ar"] { font-family: var(--font-ar); }
+.lang-option:hover { color: var(--parchment); }
+.lang-option.active { background: var(--ink-raised-2); color: var(--saffron); }
+
+/* The main column. Focus lands here on navigation; it draws no ring, because
+   it is a landing point, not a control. */
+.main {
+  min-width: 0;
+  padding: 2.5rem clamp(1rem, 4vw, 3.5rem) 3rem;
+  outline: none;
+}
+
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  animation: page-in var(--base) var(--ease-out);
+}
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (max-width: 1023px) {
+  html { scroll-padding-top: 5rem; }
+
+  .shell { grid-template-columns: minmax(0, 1fr); }
+
+  .sidebar {
+    z-index: 20;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem 1rem;
+    padding: .7rem clamp(1rem, 4vw, 3.5rem);
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--line);
+    background: rgba(18,14,10,.88);
+    backdrop-filter: blur(12px);
+  }
+
+  .brand-ar { font-size: 1.85rem; }
+  .brand-tag { display: none; }
+
+  .nav { flex-direction: row; order: 2; }
+  .nav-link { min-height: 36px; padding: .4rem .7rem; }
+  .nav-link.active::before { inset-inline: 20%; top: auto; bottom: -.72rem; width: auto; height: 2px; border-radius: 2px 2px 0 0; }
+
+  .sidebar-foot { order: 3; margin: 0; margin-inline-start: auto; flex-direction: row; align-items: center; }
+  .sidebar-cta { order: 4; width: auto; }
+
+  .server-status { padding: .4rem .6rem; border-radius: 999px; }
+  .server-status-meta { display: none; }
+
+  .main { padding-top: 1.75rem; }
+}
+
+@media (max-width: 640px) {
+  .sidebar { gap: .5rem; }
+  .brand { order: 0; }
+  .sidebar-foot { order: 1; }
+  .sidebar-cta { order: 2; margin-inline-start: 0; }
+  .nav { order: 3; width: 100%; }
+  .nav-link { flex: 1 1 0; justify-content: center; }
+  .nav-link.active::before { bottom: -.55rem; }
+  /* the dot alone still says it; the words go to assistive tech only */
+  .server-status-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .server-status { padding: .55rem; }
+  .lang-switch-icon { display: none; }
+}
+
+/* ============================================================ page header === */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.page-head-main { min-width: 0; flex: 1 1 22rem; }
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin-bottom: .6rem;
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  font-weight: 500;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.eyebrow::before {
+  content: "";
+  width: 18px;
+  height: 1px;
+  background: var(--saffron);
+}
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem 1rem;
+  min-width: 0;
+}
+
+.page-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(2.2rem, 4.2vw, 3.1rem);
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -.01em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+/* An id is data, not a headline: the display face would set it as prose. */
+.page-title.is-mono {
+  font-family: var(--font-mono);
+  font-size: clamp(1.35rem, 2.6vw, 1.85rem);
+  font-weight: 500;
+  letter-spacing: -.02em;
+}
+
+.page-lede {
+  margin: .7rem 0 0;
+  max-width: 60ch;
+  font-size: .98rem;
+  color: var(--muted);
+}
+
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .45rem;
+  letter-spacing: .12em;
+  min-width: 0;
+}
+.crumb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+.crumb-link:hover { color: var(--saffron); text-decoration: none; }
+.crumb-sep { color: var(--dim); }
+.crumbs [aria-current="page"] { color: var(--parchment); }
+
+/* ================================================================ buttons === */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  min-height: 38px;
+  padding: .5rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-raised);
+  color: var(--parchment);
+  font-family: inherit;
+  font-size: .88rem;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  touch-action: manipulation;
+  box-shadow: var(--edge);
+  transition:
+    background-color var(--fast) ease,
+    border-color var(--fast) ease,
+    color var(--fast) ease,
+    transform var(--fast) var(--ease-out),
+    box-shadow var(--fast) ease;
+}
+.btn:hover { border-color: var(--muted); background: var(--ink-raised-2); color: var(--parchment); text-decoration: none; }
+.btn:active { transform: scale(.97); }
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: .42; cursor: not-allowed; transform: none; }
+.btn:disabled:hover { border-color: var(--line-strong); background: var(--ink-raised); }
+
+.btn-primary {
+  background: linear-gradient(180deg, var(--saffron-bright), var(--saffron));
+  border-color: var(--saffron);
+  color: #1B1305;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 6px 20px -8px rgba(232,163,61,.55);
+}
+.btn-primary:hover {
+  background: linear-gradient(180deg, #FAC46A, var(--saffron-bright));
+  border-color: var(--saffron-bright);
+  color: #1B1305;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 10px 26px -8px rgba(232,163,61,.7);
+}
+.btn-primary:disabled:hover {
+  background: linear-gradient(180deg, var(--saffron-bright), var(--saffron));
+  border-color: var(--saffron);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+.btn-ghost:hover { background: var(--ink-raised); border-color: var(--line); color: var(--parchment); }
+.btn-ghost:disabled:hover { background: transparent; border-color: transparent; }
+
+.btn-danger {
+  color: var(--clay);
+  border-color: var(--line-strong);
+  background: transparent;
+  box-shadow: none;
+}
+.btn-danger:hover { border-color: var(--clay); background: rgba(210,100,75,.1); color: var(--clay); }
+.btn-danger:disabled:hover { background: transparent; }
+
+.btn-sm {
+  min-height: 32px;
+  padding: .3rem .7rem;
+  font-size: .8rem;
+  gap: .35rem;
+}
+
+.btn-lg {
+  min-height: 46px;
+  padding: .65rem 1.4rem;
+  font-size: .95rem;
+  border-radius: 10px;
+}
+
+.btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.btn-add { margin-top: .5rem; border-style: dashed; background: transparent; box-shadow: none; }
+
+/* ================================================================== state === */
+
+/* The badge takes its tint from its own text colour, so a `.state--*` modifier
+   sets `color` and nothing else — which is also all `.job-thumb-glyph` needs. */
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  padding: .22rem .65rem .22rem .55rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-size: .76rem;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.state--running { color: var(--sky); }
+.state--running .state-dot { animation: pulse 2.4s ease-in-out infinite; }
+.state--planned { color: var(--saffron); }
+.state--done { color: var(--sabr); }
+.state--failed { color: var(--clay); }
+.state--cancelled { color: var(--muted); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1;  box-shadow: 0 0 0 0 rgba(124,156,192,.5); }
+  50%      { opacity: .6; box-shadow: 0 0 0 4px rgba(124,156,192,0); }
+}
+@keyframes pulse-clay {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(210,100,75,.5); }
+  50%      { box-shadow: 0 0 0 5px rgba(210,100,75,0); }
+}
+
+/* =============================================================== surfaces === */
+/* Three levels, deliberately not one recipe:
+   FLAT   — the primary content of a page sits directly on the ground with no
+            box of its own: `.clip`. Nothing frames the thing the reader came for.
+   RAISED — `--ink-raised` + a `--line` hairline + a 1px top highlight for
+            secondary and meta blocks: `.card`, `.fieldset`, `.group`,
+            `.job-row`, `.stat`, `.words`.
+   DASHED — `.empty` and `.dropzone`, which are invitations rather than content.
+   `--shadow` belongs to elements that genuinely float over content: the sticky
+   bar and the toast stack. It is not a decoration for resting surfaces. */
+
+.card {
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--edge);
+  padding: 1.25rem 1.4rem;
+  margin: 1.25rem 0;
+  min-width: 0;
+}
+
+/* The one card on a page that leads somewhere — a saffron hairline on top. */
+.card-feature {
+  background:
+    linear-gradient(180deg, rgba(232,163,61,.06), transparent 40%),
+    var(--ink-raised);
+  border-top-color: var(--saffron-dim);
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .35rem 1rem;
+  margin-bottom: .9rem;
+}
+
+.card-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  font-weight: 400;
+  line-height: 1.15;
+  color: var(--parchment);
+}
+
+.card-sub {
+  margin: 0;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+/* The plan table cannot narrow past its inputs, so the CARD scrolls, never the
+   page — the quality floor is no horizontal overflow on the document. */
+.card-body {
+  display: block;
+  overflow-x: auto;
+  margin: 0 -.4rem;
+  padding: 0 .4rem;
+}
+
+.panel {
+  margin-top: 1rem;
+  min-width: 0;
+}
+
+/* ========================================================= empty / loading === */
+
+/* An invitation, not content: dashed and flat, so it never reads as a card. */
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  padding: 2.75rem 1.5rem;
+  text-align: center;
+  background: transparent;
+}
+
+.empty-hero {
+  padding: 4rem 1.5rem;
+  background: radial-gradient(360px 200px at 50% 0%, rgba(232,163,61,.08), transparent 70%);
+}
+
+.empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  margin-bottom: 1rem;
+  border-radius: 50%;
+  border: 1px solid var(--saffron-dim);
+  background: var(--saffron-wash);
+  color: var(--saffron);
+}
+
+.empty-title {
+  margin: 0 0 .4rem;
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  line-height: 1.15;
+  color: var(--parchment);
+}
+
+.empty-body {
+  margin: 0 auto 1.4rem;
+  max-width: 46ch;
+  font-size: .9rem;
+  color: var(--muted);
+}
+
+.skeleton-row,
+.skeleton-title {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--ink-raised);
+  background-image: linear-gradient(90deg, var(--ink-raised) 0%, var(--ink-raised-2) 50%, var(--ink-raised) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.skeleton-row { height: 118px; }
+.skeleton-title { height: 2.8rem; width: min(22rem, 70%); margin: .75rem 0 2rem; border-radius: var(--radius-sm); }
+.page > .skeleton-row + .skeleton-row { margin-top: .75rem; }
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row,
+  .skeleton-title { background-image: none; background: var(--ink-raised); }
+}
+
+/* ================================================================== forms === */
+
+.field { margin: .9rem 0; min-width: 0; }
+.field-flush { margin: 0; }
+
+.field-label {
+  display: block;
+  margin: 0 0 .35rem;
+  font-size: .8rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Read-me copy, never `--dim`: this carries every measured piece of guidance in
+   the form ("use 52, not 60"), and --dim is ~2.8:1 on a raised surface. */
+.field-help {
+  margin-top: .3rem;
+  font-size: .76rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.field-error {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  margin-top: .3rem;
+  font-size: .78rem;
+  color: var(--clay);
+}
+.field-error::before {
+  content: "!";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--clay);
+  color: var(--ink);
+  font-size: .65rem;
+  font-weight: 700;
+}
+
+.fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-raised);
+  box-shadow: var(--edge);
+  padding: 1rem 1.2rem .4rem;
+  margin: 0 0 .75rem;
+  min-width: 0;
+}
+
+.fieldset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .75rem 1.5rem;
+  padding: 1rem 1.2rem;
+}
+.fieldset-row .field { flex: 1 1 20rem; }
+
+.fieldset-title {
+  margin: 0 0 .1rem;
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  font-weight: 500;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 1.25rem; }
+
+@media (max-width: 720px) {
+  .grid-2,
+  .grid-3 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- switches ---- */
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  margin: .35rem 0;
+  min-height: 32px;
+  font-size: .88rem;
+  color: var(--parchment);
+  cursor: pointer;
+}
+
+/* A real checkbox, drawn as a switch: same semantics, same keyboard, a larger
+   and clearer target than the native 13px box. */
+input.toggle {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-sunken);
+  cursor: pointer;
+  transition: background-color var(--base) var(--ease-out), border-color var(--base) ease;
+}
+input.toggle::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform var(--base) var(--ease-out), background-color var(--base) ease;
+}
+input.toggle:checked { background: var(--saffron); border-color: var(--saffron); }
+input.toggle:checked::before { transform: translateX(16px); background: #1B1305; }
+input.toggle:focus-visible { outline: 2px solid var(--saffron); outline-offset: 2px; }
+
+/* ---- base controls — flat type selectors so any class above still wins ---- */
+
+input,
+select,
+textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: .5rem .7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-sunken);
+  color: var(--parchment);
+  font-family: inherit;
+  font-size: .9rem;
+  transition: border-color var(--fast) ease, box-shadow var(--fast) ease;
+}
+input:hover,
+select:hover,
+textarea:hover { border-color: var(--muted); }
+input:focus,
+select:focus,
+textarea:focus { border-color: var(--saffron); box-shadow: 0 0 0 3px rgba(232,163,61,.15); outline: none; }
+input:disabled,
+select:disabled,
+textarea:disabled { opacity: .5; cursor: not-allowed; }
+input[aria-invalid="true"] { border-color: var(--clay); }
+input::placeholder,
+textarea::placeholder { color: var(--dim); }
+/* A full reset, not just `width`: the rule above puts padding, a border, a
+   background and a radius on EVERY input, and Chrome applies all four to a
+   checkbox. `color-scheme: dark` on :root renders the native control. */
+input[type="checkbox"]:not(.toggle),
+input[type="radio"] {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 0;
+  accent-color: var(--saffron);
+  cursor: pointer;
+}
+input[type="file"] { padding: .35rem; }
+textarea { line-height: 1.6; resize: vertical; }
+
+label {
+  display: block;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .86rem;
+}
+
+th,
+td {
+  text-align: start;
+  padding: .55rem .6rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+th {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: .68rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+tbody tr { transition: background-color var(--fast) ease; }
+tbody tr:hover { background: rgba(243,234,219,.025); }
+
+/* definition grid for job metadata */
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ink-sunken);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  margin: .5rem 0;
+}
+.progress > div {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--saffron-dim), var(--saffron) 60%, var(--saffron-bright));
+  transition: width .2s ease;
+}
+
+/* Stage 0's download readout, under the job message it quantifies. */
+.fetch-progress {
+  margin: .25rem 0 .5rem;
+  max-width: 34rem;
+}
+.fetch-progress .progress { margin: .35rem 0 .2rem; }
+
+/* ============================================================= sticky bar === */
+/* A floating dock at the foot of the viewport, for the action a page exists to
+   end on. It floats, so it takes --shadow and a blur of what scrolls under it. */
+
+.sticky-bar {
+  position: sticky;
+  bottom: 1rem;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin-top: 1.5rem;
+  padding: .7rem .8rem .7rem 1.1rem;
+  background: rgba(35,27,20,.86);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.sticky-bar-status {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  font-size: .86rem;
+  color: var(--muted);
+  min-width: 0;
+}
+.sticky-bar-status.is-ready { color: var(--parchment); }
+.sticky-bar-status.is-error { color: var(--clay); }
+
+.status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.is-ready > .status-dot { background: var(--sabr); box-shadow: 0 0 0 3px rgba(130,163,126,.2); }
+.is-error > .status-dot { background: var(--clay); box-shadow: 0 0 0 3px rgba(210,100,75,.2); }
+
+.sticky-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 560px) {
+  .sticky-bar { bottom: .5rem; }
+  .sticky-bar-actions { width: 100%; }
+  .sticky-bar-actions .btn-primary { flex: 1 1 auto; }
+}
+
+/* =============================================================== feedback === */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: .65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+  margin: 0 0 1rem;
+  font-size: .86rem;
+  background: var(--ink-raised);
+  color: var(--parchment);
+}
+.banner > .icon { margin-top: .12rem; }
+
+/* A warning is not an action: it keeps a saffron-dim edge for the signal and
+   parchment text for the copy, so the accent is not spent on a paragraph. */
+.banner-warn  { border-color: var(--saffron-dim); background: rgba(232,163,61,.06); }
+.banner-warn > .icon { color: var(--saffron); }
+.banner-error { border-color: rgba(210,100,75,.55); background: rgba(210,100,75,.09); color: #EFA592; }
+.banner-error > .icon { color: var(--clay); }
+.banner-info  { border-color: var(--line-strong); background: rgba(124,156,192,.07); color: var(--parchment); }
+.banner-info > .icon { color: var(--sky); }
+
+.banner-list { margin: 0; padding: 0; list-style: none; display: grid; gap: .3rem; }
+
+/* The out-of-range notice stacks a sentence over a list, so it opts out of
+   .banner's row layout. Durations are tabular so the column of numbers reads
+   as a column — that is the whole point of showing them next to a range. */
+
+.toasts {
+  position: fixed;
+  bottom: 1.25rem;
+  inset-inline-end: 1.25rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  width: min(24rem, calc(100vw - 2rem));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: .65rem;
+  padding: .75rem .6rem .75rem .9rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: rgba(35,27,20,.94);
+  backdrop-filter: blur(12px);
+  color: var(--parchment);
+  font-size: .86rem;
+  box-shadow: var(--shadow);
+  animation: toast-in var(--base) var(--ease-out);
+}
+.toast-icon { display: inline-flex; margin-top: .1rem; }
+.toast-error { border-color: rgba(210,100,75,.6); }
+.toast-error .toast-icon { color: var(--clay); }
+.toast-ok { border-color: rgba(130,163,126,.6); }
+.toast-ok .toast-icon { color: var(--sabr); }
+.toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+
+.toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.toast-close:hover { background: var(--line); color: var(--parchment); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (max-width: 560px) {
+  .toasts { inset-inline: 1rem; bottom: 5.5rem; width: auto; }
+}
+
+/* ================================================================ utility === */
+
+/* ONE rule for the mono face, and it carries no `font-size`.
+   `.mono` used to set `.85em`, which silently beat `.page-title` — both are
+   single-class selectors — and the job-id heading rendered at 12.75px. A
+   utility must never decide a block's size. The two utilities are also
+   identical on purpose, so a `.tnum` number and a `.mono` number in the same
+   sentence match. */
+.mono,
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The optical correction Plex Mono needs against Plex Sans, applied only to
+   inline runs. A span is inline by definition, so this can reach a numeral
+   inside a sentence and can never reach a heading or a block of help text. */
+span.mono,
+span.tnum { font-size: .93em; }
+
+.muted { color: var(--muted); }
+.dim   { color: var(--dim); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+/* Present for screen readers, invisible on screen. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 420px) {
+  body { font-size: 14px; }
+  .main { padding-inline: .9rem; }
+  .card { padding: 1rem; }
+}
+
+
+/* ======================================================== arabic / rtl === */
+/* The provider sets <html lang dir>. Everything above uses logical properties
+   (inline-start/end), so the layout mirrors on its own; these rules handle the
+   few things direction alone cannot. */
+
+:root:lang(ar) {
+  /* Instrument Serif has no Arabic letters; Plex Sans Arabic carries the
+     display role at a heavier weight instead. */
+  --font-ui: var(--font-ar);
+  --font-display: var(--font-ar);
+}
+
+:lang(ar) body { font-size: 16px; line-height: 1.75; }
+
+:lang(ar) .page-title,
+:lang(ar) .section-title,
+:lang(ar) .card-title,
+:lang(ar) .empty-title,
+:lang(ar) .stat-value { font-weight: 600; letter-spacing: 0; }
+:lang(ar) .page-title { font-size: clamp(1.9rem, 3.6vw, 2.6rem); line-height: 1.25; }
+:lang(ar) .brand-tag { font-style: normal; font-size: .9rem; }
+
+/* Letter-spacing pulls Arabic letters apart and breaks their joins, and there
+   is no uppercase. Every label that is spaced-out mono in English becomes
+   plain Arabic text here. */
+:lang(ar) .eyebrow,
+:lang(ar) .state,
+:lang(ar) th,
+:lang(ar) .setting-source,
+:lang(ar) .fieldset-title {
+  font-family: var(--font-ar);
+  letter-spacing: 0;
+  text-transform: none;
+}
+:lang(ar) .eyebrow { font-size: .8rem; }
+:lang(ar) .state { font-size: .78rem; }
+:lang(ar) th { font-size: .78rem; }
+
+/* Arrows point along the reading direction. */
+[dir="rtl"] .icon-dir { transform: scaleX(-1); }
+[dir="rtl"] input.toggle:checked::before { transform: translateX(-16px); }
+
+/* ========================================================= reduced motion === */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
