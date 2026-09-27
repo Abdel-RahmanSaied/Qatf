@@ -28,10 +28,13 @@ from fastapi.responses import JSONResponse
 
 from .. import __version__
 from ..core.config import Settings
+from ..core.constants import DEFAULT_FONT
 from ..core.dotenv import find_and_load
 from ..core.errors import QatfError
 from ..core.utils import prime_ffmpeg_probe
 from ..jobs import JobStore
+from ..pipeline.captions import FONT_SIZE
+from ..pipeline.textlayout import prime_pill_probe
 from . import routers
 from .schemas import ErrorResponse
 
@@ -182,6 +185,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # pays for it — /healthz is polled far harder than anything else and
         # measured p99 > 1s when it probed inline. See core.utils.
         prime_ffmpeg_probe()
+        # Same for the pill-caption check: an fc-match spawn per request
+        # otherwise, on any host missing the default font. See textlayout.
+        prime_pill_probe(DEFAULT_FONT, FONT_SIZE)
         yield
         app.state.store.shutdown()
 
