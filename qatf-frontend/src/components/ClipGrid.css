@@ -1,0 +1,122 @@
+/* ClipGrid — styles for components/ClipGrid.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+/* ================================================================== clips === */
+
+.clips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1.25rem;
+}
+
+/* FLAT. The clips are the thing the whole pipeline exists to produce, so they
+   sit on the page ground with nothing framing them — a card around each one
+   would make them look like five more meta blocks. */
+.clip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: .55rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  transition: transform var(--base) var(--ease-out);
+}
+.clip:hover { transform: translateY(-3px); }
+.clip:hover .clip-video { border-color: var(--saffron-dim); box-shadow: 0 18px 40px -18px rgba(232,163,61,.35); }
+
+.clip-index {
+  position: absolute;
+  top: .6rem;
+  inset-inline-start: .6rem;
+  z-index: 1;
+  padding: .12rem .45rem;
+  border-radius: 6px;
+  background: rgba(11,8,6,.72);
+  backdrop-filter: blur(6px);
+  font-size: .7rem;
+  color: var(--saffron);
+  pointer-events: none;
+}
+
+.clip-video {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  display: block;
+  transition: border-color var(--fast) ease, box-shadow var(--base) ease;
+}
+
+.clip-name {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .8rem;
+  color: var(--parchment);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .25rem .75rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .74rem;
+  color: var(--muted);
+}
+
+/* The download control reads as a small button, pushed to the row's end. */
+.clip-meta a {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  margin-inline-start: auto;
+  padding: .2rem .6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--parchment);
+  font-family: var(--font-ui);
+  font-size: .75rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: border-color var(--fast) ease, color var(--fast) ease, background-color var(--fast) ease;
+}
+.clip-meta a:hover { border-color: var(--saffron); color: var(--saffron); background: var(--saffron-wash); }
+
+/* The metered download, while it runs. `flex-basis: 100%` drops it onto its own
+   line inside the wrapping .clip-meta row, so the bar spans the clip's width
+   instead of competing with the size and duration for horizontal space. */
+.clip-download,
+.clip-download-error {
+  flex-basis: 100%;
+}
+.clip-download .field-help { font-size: .7rem; }
+.clip-download-error { color: var(--clay); }
+
+/* A slimmer .progress for the clip card. Modifier only — the fill, the track
+   and the transition all stay with .progress so the bars cannot drift apart. */
+.progress-slim {
+  height: 4px;
+  margin: .25rem 0 .15rem;
+}
+
+/* Mid-transfer the link is inert; `aria-disabled` already says so to a screen
+   reader, and this says the same thing to a mouse. */
+.clip-meta a[aria-disabled="true"] {
+  color: var(--muted);
+  pointer-events: none;
+  opacity: .6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clip:hover { transform: none; }
+}
+
+@media (max-width: 420px) {
+  .clips { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+}

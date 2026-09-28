@@ -1,0 +1,36 @@
+/* PlanEditor — styles for components/PlanEditor.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+/* =================================================================== plan === */
+
+.plan {
+  width: 100%;
+  min-width: 46rem;
+  border-collapse: collapse;
+  font-size: .85rem;
+}
+.plan input { min-height: 34px; padding: .35rem .55rem; font-size: .85rem; }
+
+.plan-idx { color: var(--saffron); font-size: .78rem; }
+.plan-score { color: var(--muted); }
+
+.plan-num {
+  width: 7.5rem;
+  min-width: 6.5rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+.plan-num input { text-align: end; font-family: var(--font-mono); }
+
+.plan-warn {
+  color: var(--clay);
+  font-size: .78rem;
+}
+
+/* Compound on purpose: `.row` comes later in the file and would win a tie. */
+.row.row-tight { gap: .3rem; flex-wrap: nowrap; }
+
+/* The title is the one column worth reading; below this the table scrolls
+   inside its card instead of crushing the title to three characters. */
+.plan td:nth-child(5) { min-width: 14rem; }

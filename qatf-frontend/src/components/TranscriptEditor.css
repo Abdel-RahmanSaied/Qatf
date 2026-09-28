@@ -1,0 +1,96 @@
+/* TranscriptEditor — styles for components/TranscriptEditor.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+/* ============================================================= transcript === */
+
+.transcript-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+
+.transcript-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .35rem;
+  padding: .3rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--ink-raised);
+  font-size: .78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem 1rem;
+  max-width: 75ch;
+  font-size: .85rem;
+  color: var(--muted);
+}
+
+.legend { display: inline-flex; align-items: center; gap: .4rem; font-size: .78rem; }
+.legend-swatch {
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--saffron);
+}
+
+/* The manuscript: a raised page at a readable measure, since reading is what
+   this screen is for. */
+.words {
+  max-width: 900px;
+  padding: 1.75rem clamp(1rem, 3vw, 2.5rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--ink-raised);
+  box-shadow: var(--edge);
+  font-family: var(--font-ar);
+  line-height: 2.25;
+  font-size: 1.08rem;
+}
+
+.word {
+  font-family: var(--font-ar);
+  padding: .12rem .2rem;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease;
+}
+.word:hover { background: var(--line); color: var(--parchment); }
+
+/* never a filled block — an underline keeps RTL text readable */
+.word.is-edited {
+  color: var(--saffron-bright);
+  box-shadow: inset 0 -2px 0 var(--saffron);
+}
+
+.word-input {
+  display: inline-block;
+  width: 9rem;
+  min-height: 0;
+  padding: .1rem .35rem;
+  font-family: var(--font-ar);
+  font-size: 1rem;
+}
+
+.suggest { flex-direction: column; gap: .6rem; }
+.suggest-head { margin: 0; }
+.suggest-list { margin: 0; padding: 0; list-style: none; display: grid; gap: .25rem; }
+.suggest-item {
+  display: flex;
+  gap: .55rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.suggest-idx { color: var(--muted); min-width: 3rem; text-align: end; font-size: .7rem; }
+.suggest-was { color: var(--muted); text-decoration: line-through; }
+.suggest-arrow { color: var(--dim); }
+.suggest-new { color: var(--saffron); }
+.suggest-why { color: var(--muted); font-size: .72rem; }

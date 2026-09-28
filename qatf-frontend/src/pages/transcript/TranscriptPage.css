@@ -1,0 +1,14 @@
+/* TranscriptPage — styles for pages/transcript/TranscriptPage.tsx only.
+   Tokens and shared building blocks come from styles/base.css; the word
+   editor itself is styled by components/TranscriptEditor.css. */
+
+/* A long file name in the breadcrumb truncates instead of pushing the trail
+   onto three lines. */
+.crumb-name {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}

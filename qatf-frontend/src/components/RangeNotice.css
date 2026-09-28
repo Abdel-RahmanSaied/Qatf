@@ -1,0 +1,27 @@
+/* RangeNotice — styles for components/RangeNotice.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+.dropped { flex-direction: column; gap: .5rem; }
+.dropped-head { display: flex; align-items: flex-start; gap: .65rem; margin: 0; }
+.dropped-head > .icon { margin-top: .15rem; color: var(--saffron); }
+.dropped-list { margin: 0; padding: 0 0 0 0; padding-inline-start: 1.6rem; list-style: none; display: grid; gap: .2rem; }
+.dropped-item { display: flex; gap: .6rem; align-items: baseline; }
+.dropped-dur { color: var(--saffron); min-width: 3.6rem; text-align: end; }
+.dropped-title { color: var(--muted); overflow-wrap: anywhere; }
+
+/* SHORT and LONG are labels, not alarms — the banner's saffron edge already
+   carries the signal, so the tag stays outline-only. */
+.range-tag {
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  letter-spacing: .08em;
+  padding: 0 .35rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  flex: none;
+}
+.range-tag--short { border-color: var(--saffron-dim); color: var(--saffron); }
+.range-tag--long  { border-color: var(--clay); color: var(--clay); }
+
+:lang(ar) .range-tag { font-family: var(--font-ar); letter-spacing: 0; font-size: .7rem; }
