@@ -2,6 +2,7 @@ import { clipUrl } from "../api/client";
 import type { ClipModel, ClipOutput } from "../api/types";
 import { formatBytes, formatSeconds } from "../lib/format";
 import { ClipDownload } from "./ClipDownload";
+import "./ClipGrid.css";
 
 interface Props {
   outputs: ClipOutput[];
@@ -22,6 +23,9 @@ export function ClipGrid({ outputs, clips }: Props) {
         const clip = clips?.[index];
         return (
           <div key={output.name} className="clip">
+            <span className="clip-index mono" aria-hidden="true">
+              {String(index + 1).padStart(2, "0")}
+            </span>
             <video
               className="clip-video"
               src={clipUrl(output)}
@@ -29,7 +33,7 @@ export function ClipGrid({ outputs, clips }: Props) {
               preload="metadata"
               playsInline
             />
-            <div className="clip-name" title={clip ? `${output.name} — ${clip.title}` : output.name}>
+            <div className="clip-name" dir="auto" title={clip ? `${output.name} — ${clip.title}` : output.name}>
               {output.name}
             </div>
             <div className="clip-meta">

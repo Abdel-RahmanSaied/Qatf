@@ -1,5 +1,8 @@
 import type { JobResponse, JobState } from "../api/types";
 import { STAGES, stageIndex } from "../lib/format";
+import { useI18n } from "../i18n/I18nProvider";
+import { Icon } from "./Icon";
+import "./StageTimeline.css";
 
 /**
  * The seven pipeline stages, with the job's position marked.
@@ -12,6 +15,7 @@ import { STAGES, stageIndex } from "../lib/format";
 export function StageTimeline(
   { state, source }: { state: JobState; source: JobResponse["source"] },
 ) {
+  const { t } = useI18n();
   const current = stageIndex(state);
   if (current === -1) return null;
 
@@ -23,7 +27,7 @@ export function StageTimeline(
   const skipped = (stage: string) => stage === "fetching" && source !== "youtube";
 
   return (
-    <ol className="timeline" aria-label="Pipeline progress">
+    <ol className="timeline" aria-label={t.stage.aria}>
       {STAGES.map((stage, index) => {
         const step = skipped(stage)
           ? "timeline-step is-skipped"
@@ -38,11 +42,13 @@ export function StageTimeline(
           <li
             key={stage}
             className={step}
-            title={skipped(stage) ? `${stage} — skipped, nothing to download` : stage}
+            title={skipped(stage) ? t.stage.skipped : t.state[stage]}
             aria-current={index === current ? "step" : undefined}
           >
-            <span className="timeline-dot" aria-hidden="true" />
-            <span className="timeline-label">{stage}</span>
+            <span className="timeline-dot" aria-hidden="true">
+              {index < current && !skipped(stage) && <Icon name="check" size={10} />}
+            </span>
+            <span className="timeline-label">{t.stage[stage as keyof typeof t.stage]}</span>
           </li>
         );
       })}

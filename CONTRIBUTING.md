@@ -139,7 +139,8 @@ The pipeline needs only ffmpeg and faster-whisper. fastapi/uvicorn/pydantic sit
 behind the `[api]` extra and every provider SDK behind its own, so installing
 one provider does not pull the others, and **the CLI must keep working without
 any of them** (there is a test for this). The frontend's runtime dependencies
-are React and the router; that is the whole list.
+are React, the router, and Hugeicons (`@hugeicons/react` +
+`@hugeicons/core-free-icons`, MIT) for icons; that is the whole list.
 
 Adding a stage-3 provider should be **a row in `llm/presets.py`**, not a
 subclass. If it needs a subclass, the reason must be a real protocol
@@ -167,9 +168,13 @@ reported the rule as held.
 The web UI is **purely additive: no UI feature may require a backend change.**
 If you think one does, that is worth discussing in an issue first.
 
-- `src/styles.css` is the only stylesheet. Components carry class names, never
-  inline styles — the sole exception being a percentage computed at runtime,
-  which cannot live in a stylesheet.
+- Shared styles live in `src/styles/base.css`; each page has its own folder
+  with a `.tsx` and a `.css` (`src/pages/<name>/`). Components carry class
+  names, never inline styles — the sole exception being a percentage computed
+  at runtime, which cannot live in a stylesheet. Use logical properties
+  (`margin-inline-start`, not `margin-left`) so the Arabic layout mirrors.
+- Every visible word goes in `src/i18n/en.ts` **and** `src/i18n/ar.ts`, in plain
+  language. Never hard-code UI text in a component.
 - Client-side validation in `src/lib/rules.ts` mirrors the server for instant
   feedback. **The server stays the authority.** A mirror may be looser than the
   server by accident; it must never be *stricter*, which refuses input the

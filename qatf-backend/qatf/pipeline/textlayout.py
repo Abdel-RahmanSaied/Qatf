@@ -14,6 +14,8 @@ that libass stops laying out the line for us.
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -281,6 +283,52 @@ def load_measurer(family: str, size: float) -> Measurer | None:
         return None                      # uharfbuzz not installed
     except Exception:                    # noqa: BLE001 — a corrupt or exotic face
         return None
+
+
+#: `/healthz` asked `load_measurer` inline, and on a host without the default
+#: font that is an `fc-match` spawn per request — `font_file` deliberately does
+#: not cache a miss. Measured on CI: the serial floor went from under 5ms to
+#: 6.2-7.5ms, the exact subprocess-per-request regression `ffmpeg_available`
+#: was built to remove. Same cure, same reasoning (see `core.utils`): primed
+#: at startup, served stale while a daemon thread refreshes. Only the health
+#: flag is cached — `resolve_style` still asks `load_measurer` fresh per job,
+#: so a stale answer here can misreport readiness for 30s, never cost a job
+#: its style.
+PILL_PROBE_TTL = 30.0
+_pill_probe: dict[tuple[str, float], tuple[float, bool]] = {}
+_pill_refreshing: set[tuple[str, float]] = set()
+_pill_lock = threading.Lock()
+
+
+def prime_pill_probe(family: str, size: float) -> bool:
+    """Run the check once, synchronously. Call at startup, off the request path."""
+    ok = load_measurer(family, size) is not None
+    _pill_probe[(family, size)] = (time.monotonic(), ok)
+    return ok
+
+
+def _refresh_pill(key: tuple[str, float]) -> None:
+    try:
+        prime_pill_probe(*key)
+    finally:
+        with _pill_lock:
+            _pill_refreshing.discard(key)
+
+
+def pill_ready(family: str, size: float, max_age: float = PILL_PROBE_TTL) -> bool:
+    """Whether a measurer can be built for this face. Never blocks once primed."""
+    key = (family, size)
+    cached = _pill_probe.get(key)
+    if cached is None or max_age <= 0:
+        return prime_pill_probe(family, size)
+    if time.monotonic() - cached[0] < max_age:
+        return cached[1]
+    with _pill_lock:
+        if key not in _pill_refreshing:
+            _pill_refreshing.add(key)
+            threading.Thread(target=_refresh_pill, args=(key,),
+                             name="qatf-pill-probe", daemon=True).start()
+    return cached[1]
 
 
 @dataclass(frozen=True)

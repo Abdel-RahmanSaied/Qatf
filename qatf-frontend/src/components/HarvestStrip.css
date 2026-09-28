@@ -1,0 +1,61 @@
+/* HarvestStrip — styles for components/HarvestStrip.tsx only.
+   Tokens and shared building blocks come from styles/base.css. */
+
+/* ========================================================== harvest strip === */
+/* The signature element: where in the source the good parts were picked. */
+
+.strip {
+  display: block;
+  margin: .6rem 0 .25rem;
+}
+
+/* No `overflow: hidden` here: it clipped the spans' outer ring on all four
+   sides, so the one decorative detail the signature element has never rendered
+   and two adjacent picks read as one block. `HarvestStrip` clamps each span's
+   geometry to the track instead, which is where the arithmetic already lives. */
+.strip-track {
+  position: relative;
+  height: 14px;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(243,234,219,.05) calc(10% - 1px) 10%),
+    var(--ink-sunken);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.strip-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, var(--saffron-bright), var(--saffron));
+  border-radius: 999px;
+  /* the glow, plus a dark hairline just outside it: the saffron ring alone is
+     invisible against a neighbour of the same colour, and separating two
+     touching picks is the whole job of this element. The second layer is the
+     track's own colour, so it shows only where spans meet. */
+  box-shadow: 0 0 0 1px rgba(232,163,61,.35), 0 0 0 2px var(--ink-sunken), 0 0 14px rgba(232,163,61,.25);
+  transition: filter var(--fast) ease;
+}
+.strip-span:hover { filter: brightness(1.15); }
+
+.strip-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  margin-top: .45rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: .72rem;
+  color: var(--muted);
+}
+
+.strip.is-mini { margin: .4rem 0 0; }
+.strip.is-mini .strip-track { height: 6px; background: var(--ink-sunken); }
+.strip.is-mini .strip-span { box-shadow: 0 0 0 1px var(--ink-sunken); }
+.strip.is-mini .strip-scale { display: none; }
+
+/* The strip is a time axis: 0 on the left, the last pick on the right, in
+   both languages — the span positions are computed as `left` percentages at
+   runtime, so the scale labels under them must not mirror either. */
+.strip { direction: ltr; }

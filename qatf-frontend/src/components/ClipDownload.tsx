@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 import { ApiError, clipUrl, downloadClip } from "../api/client";
 import type { ClipOutput } from "../api/types";
+import { useI18n } from "../i18n/I18nProvider";
 import { formatBytes } from "../lib/format";
+import { Icon } from "./Icon";
 
 interface Props {
   output: ClipOutput;
@@ -40,6 +42,7 @@ function save(blob: Blob, name: string): void {
  * harvest strip assuming a source duration.
  */
 export function ClipDownload({ output }: Props) {
+  const { t } = useI18n();
   const [loaded, setLoaded] = useState<number | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +93,8 @@ export function ClipDownload({ output }: Props) {
         onClick={start}
         aria-disabled={running}
       >
-        {running ? "Downloading…" : "Download"}
+        <Icon name="download" size={14} />
+        {running ? t.common.downloading : t.common.download}
       </a>
       {running && (
         <div className="clip-download">
@@ -98,7 +102,7 @@ export function ClipDownload({ output }: Props) {
             <div
               className="progress progress-slim"
               role="progressbar"
-              aria-label={`Downloading ${output.name}`}
+              aria-label={`${t.common.downloading} ${output.name}`}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={percent}
@@ -108,8 +112,8 @@ export function ClipDownload({ output }: Props) {
           )}
           <span className="field-help mono">
             {total !== null
-              ? `${percent}% · ${formatBytes(loaded)} of ${formatBytes(total)}`
-              : `${formatBytes(loaded)} downloaded`}
+              ? `${percent}% · ${t.common.of(formatBytes(loaded), formatBytes(total))}`
+              : t.common.downloaded(formatBytes(loaded))}
           </span>
         </div>
       )}

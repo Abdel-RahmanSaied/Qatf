@@ -118,10 +118,17 @@ From [`qatf-frontend/package.json`](../qatf-frontend/package.json).
 | `react-router` *(transitive)* | the router itself | MIT | 7.18.2 |
 | `scheduler` *(transitive)* | react-dom's cooperative scheduler | MIT | 0.27.0 |
 | `cookie`, `set-cookie-parser` *(transitive)* | react-router's cookie handling | MIT | 1.1.1 / 2.7.2 |
+| `@hugeicons/react` | icon component | MIT | 1.1.10 |
+| `@hugeicons/core-free-icons` | icon data (only the icons `Icon.tsx` imports are bundled) | MIT | 4.3.5 |
 
 That is the whole shipped surface. `CONTRIBUTING.md` states the frontend's
-runtime dependencies are React and the router; this audit confirms it, plus the
-three packages those two pull in themselves.
+runtime dependencies are React, the router and Hugeicons; this audit confirms
+it, plus the three packages React and the router pull in themselves. The
+Hugeicons packages have no dependencies of their own.
+
+The official DGA icon package, `@platformscode/icons`, was considered and not
+used: its npm licence is `UNLICENSED` (all rights reserved), which an
+Apache-2.0 repository cannot redistribute.
 
 ### Build and test only
 

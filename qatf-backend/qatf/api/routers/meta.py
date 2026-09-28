@@ -13,7 +13,7 @@ from ...llm import describe, provider_from_settings
 from ...llm.presets import resolve_model
 from ...pipeline import cuda_device_count, resolve_device
 from ...pipeline.captions import FONT_SIZE
-from ...pipeline.textlayout import load_measurer
+from ...pipeline.textlayout import pill_ready
 from ..deps import get_settings
 from ..schemas import Health, ProviderInfo
 
@@ -77,5 +77,5 @@ def healthz(settings: Settings = Depends(get_settings)) -> Health:
         providers=[ProviderInfo(**p) for p in describe()],
         cuda_devices=cuda_device_count(),
         transcribe_device=resolve_device("auto"),
-        caption_pill_ready=load_measurer(DEFAULT_FONT, FONT_SIZE) is not None,
+        caption_pill_ready=pill_ready(DEFAULT_FONT, FONT_SIZE),
     )

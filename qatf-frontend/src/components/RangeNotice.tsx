@@ -1,5 +1,7 @@
-import { summariseRange } from "../lib/format";
 import type { ClipModel, JobOptions } from "../api/types";
+import { useI18n } from "../i18n/I18nProvider";
+import { Icon } from "./Icon";
+import "./RangeNotice.css";
 
 /** Which clips in this plan missed the length that was asked for.
  *
@@ -14,31 +16,24 @@ import type { ClipModel, JobOptions } from "../api/types";
 export function RangeNotice(
   { clips, options }: { clips: ClipModel[]; options: JobOptions },
 ) {
+  const { t } = useI18n();
   const flagged = clips.filter((c) => c.out_of_range);
   if (flagged.length === 0) return null;
-  const { short, long } = summariseRange(clips);
-  const parts = [
-    short > 0 ? `${short} under ${options.min_len}s` : null,
-    long > 0 ? `${long} over ${options.max_len}s` : null,
-  ].filter(Boolean);
 
   return (
     <div className="banner banner-warn dropped">
       <p className="dropped-head">
-        <span className="tnum">{flagged.length}</span> of{" "}
-        <span className="tnum">{clips.length}</span> clips fall outside the{" "}
-        <span className="tnum">{options.min_len}–{options.max_len}s</span> you
-        asked for ({parts.join(", ")}). They are kept and rendered — check them
-        before publishing.
+        <Icon name="info" />
+        <span>{t.job.range(flagged.length, clips.length, options.min_len, options.max_len)}</span>
       </p>
       <ul className="dropped-list">
         {flagged.map((c, i) => (
           <li className="dropped-item" key={`${i}-${c.title}`}>
             <span className="tnum dropped-dur">{(c.end - c.start).toFixed(1)}s</span>
             <span className={`range-tag range-tag--${c.out_of_range}`}>
-              {c.out_of_range === "short" ? "SHORT" : "LONG"}
+              {c.out_of_range === "short" ? t.job.tooShort : t.job.tooLong}
             </span>
-            <span className="dropped-title">{c.title}</span>
+            <span className="dropped-title" dir="auto">{c.title}</span>
           </li>
         ))}
       </ul>

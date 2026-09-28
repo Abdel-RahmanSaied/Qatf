@@ -324,6 +324,33 @@ tl._font_file_cache.clear()
 check("load_measurer on a font that cannot exist returns None",
       tl.load_measurer("NoSuchFamily\u0000Ever", 64) is None)
 
+# `/healthz` reads `pill_ready`, and a miss must not reach `load_measurer` (an
+# fc-match spawn) per request — that is what broke load_api's serial budget on
+# a CI host without the font. Count the calls rather than time them.
+_real_lm, _lm_calls = tl.load_measurer, []
+tl.load_measurer = lambda f, s: _lm_calls.append(f) or None
+tl._pill_probe.clear()
+_first = tl.pill_ready("NoSuchFamily", 64)
+for _ in range(20):
+    tl.pill_ready("NoSuchFamily", 64)
+check("pill_ready reports a missing face as not ready", _first is False)
+check("pill_ready serves a cached miss instead of re-probing per call",
+      len(_lm_calls) == 1, str(len(_lm_calls)))
+tl._pill_probe[("NoSuchFamily", 64)] = (0.0, False)     # expired entry
+# no real refresh thread: it would race the call count
+_real_thread, _started = tl.threading.Thread, []
+tl.threading.Thread = lambda **kw: type("T", (), {"start": lambda self: _started.append(kw)})()
+check("an expired pill_ready entry is served stale, not probed inline",
+      tl.pill_ready("NoSuchFamily", 64) is False and len(_lm_calls) == 1,
+      str(len(_lm_calls)))
+check("an expired pill_ready entry schedules exactly one background refresh",
+      len(_started) == 1 and tl.pill_ready("NoSuchFamily", 64) is False
+      and len(_started) == 1, str(len(_started)))
+tl.threading.Thread = _real_thread
+tl._pill_refreshing.clear()
+tl.load_measurer = _real_lm
+tl._pill_probe.clear()
+
 
 # FakeMeasurer and _M are defined near the top of this file, ahead of every
 # section — see the comment there.
