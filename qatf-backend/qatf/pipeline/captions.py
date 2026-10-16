@@ -37,6 +37,9 @@ from ..core.constants import (
     CAPTION_STYLES,
     DEFAULT_CAPTION_STYLE,
     DEFAULT_FONT,
+    PILL_FONT,
+    PILL_FONT_SIZE,
+    PILL_OUTLINE,
     TARGET_H,
     TARGET_W,
 )
@@ -206,6 +209,22 @@ def font_available(name: str) -> bool | None:
     return safe_font(name).casefold() in fonts
 
 
+def font_for(style: str, font: str | None) -> str:
+    """The font a caption style draws in: the caller's, or the style's own.
+
+    `font` unset (None or blank) means "whatever this style uses": PILL_FONT
+    for `youtube`, DEFAULT_FONT for `pop`. Two defaults rather than one shared
+    default because `pop`'s measured numbers (`CAPTION_MAX_CHARS` above all)
+    belong to DEFAULT_FONT, and the pill style's look was chosen in PILL_FONT.
+    A font the caller names explicitly is honoured on both styles.
+
+    Every caller that needs a font for rendering, measuring or warning goes
+    through here, so the two defaults cannot drift apart between them."""
+    if font and font.strip():
+        return font
+    return PILL_FONT if style == "youtube" else DEFAULT_FONT
+
+
 def font_warning(name: str) -> str | None:
     """A line to log when the requested font is missing, else None.
 
@@ -272,29 +291,40 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
         PILL_FILL,
         PILL_PAD_X,
         PILL_PAD_Y,
+        PILL_WORD_GAP,
     )
     from . import textlayout as tl
 
+    # The pill style's own size and outline, never `pop`'s FONT_SIZE / OUTLINE.
+    # The measurer must have been built at PILL_FONT_SIZE too, or every box is
+    # scaled for a size libass is not drawing.
     lines = [ASS_HEADER.replace("{FONT}", safe_font(font))
-                        .replace("{SIZE}", str(FONT_SIZE))
-                        .replace("{OUTLINE}", str(OUTLINE))]
+                        .replace("{SIZE}", str(PILL_FONT_SIZE))
+                        .replace("{OUTLINE}", str(PILL_OUTLINE))]
 
     usable = TARGET_W - 2 * CAPTION_SIDE_MARGIN
     in_clip = [w for w in words_in(clip, words) if w.text]
     texts = [escape(w.text) for w in in_clip]
-    chunks = tl.chunk_by_width(texts, measurer, usable, per_line)
+    # The capsule reaches PILL_PAD_X past each side of the active word, so the
+    # gap to the next word must clear it — with room left, so the pill never
+    # touches its neighbour. One measured space did not: only the font scale
+    # that inflated every width 2.1x had been hiding it. See PILL_WORD_GAP.
+    gap = PILL_WORD_GAP
+    chunks = tl.chunk_by_width(texts, measurer, usable, per_line, min_gap=gap)
 
     # Vertical: reproduce where MarginV 300 puts a bottom-aligned line today, so
     # a style change does not silently move captions up the frame.
     baseline_y = TARGET_H - 300 - measurer.line_height / 2
     pill_fill = ass_bgr(PILL_FILL)
-    dim = f"\\alpha&H{CAPTION_DIM_ALPHA:02X}&"
+    # Fill only — see CAPTION_DIM_ALPHA for why the outline stays solid. Off
+    # (0x00, the default) emits no tag at all rather than an opaque one.
+    dim = f"\\1a&H{CAPTION_DIM_ALPHA:02X}&" if CAPTION_DIM_ALPHA else ""
 
     for ci, chunk in enumerate(chunks):
         chunk_words = [in_clip[i] for i in chunk]
         chunk_texts = [texts[i] for i in chunk]
         base_rtl = is_rtl(" ".join(chunk_texts))
-        line = tl.solve_line(chunk_texts, measurer, usable, base_rtl)
+        line = tl.solve_line(chunk_texts, measurer, usable, base_rtl, min_gap=gap)
 
         # The capsule is sized from the ink this LINE actually puts on
         # screen, not the font's line box — see textlayout.Measurer.ink_extents.
@@ -328,7 +358,7 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
             else:
                 a_end = l_end
 
-            # 0 — dimmed, whole line window
+            # 0 — every word (dimmed when CAPTION_DIM_ALPHA is on), whole line window
             lines.append(
                 f"Dialogue: 0,{ts_ass(l_start)},{ts_ass(l_end)},Pop,,0,0,0,,"
                 f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{dim}}}{box.text}")
@@ -359,7 +389,7 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
     return path
 
 
-def resolve_style(style: str, font: str) -> tuple[str, str | None]:
+def resolve_style(style: str, font: str | None) -> tuple[str, str | None]:
     """The caption style that will actually be used, and a warning if it changed.
 
     A WARNING, NEVER A REFUSAL — the `font_warning` policy, not the
@@ -378,7 +408,8 @@ def resolve_style(style: str, font: str) -> tuple[str, str | None]:
                          f"{', '.join(CAPTION_STYLES)}")
     if style == "pop":
         return "pop", None
-    if textlayout.load_measurer(safe_font(font), FONT_SIZE) is not None:
+    if textlayout.load_measurer(safe_font(font_for("youtube", font)),
+                                PILL_FONT_SIZE) is not None:
         return "youtube", None
     return "pop", (
         "the 'youtube' caption style needs shaped word measurement, which is "
@@ -389,7 +420,7 @@ def resolve_style(style: str, font: str) -> tuple[str, str | None]:
 
 
 def build_ass(clip: Clip, words: list[Word], path: Path,
-              per_line: int = CAPTION_MAX_WORDS, font: str = DEFAULT_FONT,
+              per_line: int = CAPTION_MAX_WORDS, font: str | None = None,
               highlight: bool | None = None,
               style: str = DEFAULT_CAPTION_STYLE, measurer=None) -> Path:
     """Captions timed relative to the clip start.
@@ -410,12 +441,15 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
     `font`; the caller passes one directly only where fontconfig or uharfbuzz is
     known to be unavailable (i.e. the test suite)."""
     if style == "youtube":
+        pill_font = font_for("youtube", font)
         m = measurer if measurer is not None else \
-            textlayout.load_measurer(safe_font(font), FONT_SIZE)
+            textlayout.load_measurer(safe_font(pill_font), PILL_FONT_SIZE)
         if m is not None:
-            return build_ass_youtube(clip, words, path, m, per_line, font)
+            return build_ass_youtube(clip, words, path, m, per_line, pill_font)
         # No measurement available. Fall THROUGH to `pop` rather than raise —
-        # see `resolve_style`. The caller is responsible for warning.
+        # see `resolve_style`. The caller is responsible for warning. An unset
+        # font falls through to `pop`'s own default, not the pill's face.
+    font = font_for("pop", font)
 
     lines = [ASS_HEADER.replace("{FONT}", safe_font(font))
                         .replace("{SIZE}", str(FONT_SIZE))

@@ -11,6 +11,7 @@ from ..core.constants import (
     DEFAULT_CAPTION_STYLE,
     DEFAULT_FONT,
     DEFAULT_TRACK_TIER,
+    PILL_FONT,
     TRACK_TIERS,
 )
 from ..pipeline import DEVICES, REFRAME_MODES
@@ -110,8 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "caption text after transcription. Timestamps are never "
                          "touched, so cuts are unaffected. Use for errors the "
                          "vocabulary will not take.")
-    ap.add_argument("--font", default=DEFAULT_FONT,
-                    help="must be installed on the rendering host")
+    ap.add_argument("--font", default=None,
+                    help="caption face; must be installed on the rendering "
+                         f"host. Default: the style's own ({PILL_FONT} for "
+                         f"youtube, {DEFAULT_FONT} for pop)")
     ap.add_argument("--per-line", type=int, default=CAPTION_MAX_WORDS,
                     help="max words per caption line")
     ap.add_argument("--caption-style", choices=CAPTION_STYLES,

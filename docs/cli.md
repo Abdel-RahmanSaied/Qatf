@@ -127,14 +127,22 @@ See [quality.md](quality.md) for what each of these was actually worth.
 
 | Flag | Default | |
 | --- | --- | --- |
-| `--font NAME` | `Arial` | must be installed on the rendering host |
+| `--font NAME` | the style's own | `youtube`: Tajawal (bundled in the image); `pop`: Noto Sans Arabic. A named face must be installed on the rendering host |
 | `--per-line N` | `4` | max words per caption line |
 | `--caption-style youtube\|pop` | `youtube` | `youtube` = per-word pill, needs `qatf[captions]`; `pop` = one line at a time |
 | `--no-captions` | off | render without burned-in text |
 
-`--font Arial` renders **tofu** on Arabic. libass falls back silently, so a
-missing face ships as 50 broken clips rather than an error. Use an Arabic-capable
-face — `--font "Traditional Arabic"` is the tested one.
+Leave `--font` unset unless you want a different face: each caption style has
+its own default (`captions.font_for`). Arial renders **tofu** on Arabic, and
+libass falls back silently, so a missing face ships as 50 broken clips rather
+than an error. Pick an Arabic-capable face; the preflight warns when it is not
+installed.
+
+**The `youtube` look** is Tajawal Bold at size 144, white letters with no outline
+(the drop shadow carries them), nothing dimmed, and a 52px word gap, all chosen
+from real frames of a 4K Arabic job. Those are pill-only constants
+(`PILL_FONT`, `PILL_FONT_SIZE`, `PILL_OUTLINE`, `PILL_WORD_GAP`,
+`CAPTION_DIM_ALPHA`); `pop` keeps size 64 and its 4px outline.
 
 Lines are budgeted by **both** word count and character count
 (`CAPTION_MAX_CHARS` 22): four 12-character words at 82 px is wider than the

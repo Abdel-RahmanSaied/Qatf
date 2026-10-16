@@ -9,11 +9,11 @@ redistribution. This page is the working detail; NOTICE is the summary. Where th
 two disagree, one of them is stale and should be fixed rather than reconciled in
 the reader's head.
 
-**Result: no dependency blocks an Apache-2.0 release.** The three things that
+**Result: no dependency blocks an Apache-2.0 release.** The four things that
 carry an obligation are not Python or JavaScript packages at all — they are the
-bundled YuNet weights, the ffmpeg binary inside the Docker images, and (only for
-`--reframe track`) an LGPL ffmpeg build that ships inside the OpenCV wheel. Each
-is covered below.
+bundled YuNet weights, the bundled Tajawal font, the ffmpeg binary inside the
+Docker images, and (only for `--reframe track`) an LGPL ffmpeg build that ships
+inside the OpenCV wheel. Each is covered below.
 
 ---
 
@@ -101,6 +101,32 @@ Two of those are worth knowing individually rather than as a row:
   upstream `snakers4/silero-vad` LICENSE). This is a *bundled model artifact*
   inside a dependency rather than one of ours, so it is not in NOTICE — but it is
   the second set of weights in the process, and worth knowing it is clean.
+
+---
+
+## Bundled font — Tajawal Bold
+
+| File | What it is for here | Licence | Source |
+| --- | --- | --- | --- |
+| `qatf-backend/fonts/Tajawal-Bold.ttf` | the `youtube` pill caption style's default face (`constants.PILL_FONT`) | SIL OFL 1.1 | `google/fonts`, `ofl/tajawal/`, fetched 2026-10-16 |
+
+Copyright 2018 Boutros International. Vendored rather than installed from a
+package because Debian ships no Tajawal; the Dockerfile copies the directory to
+`/usr/local/share/fonts/qatf` and runs `fc-cache`.
+
+The OFL is compatible with an Apache-2.0 release, with three conditions that
+apply to anyone redistributing this repository or its image:
+
+- **The licence travels with the font.** `fonts/Tajawal-OFL.txt` sits beside the
+  file and the Dockerfile copies both. Keep them together.
+- **Never sold on its own.** Bundling it with software is fine; selling the font
+  file by itself is not.
+- **The name is reserved for unmodified copies.** We ship it unmodified. A
+  subset or edited copy would need a different name.
+
+Only Bold is vendored: the caption Style line draws Bold and the measurer asks
+fontconfig for `Tajawal:bold`. Burning text into a video with a font creates no
+obligation on the video; the OFL governs the font file, not what is drawn with it.
 
 ---
 

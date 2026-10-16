@@ -20,7 +20,6 @@ from pathlib import Path
 from ..core.constants import (
     CAPTION_MAX_WORDS,
     DEFAULT_CAPTION_STYLE,
-    DEFAULT_FONT,
     TARGET_H,
     TARGET_W,
 )
@@ -317,7 +316,7 @@ def _track_args(track: Track | None, cmd_path: Path,
 
 
 def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
-               work: Path, *, mode: str = "crop", font: str = DEFAULT_FONT,
+               work: Path, *, mode: str = "crop", font: str | None = None,
                captions: bool = True, per_line: int = CAPTION_MAX_WORDS,
                caption_style: str = DEFAULT_CAPTION_STYLE,
                crf: int = 20, fps: float | None = None,

@@ -473,7 +473,7 @@ request. Same names and defaults as the CLI flags.
 | `fixups` | `null` | `{"بايسون": "بايثون"}` — text only, never timestamps |
 | `hotwords` | `null` | ≤4000 chars; whole-file bias |
 | `initial_prompt` | `null` | ≤4000 chars; **first ~30 s only** |
-| `font` | `Arial` | must be installed **on the server** |
+| `font` | `null` | `null` = the style's own face: Tajawal for `youtube`, Noto Sans Arabic for `pop`. A named face must be installed **on the server** |
 | `captions` | `true` | |
 | `per_line` | `4` | 1–8 words |
 | `caption_style` | `youtube` | `youtube` · `pop` — see [below](#caption-style-youtube-pill-or-pop) |
@@ -570,7 +570,8 @@ a second under load — see
 - **`transcribe_device`** is what stage 2 will pick under `device: auto`.
 - **`caption_pill_ready`** — whether the `youtube` pill caption style can
   actually render on this host. `false` means `uharfbuzz` is not installed or
-  fontconfig cannot resolve the default font, and every job that asks for it
+  fontconfig cannot resolve Tajawal (the pill style's face) at size 144, and
+  every job that asks for it
   will silently fall back to `pop` — see
   [Caption style](#caption-style-youtube-pill-or-pop).
 - **`providers`** carries the whole stage-3 roster with each entry's

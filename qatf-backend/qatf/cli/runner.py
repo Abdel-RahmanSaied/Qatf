@@ -71,7 +71,8 @@ def preflight(args: argparse.Namespace) -> str | None:
             pipeline.detect.probe_detector(args.track_tier)
         except QatfError as exc:
             return str(exc)
-    if not args.no_captions and (note := pipeline.font_warning(args.font)):
+    if not args.no_captions and (note := pipeline.font_warning(
+            pipeline.font_for(args.caption_style, args.font))):
         # Logged here rather than returned, because this function's return value
         # means "abort". A missing font is the one preflight finding that must
         # not stop the run — see `captions.font_warning`. Emitted before stage 2

@@ -26,6 +26,7 @@ from ..core.constants import (
     DEFAULT_FONT,
     DEFAULT_TRACK_TIER,
     LANGUAGE_TAG_PATTERN,
+    PILL_FONT,
 )
 from ..jobs.model import RUNNING_STATE_VALUES, RUNNING_STATES, JobState
 
@@ -191,12 +192,15 @@ class JobOptions(BaseModel):
         description="free-text prompt seeding ONLY the first ~30s. Prefer "
                     "hotwords. Part of the transcript cache key.",
     )
-    font: str = Field(
-        DEFAULT_FONT,
-        description="must be installed on the RENDERING host, which under the "
-                    "API is the server and not the caller's machine. libass falls "
-                    "back silently, so a missing Arabic face ships as tofu.",
-        examples=["Noto Sans Arabic", "Noto Kufi Arabic", "Traditional Arabic"],
+    font: str | None = Field(
+        None,
+        description="caption face. Unset means the caption style's own face: "
+                    f"{PILL_FONT} for `youtube`, {DEFAULT_FONT} for `pop`. A "
+                    "named face must be installed on the RENDERING host, which "
+                    "under the API is the server and not the caller's machine. "
+                    "libass falls back silently, so a missing Arabic face ships "
+                    "as tofu.",
+        examples=[None, "Tajawal", "Noto Sans Arabic", "Noto Kufi Arabic"],
     )
     captions: bool = Field(True, description="burn captions into the video")
     per_line: int = Field(CAPTION_MAX_WORDS, ge=1, le=8,

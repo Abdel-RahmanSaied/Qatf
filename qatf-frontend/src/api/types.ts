@@ -42,7 +42,9 @@ export interface JobOptions {
   fixups: Record<string, string> | null;
   hotwords: string | null;
   initial_prompt: string | null;
-  font: string;
+  /** Null = the caption style's own face: Tajawal for `youtube`, Noto Sans
+   * Arabic for `pop` (server: `captions.font_for`). */
+  font: string | null;
   captions: boolean;
   per_line: number;
   /** `youtube` (the server default) puts the spoken word in a filled capsule,
@@ -77,7 +79,7 @@ export const DEFAULT_OPTIONS: JobOptions = {
   fixups: null,
   hotwords: null,
   initial_prompt: null,
-  font: "Noto Sans Arabic",
+  font: null,
   captions: true,
   per_line: 4,
   caption_style: "youtube",

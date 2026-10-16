@@ -114,10 +114,22 @@ class Measurer(Protocol):
 
 #: Successes only — see `font_file`'s docstring for why a miss is never cached
 #: here the way `captions.installed_fonts` caches for the life of the process.
-_font_file_cache: dict[str, Path] = {}
+_font_file_cache: dict[tuple[str, bool], Path] = {}
 
 
-def font_file(family: str) -> Path | None:
+def _fc_escape(family: str) -> str:
+    """Escape a family name for a fontconfig PATTERN.
+
+    `family` is caller-supplied, and in a pattern `:` starts a property and `,`
+    separates values — unescaped, `Arial:weight=0` would ask fontconfig for a
+    property the caller should not control, and measure a face libass is never
+    told to draw. Backslash first, so the escapes it adds are not re-escaped."""
+    for ch in ("\\", "-", ":", ","):
+        family = family.replace(ch, "\\" + ch)
+    return family
+
+
+def font_file(family: str, bold: bool = False) -> Path | None:
     """The file fontconfig resolves this family to, or None.
 
     None means "cannot tell", never "missing" — the same rule
@@ -137,12 +149,21 @@ def font_file(family: str) -> Path | None:
     for the rest of the process, recoverable only by a restart. So a success
     is cached; a failure is re-derived on the next call, at the cost of
     re-running `fc-match` on every miss — cheap next to what a wrong cached
-    answer would cost."""
-    if family in _font_file_cache:
-        return _font_file_cache[family]
+    answer would cost.
+
+    **`bold` must match the Style line's Bold flag.** The caption style draws
+    Bold, and libass asks fontconfig for the bold face; measuring the regular
+    file instead put every advance ~10% short of what was drawn (فشلت: 79px
+    regular against 89px bold, at the same size). A family with no bold face
+    still resolves — fontconfig returns the regular file, which is also what
+    libass then synthesises bold from."""
+    key = (family, bold)
+    if key in _font_file_cache:
+        return _font_file_cache[key]
+    pattern = _fc_escape(family) + (":bold" if bold else "")
     try:
         out = subprocess.run(
-            ["fc-match", "-f", "%{file}\t%{family}", family],
+            ["fc-match", "-f", "%{file}\t%{family}", pattern],
             capture_output=True, text=True, timeout=FC_MATCH_TIMEOUT)
     except (OSError, subprocess.SubprocessError, ValueError):
         # ValueError: `family` is caller-supplied (see CLAUDE.md's trust-boundary
@@ -170,8 +191,49 @@ def font_file(family: str) -> Path | None:
         return None
     if not exists:
         return None
-    _font_file_cache[family] = p
+    _font_file_cache[key] = p
     return p
+
+
+def _libass_height(face) -> float:
+    """The font-unit height libass maps an ASS `Fontsize` onto.
+
+    **ASS `Fontsize` is NOT the em.** libass (like VSFilter before it) sizes a
+    face so its full line height — OS/2 `usWinAscent + usWinDescent`, falling
+    back to the typo metrics, then hhea — equals `Fontsize` pixels. Scaling by
+    `size / upem` instead made every measurement 2112/1000 = 2.1x too large on
+    Noto Sans Arabic: on a real 4K render each capsule was about twice its
+    word's width, short words became circles, and the gaps between words were
+    as wide as the words. Measured by rendering through ffmpeg/libass with the
+    Bold face — `size / 2112` predicted every Arabic word's ink width to 1px
+    (فشلت 89.1 vs 89, بتعلمك 95.1 vs 95, حاجة 63.0 vs 62).
+
+    Read in libass's order (`set_font_metrics`): win, then typo, then hhea,
+    then the em as a last resort. Values are read as libass reads them — win
+    metrics as SIGNED shorts, a quirk it inherited and that a font with a
+    negative-looking usWinDescent depends on."""
+    import struct
+
+    def table(tag: str) -> bytes:
+        try:
+            return bytes(face.reference_table(tag).data)
+        except Exception:                              # noqa: BLE001
+            return b""
+
+    os2 = table("OS/2")
+    if len(os2) >= 78:
+        win_a, win_d = struct.unpack(">hh", os2[74:78])
+        if win_a + win_d > 0:
+            return float(win_a + win_d)
+        typo_a, typo_d = struct.unpack(">hh", os2[68:72])
+        if typo_a - typo_d > 0:
+            return float(typo_a - typo_d)
+    hhea = table("hhea")
+    if len(hhea) >= 8:
+        hh_a, hh_d = struct.unpack(">hh", hhea[4:8])
+        if hh_a - hh_d > 0:
+            return float(hh_a - hh_d)
+    return float(face.upem)
 
 
 class _HarfBuzzMeasurer:
@@ -180,7 +242,8 @@ class _HarfBuzzMeasurer:
     Scale is set to the face's units-per-em and converted to pixels in float,
     rather than scaling HarfBuzz straight to whole pixels. Integer-truncating
     each word's advance accumulates error along the line, and by the last word
-    the capsule sits visibly off its word."""
+    the capsule sits visibly off its word. The px-per-unit factor is libass's,
+    not the em's — see `_libass_height`."""
 
     def __init__(self, path: Path, size: float) -> None:
         import uharfbuzz as hb
@@ -191,7 +254,7 @@ class _HarfBuzzMeasurer:
         self._font = hb.Font(face)
         self._upem = face.upem
         self._font.scale = (self._upem, self._upem)
-        self._px = size / self._upem
+        self._px = size / _libass_height(face)
         line_height, ascender = self._measure_line_extents()
         self.line_height = line_height * self._px
         self.ascender = ascender * self._px
@@ -267,14 +330,17 @@ class _HarfBuzzMeasurer:
         return top * self._px, bottom * self._px
 
 
-def load_measurer(family: str, size: float) -> Measurer | None:
+def load_measurer(family: str, size: float, bold: bool = True) -> Measurer | None:
     """A measurer for this family at this size, or None if one is not possible.
+
+    `bold` defaults to True because the caption Style line draws Bold (`-1`);
+    see `font_file` for what measuring the regular face cost.
 
     **Returns None, never raises.** A missing wheel or an unresolvable font must
     degrade to the `pop` caption style, not fail a job that has already spent
     twenty minutes in stage 2. That is the `font_warning` policy, not the
     `--device cuda` policy: there is a correct alternative here to fall back to."""
-    path = font_file(family)
+    path = font_file(family, bold=bold)
     if path is None:
         return None
     try:
@@ -355,7 +421,7 @@ class Line:
 
 
 def solve_line(words: list[str], m: Measurer, usable: float,
-               base_rtl: bool) -> Line:
+               base_rtl: bool, min_gap: float = 0.0) -> Line:
     """Place each word on one centred line.
 
     The line's total width is order-independent — it is the words plus the
@@ -364,12 +430,19 @@ def solve_line(words: list[str], m: Measurer, usable: float,
     A line wider than `usable` is centred anyway and allowed to overflow. That
     only happens for a single word too wide to break, which `chunk_by_width`
     cannot chunk away; clipping it symmetrically is more honest than silently
-    dropping it."""
+    dropping it.
+
+    `min_gap` is a floor on the space between words, for a caller that draws
+    something wider than the word over it — the pill reaches `PILL_PAD_X` past
+    each side of its word, and one measured space (~15px at size 64) is less
+    than that, so the active capsule covered the start of its neighbour. Must
+    be the same value `chunk_by_width` was given, or a line it judged to fit
+    overflows here."""
     if not words:
         return Line([], 0.0, m.line_height)
 
     widths = [m.advance(w) for w in words]
-    space = m.advance(" ")
+    space = max(m.advance(" "), min_gap)
     total = sum(widths) + space * (len(words) - 1)
 
     x = (usable - total) / 2.0
@@ -383,7 +456,7 @@ def solve_line(words: list[str], m: Measurer, usable: float,
 
 
 def chunk_by_width(texts: list[str], m: Measurer, usable: float,
-                   max_words: int) -> list[list[int]]:
+                   max_words: int, min_gap: float = 0.0) -> list[list[int]]:
     """Group word indices into lines that fit, by MEASURED width.
 
     This replaces `captions.CAPTION_MAX_CHARS` on the pill path. That constant
@@ -396,7 +469,7 @@ def chunk_by_width(texts: list[str], m: Measurer, usable: float,
     out: list[list[int]] = []
     cur: list[int] = []
     cur_w = 0.0
-    space = m.advance(" ")
+    space = max(m.advance(" "), min_gap)        # same floor as solve_line
     for i, t in enumerate(texts):
         w = m.advance(t)
         projected = cur_w + (space if cur else 0.0) + w

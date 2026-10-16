@@ -253,8 +253,11 @@ export function OptionsForm({ value, onChange, errors }: Props) {
         <div className="grid-3">
           <div className="field">
             <label className="field-label" htmlFor="opt-font">{o.font}</label>
-            <input id="opt-font" value={value.font} dir="auto" aria-describedby="opt-font-help"
-              onChange={(e) => set("font", e.target.value)} />
+            {/* Empty means "the style's own face", sent as null — the server
+                picks Tajawal for youtube and Noto Sans Arabic for pop. */}
+            <input id="opt-font" value={value.font ?? ""} dir="auto" aria-describedby="opt-font-help"
+              placeholder={o.fontDefault(captionStyle === "pop" ? "Noto Sans Arabic" : "Tajawal")}
+              onChange={(e) => set("font", e.target.value.trim() ? e.target.value : null)} />
             <div className="field-help" id="opt-font-help">{o.fontHelp}</div>
           </div>
           <div className="field">

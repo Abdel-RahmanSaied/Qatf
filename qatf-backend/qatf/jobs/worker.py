@@ -331,7 +331,12 @@ def render_plan(store: JobStore, job_id: str,
     # `cli/runner.py` would leave the deployment that renders in production the
     # one deployment that says nothing, which is the same front-end asymmetry
     # `baseline_words` had to fix for the repetition-repair count.
-    if opts.get("captions", True) and (note := pipeline.font_warning(opts["font"])):
+    # The font each style actually draws in — an unset `font` means the style's
+    # own face (PILL_FONT for youtube), so warning about `opts["font"]` raw
+    # would check a None, or a face the render never uses.
+    requested_style = opts.get("caption_style", DEFAULT_CAPTION_STYLE)
+    if opts.get("captions", True) and (note := pipeline.font_warning(
+            pipeline.font_for(requested_style, opts.get("font")))):
         log(f"      WARNING {note}")
 
     # Gated the same as `font_warning` above, and for the same reason: a job
@@ -356,10 +361,9 @@ def render_plan(store: JobStore, job_id: str,
     # drift, and `caption_style_used` could then describe a render that did not
     # happen. Forwarding the RESOLVED value instead makes "what was recorded"
     # and "what will be rendered" the same value by construction.
-    requested_style = opts.get("caption_style", DEFAULT_CAPTION_STYLE)
     style_used = ""
     if opts.get("captions", True):
-        style_used, style_note = pipeline.resolve_style(requested_style, opts["font"])
+        style_used, style_note = pipeline.resolve_style(requested_style, opts.get("font"))
         if style_note:
             log(f"      WARNING {style_note}")
         store.update(job_id, caption_style_used=style_used)
@@ -414,7 +418,7 @@ def render_plan(store: JobStore, job_id: str,
 
     pipeline.render_all(
         Path(job.video), clips, words, out_dir, job.work_dir(store.root),
-        mode=mode, font=opts["font"], captions=opts.get("captions", True),
+        mode=mode, font=opts.get("font"), captions=opts.get("captions", True),
         per_line=opts.get("per_line", 4),
         # `style_used` is "" when captions are off (never resolved above), in
         # which case `render_all` never calls `build_ass` at all — the `or` is

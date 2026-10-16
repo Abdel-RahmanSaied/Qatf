@@ -30,6 +30,18 @@ BLOCK_SECONDS = 12.0
 #: it reached libass and came back as whatever fontconfig chose — silently.
 DEFAULT_FONT = "Noto Sans Arabic"
 
+#: The `youtube` (pill) style's own face, used when a job leaves `font` unset.
+#: Chosen 2026-10-16 by looking at real frames of a 4K Arabic job in seven
+#: faces (Noto Sans/Kufi/Naskh Arabic, Tajawal, Almarai, IBM Plex Sans Arabic,
+#: Lalezar) at the same size. NOT the `pop` default: every `pop` number in
+#: CLAUDE.md, `CAPTION_MAX_CHARS` included, was measured on DEFAULT_FONT.
+#:
+#: Tajawal is not in Debian's font packages, so the Bold file ships in the repo
+#: (`qatf-backend/fonts/`, SIL OFL 1.1) and the Dockerfile installs it. Only
+#: Bold: the Style line draws Bold, and the measurer asks fontconfig for it.
+#: Its measured widths matched libass's to 0.5px on the words checked.
+PILL_FONT = "Tajawal"
+
 #: Caption line budget. Both are enforced — word count alone overflows the frame
 #: on long words.
 #:
@@ -204,20 +216,46 @@ DEFAULT_CAPTION_STYLE = "youtube"
 #: reading as its own colour rather than the product's accent.
 PILL_FILL = "#B4560A"
 
-#: Padding between the word's box and the capsule edge.
+#: The pill style's caption size, on the 1080x1920 ASS canvas. `pop` keeps
+#: `captions.FONT_SIZE` (64).
 #:
-#: PILL_PAD_X IS NOT COSMETIC. The dimmed word on the layer beneath keeps its
-#: outline, and the capsule is what paints over it — so padding at or under
-#: `captions.OUTLINE` leaves a dark fringe around the active word. There is a
-#: check pinning this; do not "tighten" past it.
-PILL_PAD_X = 18
-PILL_PAD_Y = 8
+#: ASS Fontsize is not the em: libass fits the face's whole line height into
+#: it (see `textlayout._libass_height`), so 64 drew Arabic letters only ~30px
+#: tall, about a third of the frame width for a five-word line. 144 was picked
+#: from real frames at 64 / 96 / 120 / 144. In Tajawal it gives about 3 words
+#: per line, so lines turn over faster than they did at 64.
+PILL_FONT_SIZE = 144
+
+#: Outline around the letters on the pill style. 0 = none, chosen from real
+#: frames at 0 / 2 / 4px: the drop shadow alone kept white Tajawal readable
+#: over a white striped shirt. If footage turns out brighter than that, 2 is
+#: the fallback that was previewed. `pop` keeps `captions.OUTLINE`.
+PILL_OUTLINE = 0
+
+#: Padding between the word's box and the capsule edge. Scaled with the size
+#: (18/8 at 64), so the capsule keeps its proportions.
+#:
+#: PILL_PAD_X must stay above PILL_OUTLINE: the word on the layer beneath keeps
+#: its outline, and the capsule is what paints over it, so padding at or under
+#: the outline leaves a dark fringe around the active word. A check pins this.
+PILL_PAD_X = 40
+PILL_PAD_Y = 18
+
+#: Space between words on a pill line, in canvas px. Must exceed PILL_PAD_X or
+#: the active capsule covers the start of its neighbour (it did, once the font
+#: scale was fixed). PAD + 12 = 52 was picked from real frames against 64 and
+#: 80; at 52 the pill sits close to its neighbours without touching them.
+PILL_WORD_GAP = PILL_PAD_X + 12
 
 #: Opacity of a word that is not currently being spoken, as an ASS alpha byte.
 #: ASS alpha is INVERTED — 0x00 is opaque, 0xFF is transparent — so 45% opacity
-#: is 0x8C, not 0x73. Applies to fill, outline and shadow together, which is
-#: what makes the whole word recede rather than just its face.
-CAPTION_DIM_ALPHA = 0x8C
+#: would be 0x8C, not 0x73.
+#:
+#: 0x00 = off: every word fully white and only the pill marks the spoken one,
+#: chosen from real frames against dimming at 45%. When nonzero it applies to
+#: the FILL ONLY (`\1a`), never the outline: a 45%-opaque dark outline on a
+#: white shirt went the same grey as the fill and the word dissolved.
+CAPTION_DIM_ALPHA = 0x00
 
 #: Side margin used when solving a caption line, matching MarginL/MarginR on the
 #: Style line. Usable width is TARGET_W - 2 * this = 900px at 1080 wide.

@@ -1204,18 +1204,49 @@ Be honest about this in any session. It is the difference between a demo and a t
 - Whisper word-timestamp *accuracy* on Arabic. Transcription spelling is now
   measured, but nobody has checked whether the word boundaries `snap` relies on
   land where the words actually start. Clip edges are the thing to inspect.
-- **The `youtube` pill caption style has never rendered through the real job
-  pipeline on real video.** The sweep-direction measurement above is real — it
-  rendered actual frames through actual ffmpeg and libass — but the transcript
-  behind it is synthetic and the host was a container built for that one
-  measurement, not the server image. The 12-minute 4K ProRes run that verified
-  the rest of the Arabic path predates this feature and used `pop`, the only
-  style that existed at the time; it says nothing about `youtube`. And this
-  feature makes the still-unmeasured line above **more** consequential, not
-  less: today a whole Arabic caption line appears and clears at once, so a word
-  boundary landing 200ms late is invisible. A pill sitting on the wrong word is
-  not. If the pill looks wrong on real Arabic footage, diagnose stage 2 first —
-  it will look like a stage 5a bug and very likely not be one.
+- **The `youtube` pill caption style first rendered on real video on
+  2026-10-16, and it was broken — three ways, all invisible to every check that
+  existed.** A 4K Arabic job (`14438e48eab8`, clip 07): each capsule about twice
+  its word's width, short words drawn as circles, dimmed words dissolving into
+  grey on a white shirt. Fixed, and re-rendered from the same source frames:
+
+  1. **ASS `Fontsize` is not the em.** libass maps it onto the face's win
+     ascent+descent; the measurer scaled by `size / upem`, so on Noto Sans
+     Arabic (upem 1000, win 2112) every width was 2.1x. `_libass_height` now
+     reads libass's order. Bold-face predictions match rendered ink to 1px:
+     فشلت 89.1 vs 89, بتعلمك 95.1 vs 95, حاجة 63.0 vs 62.
+  2. **The measurer read Regular; the Style draws Bold** — another ~10%
+     (فشلت 79px regular vs 89px bold). `font_file` asks for `family:bold`.
+  3. **Fixing 1 exposed a third:** at true size one space (~15px) is less than
+     the capsule's `PILL_PAD_X` overhang, so the pill covered its neighbour.
+     The word gap is now floored at `2 * PILL_PAD_X`, in the chunker too.
+
+  And the dim now applies to the fill only (`a`): a 45%-alpha outline on a
+  light background is the same grey as the fill, which leaves no edge at all.
+
+  Why nothing caught it: `FakeMeasurer` has no font, so its scale cannot be
+  wrong, and fixture C measures only the *direction* the pill moves — a pill
+  twice too wide sweeps the right way. **Still not covered: Latin inside an
+  Arabic line.** Noto Sans Arabic has no Latin glyphs, libass draws them from a
+  fallback face the measurer never sees, so a mixed line's spacing is a guess.
+
+  **The look was then chosen by eye, from real frames of that job** (same three
+  moments, rendered by libass with the fixed layout): size 64/96/120/**144**,
+  seven faces, three styles, three word gaps, three outline widths. Shipped:
+  **Tajawal Bold, 144, no outline, nothing dimmed, 52px gap** — pill-only
+  constants in `core/constants.py`, each with its alternatives recorded beside
+  it. `pop` keeps `FONT_SIZE` 64, `OUTLINE` 4 and DEFAULT_FONT, because its
+  numbers were measured there. A job's `font` is now **optional**: unset means
+  the style's own face (`captions.font_for`), so the two defaults cannot drift.
+  Tajawal ships in `qatf-backend/fonts/` (OFL; NOTICE and `docs/licensing.md`).
+  Every one of the seven faces measured within ~1px of libass after the scale
+  fix, so the metric rule is general, not tuned to Noto.
+
+  The words themselves are a separate, stage-2' problem: that job took YouTube's
+  caption track (`timing_source: captions`), whose ASR writes stutters as
+  tatweel fragments (`كـ كـ طبيعتنا`) and splits words (`إن ما ما فيش` for
+  «إنما مافيش»). A whole-line cue hid those; a pill gives each its own beat.
+  If the pill looks wrong on real footage, check stage 2 before stage 5a.
 - **The API on a GPU host.** It has now run a real video end to end with a real
   key, but `transcribe_device` was `cpu` throughout — `cuda_devices: 0`. Nothing
   about the server's GPU behaviour, or `QATF_WORKERS > 1` contending for one, has

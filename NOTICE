@@ -22,6 +22,19 @@ YuNet face detection weights
     for non-commercial research only. Both would restrict what anyone can do
     with this project.
 
+Tajawal Bold font
+    qatf-backend/fonts/Tajawal-Bold.ttf
+
+    SIL Open Font License, Version 1.1.
+    Copyright 2018 Boutros International. (http://www.boutrosfonts.com)
+    The full licence text travels with the file, at
+    qatf-backend/fonts/Tajawal-OFL.txt, and must be kept alongside any copy
+    of the font. The Docker image installs both into /usr/local/share/fonts/qatf.
+
+    The face the `youtube` (pill) caption style draws in by default. Shipped
+    unmodified. The OFL allows bundling it with software; it forbids selling
+    the font on its own and reserves its name for unmodified copies.
+
 --------------------------------------------------------------------------------
 Runtime dependencies (not bundled — installed separately)
 --------------------------------------------------------------------------------

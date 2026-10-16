@@ -28,12 +28,11 @@ from fastapi.responses import JSONResponse
 
 from .. import __version__
 from ..core.config import Settings
-from ..core.constants import DEFAULT_FONT
+from ..core.constants import PILL_FONT, PILL_FONT_SIZE
 from ..core.dotenv import find_and_load
 from ..core.errors import QatfError
 from ..core.utils import prime_ffmpeg_probe
 from ..jobs import JobStore
-from ..pipeline.captions import FONT_SIZE
 from ..pipeline.textlayout import prime_pill_probe
 from . import routers
 from .schemas import ErrorResponse
@@ -187,7 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prime_ffmpeg_probe()
         # Same for the pill-caption check: an fc-match spawn per request
         # otherwise, on any host missing the default font. See textlayout.
-        prime_pill_probe(DEFAULT_FONT, FONT_SIZE)
+        prime_pill_probe(PILL_FONT, PILL_FONT_SIZE)
         yield
         app.state.store.shutdown()
 

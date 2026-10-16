@@ -9,6 +9,14 @@ RUN apt-get update \
 # installed IN THIS IMAGE, libass falls back silently and renders tofu — the
 # rendering host is the server, not the caller's machine.
 
+# Tajawal is the pill caption style's face (constants.PILL_FONT) and is not in
+# Debian's font packages, so the Bold file ships in the repo (SIL OFL 1.1, the
+# licence beside it). Bold only: the caption Style line draws Bold and the
+# measurer asks fontconfig for `Tajawal:bold`. Without it the pill style falls
+# back to `pop` with a warning, and /healthz reports caption_pill_ready: false.
+COPY fonts/ /usr/local/share/fonts/qatf/
+RUN fc-cache -f /usr/local/share/fonts/qatf
+
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY qatf ./qatf

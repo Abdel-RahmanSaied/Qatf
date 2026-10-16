@@ -264,6 +264,60 @@ _fake_fc_tl(f"{_here}\tTest Sans")
 check("an exact family match resolves to the file fc-match named",
       tl.font_file("Test Sans") == _here, str(tl.font_file("Test Sans")))
 
+# The Style line draws Bold, so the measurer must ask fontconfig for the bold
+# face. Measuring Regular put every advance ~10% short of what libass drew
+# (فشلت: 79px regular vs 89px bold at the same size, rendered and measured).
+_calls = _fake_fc_tl(f"{_here}\tTest Sans")
+tl.font_file("Test Sans", bold=True)
+check("a bold lookup asks fontconfig for the bold face",
+      _calls and _calls[-1][-1] == "Test Sans:bold", str(_calls[-1:]))
+_calls = _fake_fc_tl(f"{_here}\tTest Sans")
+tl.font_file("Test Sans")
+check("a regular lookup does not", _calls[-1][-1] == "Test Sans", str(_calls[-1:]))
+check("load_measurer defaults to bold, matching the Style line",
+      __import__("inspect").signature(tl.load_measurer).parameters["bold"].default is True)
+# `family` is caller-supplied. In a fontconfig pattern `:` starts a property,
+# so an unescaped family could steer which face is measured.
+_calls = _fake_fc_tl(f"{_here}\tTest Sans")
+tl.font_file("Arial:weight=0", bold=True)
+check("a ':' in the family is escaped, not read as a pattern property",
+      _calls[-1][-1] == "Arial\\:weight=0:bold", str(_calls[-1:]))
+check("backslash is escaped first, so added escapes are not doubled",
+      tl._fc_escape("a\\b-c") == "a\\\\b\\-c", tl._fc_escape("a\\b-c"))
+
+# ASS Fontsize is NOT the em: libass maps it onto win (then typo, then hhea)
+# ascent+descent. `size / upem` made every capsule ~2.1x its word on Noto Sans
+# Arabic (upem 1000, win 2112) — measured on a real 4K render.
+import struct as _struct  # noqa: E402
+
+
+class _FakeFace:
+    def __init__(self, upem, win=None, typo=None, hhea=None):
+        self.upem = upem
+        os2 = bytearray(78)
+        if typo:
+            os2[68:72] = _struct.pack(">hh", *typo)
+        if win:
+            os2[74:78] = _struct.pack(">hh", *win)
+        hh = bytearray(8)
+        if hhea:
+            hh[4:8] = _struct.pack(">hh", *hhea)
+        self._t = {"OS/2": bytes(os2), "hhea": bytes(hh)}
+
+    def reference_table(self, tag):
+        return types.SimpleNamespace(data=self._t.get(tag, b""))
+
+
+check("libass height is win ascent + descent when present",
+      tl._libass_height(_FakeFace(1000, win=(1374, 738), typo=(1100, -400),
+                                  hhea=(1200, -500))) == 2112.0)
+check("falls back to typo when win is zero",
+      tl._libass_height(_FakeFace(1000, typo=(1100, -400), hhea=(1200, -500))) == 1500.0)
+check("then to hhea",
+      tl._libass_height(_FakeFace(1000, hhea=(1200, -500))) == 1700.0)
+check("and only then to the em",
+      tl._libass_height(_FakeFace(2048)) == 2048.0)
+
 # THE load-bearing case: fc-match always returns SOMETHING, so a caller asking
 # for "Test Sans" and getting "Other Family" back must be refused rather than
 # measured as if it were the font actually asked for — otherwise libass draws
@@ -429,6 +483,34 @@ check("an over-wide single word gets its own chunk rather than vanishing",
 _hl = tl.solve_line(["x" * 200], _M, usable=300, base_rtl=False)
 check("an over-wide word is centred, overflowing symmetrically",
       abs(_hl.boxes[0].x - (300 - 2000) / 2) < 1e-6, str(_hl.boxes[0].x))
+
+# The active capsule reaches PILL_PAD_X past each side of its word. With only
+# a measured space between words it covered the start of the neighbour — seen
+# on a real 4K Arabic render once the font scale stopped inflating every gap.
+# Checked as geometry: no capsule may intersect any OTHER word's box.
+from qatf.core.constants import PILL_PAD_X as _PAD  # noqa: E402
+
+_gap = 2 * _PAD
+for _base_rtl, _ws in ((False, ["ab", "cd", "ef", "gh"]), (True, _AR)):
+    _ln = tl.solve_line(_ws, _M, usable=900, base_rtl=_base_rtl, min_gap=_gap)
+    _hits = [(a.text, b.text) for a in _ln.boxes for b in _ln.boxes if a is not b
+             and a.x - _PAD < b.x + b.width and b.x < a.x + a.width + _PAD]
+    check(f"no pill reaches into a neighbouring word ({'rtl' if _base_rtl else 'ltr'})",
+          not _hits, str(_hits))
+_ln = tl.solve_line(["ab", "cd", "ef", "gh"], _M, usable=900, base_rtl=False)
+check("...and the check can fail: one bare space lets the pill overlap",
+      any(a.x - _PAD < b.x + b.width and b.x < a.x + a.width + _PAD
+          for a in _ln.boxes for b in _ln.boxes if a is not b)
+      or _M.advance(" ") >= _gap,
+      f"space={_M.advance(' ')}")
+# chunk_by_width must budget the same gap, or a line it judged to fit
+# overflows when solve_line spaces it out.
+_cw = ["abcd"] * 12
+for _chunk in tl.chunk_by_width(_cw, _M, usable=300, max_words=12, min_gap=_gap):
+    _sl = tl.solve_line([_cw[i] for i in _chunk], _M, usable=300, base_rtl=False,
+                        min_gap=_gap)
+    check(f"a chunk of {len(_chunk)} fits once spaced with the same gap",
+          _sl.width <= 300 or len(_chunk) == 1, f"width={_sl.width}")
 
 section("ass generation, continued")
 for tmp in (path, braced):
@@ -972,13 +1054,29 @@ check("empty font falls back rather than producing a blank field",
 # line. One constant, and this asserts the callers actually read it.
 import inspect as _inspect  # noqa: E402
 
+from qatf.core.constants import PILL_FONT as K_PILL_FONT  # noqa: E402
+
 _font_defaults = {
     "build_ass": _inspect.signature(captions.build_ass).parameters["font"].default,
     "render_all": _inspect.signature(encode.render_all).parameters["font"].default,
     "safe_font": captions.safe_font(""),
 }
-check("every default font path agrees on one constant",
-      set(_font_defaults.values()) == {DEFAULT_FONT}, str(_font_defaults))
+# Unset is now the rule rather than a literal: `build_ass` and `render_all`
+# default to None, and `captions.font_for` alone decides what None means per
+# style. That keeps ONE place for each default instead of six literals.
+check("render paths default to unset, so the style decides the face",
+      _font_defaults["build_ass"] is None and _font_defaults["render_all"] is None,
+      str(_font_defaults))
+check("safe_font's blank fallback is still the pop default",
+      _font_defaults["safe_font"] == DEFAULT_FONT, str(_font_defaults))
+check("unset font on the pill style is its own face (Tajawal)",
+      captions.font_for("youtube", None) == K_PILL_FONT == "Tajawal")
+check("unset font on pop stays on the face its numbers were measured with",
+      captions.font_for("pop", None) == DEFAULT_FONT
+      and captions.font_for("pop", "   ") == DEFAULT_FONT)
+check("a font the caller names is honoured on both styles",
+      captions.font_for("youtube", "Noto Kufi Arabic") == "Noto Kufi Arabic"
+      and captions.font_for("pop", "Noto Kufi Arabic") == "Noto Kufi Arabic")
 check("a normal font name is untouched",
       captions.safe_font("Traditional Arabic") == "Traditional Arabic")
 styled = captions.build_ass(
@@ -2323,12 +2421,21 @@ def _wcag_contrast(hex_color: str) -> float:
 _pill_contrast = _wcag_contrast(K.PILL_FILL)
 check("computed contrast of white on the pill fill clears the 4.5:1 floor",
       _pill_contrast >= 4.5, f"{_pill_contrast:.2f}:1")
-check("dim alpha is 45% opacity, inverted as ASS wants",
-      K.CAPTION_DIM_ALPHA == 0x8C)
-# Not cosmetic: the capsule paints over the dimmed layer's outline, so padding
+# Chosen 2026-10-16 from real frames: All white — nothing dimmed, only the
+# pill marks the spoken word.
+check("dimming is off: every word fully white", K.CAPTION_DIM_ALPHA == 0x00)
+# The pill style's own look, chosen from real frames of a 4K Arabic job. Each
+# is pill-only; `pop` keeps FONT_SIZE / OUTLINE, which its numbers depend on.
+check("pill size is 144", K.PILL_FONT_SIZE == 144)
+check("pill letters have no outline", K.PILL_OUTLINE == 0)
+check("pop keeps its own size and outline",
+      captions.FONT_SIZE == 64 and captions.OUTLINE == 4)
+check("the word gap clears the pill's overhang",
+      K.PILL_WORD_GAP > K.PILL_PAD_X, f"{K.PILL_WORD_GAP} vs {K.PILL_PAD_X}")
+# Not cosmetic: the capsule paints over the lower layer's outline, so padding
 # under the outline width leaves a dark fringe around the active word.
-check("horizontal pill padding clears the outline",
-      K.PILL_PAD_X > captions.OUTLINE, f"{K.PILL_PAD_X} vs {captions.OUTLINE}")
+check("horizontal pill padding clears the pill style's outline",
+      K.PILL_PAD_X > K.PILL_OUTLINE, f"{K.PILL_PAD_X} vs {K.PILL_OUTLINE}")
 
 _p = captions.capsule_path(200, 80)
 check("capsule path starts with a move", _p.startswith("m "))
@@ -2590,14 +2697,34 @@ check("ink_extents shifts each glyph's top by its OWN y_offset before unioning",
 check("ink_extents shifts each glyph's bottom by its OWN y_offset before unioning",
       _off_bot == 15.0, f"bottom={_off_bot}")
 
-check("inactive words are dimmed",
-      any(f"\\alpha&H{K.CAPTION_DIM_ALPHA:02X}&" in d[9] for d in _dl))
-# CORRECTED from the plan: the capsule event also carries \bord0 and no \alpha,
+check("dimming off emits no alpha tag at all, not an opaque one",
+      not any("\\1a&" in d[9] for d in _dl),
+      next((d[9] for d in _dl if "\\1a&" in d[9]), ""))
+check("the Style line carries the pill size and outline, not pop's",
+      ",144," in _body and ",1,0,3,2," in _body,
+      next((ln for ln in _body.splitlines() if ln.startswith("Style:")), ""))
+# Dimming can be switched back on. When it is, it must still touch the fill
+# only: dimming the outline too (`\alpha`, or `\3a`) dissolved the word into a
+# grey ghost on a light background — seen on a real 4K render over a white
+# shirt. Rebuilt with dimming on, so this rule keeps a check that can fail.
+_saved_dim = K.CAPTION_DIM_ALPHA
+K.CAPTION_DIM_ALPHA = 0x8C
+_dim_path = captions.build_ass(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_dim.ass"),
+                               style="youtube", measurer=_M)
+_dim_dl = dialogue_lines(_dim_path.read_text(encoding="utf-8"))
+K.CAPTION_DIM_ALPHA = _saved_dim
+_dim_path.unlink(missing_ok=True)
+check("with dimming on, inactive words are dimmed",
+      any("\\1a&H8C&" in d[9] for d in _dim_dl))
+check("dimming never touches the outline or shadow",
+      not any(tag in d[9] for d in _dim_dl for tag in ("\\alpha&", "\\3a&", "\\4a&")),
+      next((d[9] for d in _dim_dl if "\\alpha&" in d[9] or "\\3a&" in d[9]), ""))
+# CORRECTED from the plan: the capsule event also carries \bord0 and no dim,
 # so without excluding \p1 this check passes even if the active word keeps its
 # outline. Dropping the outline on the active word is load-bearing — it is the
 # entire reason the pill colour was deepened to a 4.91:1 contrast ratio.
 check("the active word drops its outline",
-      any("\\bord0" in d[9] and "\\alpha" not in d[9] and "\\p1" not in d[9]
+      any("\\bord0" in d[9] and "\\1a" not in d[9] and "\\p1" not in d[9]
           for d in _dl))
 # The whole point of the feature: one word per event, so nothing can bidi-split.
 for d in _dl:
