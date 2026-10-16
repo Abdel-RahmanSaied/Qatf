@@ -28,14 +28,21 @@ services:
       MOONSHOT_API_KEY: "${MOONSHOT_API_KEY:-}"
       ZHIPU_API_KEY: "${ZHIPU_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # The pip CTranslate2 wheel ships no native kernels for newer GPUs
+      # (Blackwell, sm_120), so the driver JIT-compiles them on first use —
+      # measured ~21s on an RTX 5070 against 0.1s warm. The default cache sits
+      # in the container's home and dies with it; keep it on the data volume.
+      CUDA_CACHE_PATH: /data/.nv-cache
     volumes:
       - ./qatf-data:/data
       - ./media:/media:ro
-    # GPU for faster-whisper. Drop this block and set --device cpu if there is none.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    # GPU for faster-whisper. Drop this block on a host with no NVIDIA GPU —
+    # compose refuses to start a service whose device reservation it cannot
+    # satisfy. `device: auto` then falls back to CPU on its own.
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
 
   # ---- web UI ---------------------------------------------------------
   # Serves the SPA on :3000 and proxies /api/* to the qatf service, so the
