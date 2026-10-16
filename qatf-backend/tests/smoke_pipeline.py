@@ -2202,11 +2202,23 @@ check("a row for a non-editable key is ignored on read",
       str(config.effective_settings({"media_root": "/etc"}, {}).media_root))
 check("numbers survive the round trip as numbers",
       config.effective_settings({"workers": 3, "llm_timeout": 30.0}, {}).workers == 3)
-check("the editable set is exactly the seven the design names",
+check("the editable set is exactly the eight the design names",
       frozenset({
           "llm_provider", "llm_model", "llm_base_url", "llm_effort",
-          "llm_max_tokens", "llm_timeout", "workers"}) == config.EDITABLE,
+          "llm_thinking", "llm_max_tokens", "llm_timeout", "workers",
+      }) == config.EDITABLE,
       str(sorted(config.EDITABLE)))
+# The toggle is a bool through every layer the env can reach it from. A string
+# that merely looked boolean would read back truthy and leave thinking ON.
+check("QATF_LLM_THINKING defaults on", Settings.from_env({}).llm_thinking is True)
+check("QATF_LLM_THINKING=off turns it off",
+      Settings.from_env({"QATF_LLM_THINKING": "off"}).llm_thinking is False)
+check("QATF_LLM_THINKING=false turns it off",
+      Settings.from_env({"QATF_LLM_THINKING": "false"}).llm_thinking is False)
+check("a saved False survives effective_settings (falsy, but not None)",
+      config.effective_settings({"llm_thinking": False}, {}).llm_thinking is False)
+raises("QATF_LLM_THINKING=maybe is refused, not guessed", ValueError,
+       Settings.from_env, {"QATF_LLM_THINKING": "maybe"})
 check("effective_settings returns a new object rather than mutating one",
       config.effective_settings({}, {}) is not config.effective_settings({}, {}))
 

@@ -57,6 +57,16 @@ class ProviderNotConfigured(QatfError):
     status_code = 503
 
 
+class ThinkingRequired(QatfError):
+    """`llm_thinking` is off, and the configured model cannot stop reasoning.
+
+    OpenRouter answers that with a bare 400 that names neither the setting nor
+    the fix, after stage 2 has already spent its minutes. The message this
+    carries names both."""
+
+    status_code = 502
+
+
 class ModelRefused(QatfError):
     """The provider's safety classifiers declined the request.
 

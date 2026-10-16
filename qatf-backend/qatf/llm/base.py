@@ -36,9 +36,16 @@ class Capabilities:
     #: accepts a reasoning-effort hint
     effort: bool = False
     #: endpoint understands OpenRouter's unified `reasoning` control, so
-    #: deliberation can be switched OFF for this stage.
+    #: deliberation can be switched OFF for this stage when `thinking` is off.
     #:
-    #: Stage 3 wants a JSON clip list, not deliberation, and a thinking model
+    #: Off is a choice, not the default, because some models cannot comply:
+    #: OpenRouter answers `reasoning: {enabled: false}` for `openai/gpt-5` with
+    #: "400 Reasoning is mandatory for this endpoint and cannot be disabled"
+    #: (measured 2026-10-16; `effort: none` is refused the same way). With
+    #: thinking on, the preset sends `reasoning: {effort: ...}` instead, which
+    #: both `openai/gpt-5` and `anthropic/claude-opus-5` accept.
+    #:
+    #: Why off exists at all: a thinking model
     #: asked for JSON will happily spend its whole answer reasoning and then
     #: emit a summary sentence as `content`. Measured on `qwen/qwen3-8b`:
     #: 2,855 characters of correct analysis in the reasoning channel, and a
@@ -78,14 +85,25 @@ class LLMProvider(ABC):
 
     name: str = "provider"
 
+    #: The effort a provider sends when `thinking` is off. `low` and not
+    #: `minimal` or `none`: it is the one value the Anthropic API, the GPT-5
+    #: family and OpenRouter all accept, and on a model that cannot stop
+    #: thinking, "as little as it allows" is the only honest meaning of off.
+    QUIET_EFFORT = "low"
+
     def __init__(self, model: str, caps: Capabilities, *,
                  api_key: str | None = None, base_url: str | None = None,
-                 effort: str | None = None, timeout: float = 600.0):
+                 effort: str | None = None, thinking: bool = True,
+                 timeout: float = 600.0):
         self.model = model
         self.caps = caps
         self.api_key = api_key
         self.base_url = base_url
         self.effort = effort
+        #: on: deliberate at `effort`. off: as little as the model allows —
+        #: disabled where the provider can say so (`reasoning_control`), the
+        #: lowest effort elsewhere. A provider with neither knob ignores it.
+        self.thinking = thinking
         self.timeout = timeout
 
     @abstractmethod

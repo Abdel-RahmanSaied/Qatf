@@ -52,6 +52,11 @@ export default function SettingsPage() {
   useEffect(() => void load(), [load]);
 
   const dirty = Object.keys(draft);
+  // Typed by the server's value, not a hard-coded key list, so the next
+  // boolean setting renders as a switch without touching this page.
+  const booleanKeys = new Set(
+    (items ?? []).filter((i) => typeof i.value === "boolean").map((i) => i.key),
+  );
 
   async function save() {
     if (busy.current) return;
@@ -62,9 +67,13 @@ export default function SettingsPage() {
       const patch: Record<string, unknown> = {};
       for (const key of dirty) {
         const raw = draft[key];
-        patch[key] = key === "workers" || key === "llm_max_tokens"
-          ? Number(raw)
-          : raw;
+        // A boolean setting goes back as a JSON boolean. The server refuses
+        // the string "false" outright, because stored as-is it reads truthy.
+        patch[key] = booleanKeys.has(key)
+          ? raw === "true"
+          : key === "workers" || key === "llm_max_tokens"
+            ? Number(raw)
+            : raw;
       }
       setItems((await updateSettings(patch)).items);
       setDraft({});
@@ -140,16 +149,50 @@ export default function SettingsPage() {
                 <span className="setting-key mono" dir="ltr">{item.key}</span>
               </div>
               <div className="setting-control">
-                <input
-                  id={`set-${item.key}`}
-                  className="input"
-                  dir="ltr"
-                  spellCheck={false}
-                  autoComplete="off"
-                  value={draft[item.key] ?? (item.value ?? "").toString()}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, [item.key]: e.target.value }))}
-                />
+                {booleanKeys.has(item.key)
+                  ? (() => {
+                    const on = (draft[item.key] ?? String(item.value)) === "true";
+                    const help = ts.help[item.key];
+                    return (
+                      <>
+                        <label className="switch" htmlFor={`set-${item.key}`}>
+                          <input
+                            id={`set-${item.key}`}
+                            type="checkbox"
+                            className="toggle"
+                            checked={on}
+                            aria-describedby={help ? `set-${item.key}-help` : undefined}
+                            onChange={(e) => {
+                              const next = String(e.target.checked);
+                              // Toggling back to the stored value is not a change.
+                              setDraft((d) => {
+                                const copy = { ...d };
+                                if (next === String(item.value)) delete copy[item.key];
+                                else copy[item.key] = next;
+                                return copy;
+                              });
+                            }}
+                          />
+                          {on ? ts.on : ts.off}
+                        </label>
+                        {help && (
+                          <div className="field-help" id={`set-${item.key}-help`}>{help}</div>
+                        )}
+                      </>
+                    );
+                  })()
+                  : (
+                    <input
+                      id={`set-${item.key}`}
+                      className="input"
+                      dir="ltr"
+                      spellCheck={false}
+                      autoComplete="off"
+                      value={draft[item.key] ?? (item.value ?? "").toString()}
+                      onChange={(e) =>
+                        setDraft((d) => ({ ...d, [item.key]: e.target.value }))}
+                    />
+                  )}
                 <div className="setting-meta">
                   <span className={`setting-source setting-source--${item.source}`}>
                     {sourceLabel(item.source)}

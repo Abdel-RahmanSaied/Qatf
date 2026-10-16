@@ -95,6 +95,11 @@ def update_settings(
     unknown = set(body) - EDITABLE
     if unknown:
         raise InvalidSetting(_UNKNOWN)
+    if "llm_thinking" in body and not isinstance(body["llm_thinking"], bool):
+        # Strictly a JSON boolean. A string would be stored as-is and read back
+        # truthy, so saving "false" would leave thinking ON — a toggle that
+        # silently does the opposite of what it says.
+        raise InvalidSetting("llm_thinking must be true or false")
     if body.get("llm_base_url"):
         # Checked again in `llm` when the provider is built. Here so a refusal
         # is a synchronous 403 rather than a job that dies on a worker thread.

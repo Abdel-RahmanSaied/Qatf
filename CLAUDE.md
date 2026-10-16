@@ -739,6 +739,41 @@ GPT-5 family both reject `temperature`; the GPT-5 family renamed `max_tokens` to
 preset states what may be sent, and the abstraction never blanket-forwards a
 parameter. Adding a vendor should be **a row in `presets.py`**, not a subclass.
 
+### Thinking is a toggle, and off never means "disabled" on a must-reason model
+
+`llm_thinking` (default **on**; `QATF_LLM_THINKING`, the Settings page switch).
+It exists because the OpenRouter preset used to send `reasoning: {enabled:
+false}` unconditionally, and a saved `llm_model=openai/gpt-5` failed every job
+at stage 3 — after the full transcription — with `400 Reasoning is mandatory
+for this endpoint and cannot be disabled`. Measured through OpenRouter on
+2026-10-16 with a trivial JSON prompt:
+
+```text
+reasoning sent          openai/gpt-5       anthropic/claude-opus-5
+enabled: false          400                ok, 0 reasoning tokens
+effort: none            400                ok, 0
+effort: minimal         ok, 0              ok, 0
+effort: low             ok, 0              ok, 0
+effort: medium          ok, 128            ok, 17
+```
+
+On the real 1,977-word Arabic transcript of the job that failed, gpt-5 with
+thinking on returned 8 clips, all 8 in range after snap.
+
+| Thinking | OpenRouter | Anthropic direct | GPT-5 direct |
+| --- | --- | --- | --- |
+| on | `reasoning: {effort: llm_effort}` | `thinking: adaptive` + effort | `reasoning_effort: llm_effort` |
+| off | `reasoning: {enabled: false}` | effort `low`, no `thinking` | `reasoning_effort: low` |
+
+Off on OpenRouter is byte-for-byte the old request, because it is what fixed
+the measured `qwen3-8b` narration failure (`docs/providers.md`). Off on
+Anthropic is **never** `{type: "disabled"}`: a 400 on Opus 5.5 / Sonnet 5.5 at
+every effort, and where accepted it makes reasoning leak into the visible
+answer. A model that refuses off raises `ThinkingRequired`, whose message names
+the setting — the provider's error is replaced, never retried, so capabilities
+are still declared and not probed. `PUT /settings` takes only a JSON boolean
+here: the string `"false"` stored as-is reads truthy and would leave it ON.
+
 Where a vendor's support is ambiguous the preset is deliberately pessimistic:
 over-claiming fails the request, under-claiming just leans on `parse_response`.
 Ollama is pinned to `json_object` for a sharper reason — it *ignores* unknown
@@ -826,10 +861,10 @@ PUT    /settings              partial update; applies to the NEXT job
 DELETE /settings/{key}        clear an override, fall back to the environment
 ```
 
-### Settings precedence inverts, and only for seven keys
+### Settings precedence inverts, and only for eight keys
 
 `GET/PUT/DELETE /settings` edit the stage-3 provider, model, base URL, effort,
-max-tokens, timeout and `workers`. A **saved value beats the environment** —
+thinking, max-tokens, timeout and `workers`. A **saved value beats the environment** —
 the opposite of `core/dotenv.py`, where the real environment always wins.
 
 That inversion is deliberate. `docker-compose.yaml` sets
@@ -837,7 +872,7 @@ That inversion is deliberate. `docker-compose.yaml` sets
 **always present in the container** whether or not anyone set one. Under an
 environment-wins rule a saved value could never take effect under Docker — the
 only deployment — and the endpoint would look broken rather than opinionated.
-`dotenv.py` is unchanged; a layer now sits *above* the environment for the seven
+`dotenv.py` is unchanged; a layer now sits *above* the environment for the eight
 keys in `config.EDITABLE`. Clearing an override deletes the row and falls back.
 
 Three things that bound it, none of them optional:

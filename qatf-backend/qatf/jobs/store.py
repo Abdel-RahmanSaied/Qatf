@@ -60,6 +60,7 @@ def _settings_as_env(s: Settings) -> dict[str, str]:
         "QATF_LLM_MODEL": s.llm_model or "",
         "QATF_LLM_BASE_URL": s.llm_base_url or "",
         "QATF_LLM_EFFORT": s.llm_effort or "",
+        "QATF_LLM_THINKING": "on" if s.llm_thinking else "off",
         "QATF_LLM_MAX_TOKENS": str(s.llm_max_tokens),
         "QATF_LLM_TIMEOUT": str(int(s.llm_timeout)),
         "QATF_HOST": s.host,

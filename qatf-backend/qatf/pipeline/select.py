@@ -228,6 +228,7 @@ def pick_clips(words: list[Word], n: int, lo: int, hi: int,
             model=model or settings.llm_model,
             base_url=settings.llm_base_url,
             effort=settings.llm_effort,
+            thinking=settings.llm_thinking,
             timeout=settings.llm_timeout,
         )
 

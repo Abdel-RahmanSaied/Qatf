@@ -400,8 +400,17 @@ export const en = {
       llm_model: "AI model",
       llm_base_url: "AI service address",
       llm_max_tokens: "AI answer length limit",
+      llm_thinking: "Let the AI think before choosing clips",
       workers: "Videos processed at the same time",
     } as Record<string, string>,
+    help: {
+      llm_thinking:
+        "On: the AI weighs the whole video before it picks — slower, and it costs a little more. "
+        + "Off: it answers straight away. Some models always think and will stop with an error "
+        + "when this is off — if that happens, turn it back on.",
+    } as Record<string, string>,
+    on: "On",
+    off: "Off",
     sourceSaved: "Changed here",
     sourceEnv: "From the server",
     sourceDefault: "Default",

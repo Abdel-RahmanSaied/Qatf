@@ -35,6 +35,22 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
         raise ValueError(f"{key} must be an integer, got {raw!r}") from exc
 
 
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _bool(env: Mapping[str, str], key: str, default: bool) -> bool:
+    raw = env.get(key)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    raise ValueError(f"{key} must be one of on/off, true/false, 1/0, got {raw!r}")
+
+
 @dataclass(frozen=True)
 class Settings:
     #: where job directories live
@@ -57,6 +73,11 @@ class Settings:
     llm_base_url: str | None = None
     #: reasoning-effort hint, on providers that accept one
     llm_effort: str | None = "medium"
+    #: let the stage-3 model deliberate before answering. Off means "as little
+    #: as the model allows", NOT "disabled": GPT-5 and Claude Opus 5.5 reject
+    #: a request to stop thinking outright. Per-provider meaning in
+    #: `llm/base.py::LLMProvider.thinking`.
+    llm_thinking: bool = True
     llm_max_tokens: int = 16000
     llm_timeout: float = 600.0
 
@@ -83,6 +104,7 @@ class Settings:
             llm_model=env.get("QATF_LLM_MODEL") or env.get("QATF_MODEL") or None,
             llm_base_url=env.get("QATF_LLM_BASE_URL") or None,
             llm_effort=env.get("QATF_LLM_EFFORT", "medium") or None,
+            llm_thinking=_bool(env, "QATF_LLM_THINKING", True),
             llm_max_tokens=_int(env, "QATF_LLM_MAX_TOKENS", 16000),
             llm_timeout=float(_int(env, "QATF_LLM_TIMEOUT", 600)),
             host=env.get("QATF_HOST", "127.0.0.1"),
@@ -104,7 +126,7 @@ class Settings:
 #: once the process is up. No `*_API_KEY` appears here or anywhere on the wire:
 #: presets name a credential and read it from the environment.
 EDITABLE = frozenset({
-    "llm_provider", "llm_model", "llm_base_url", "llm_effort",
+    "llm_provider", "llm_model", "llm_base_url", "llm_effort", "llm_thinking",
     "llm_max_tokens", "llm_timeout", "workers",
 })
 
@@ -126,7 +148,7 @@ def effective_settings(overrides: Mapping[str, object],
     operator set one. If the environment kept winning, a saved value could never
     take effect under Docker — the only deployment — and the feature would look
     broken rather than opinionated. `dotenv.py` itself is unchanged; a layer now
-    sits above the environment for seven named keys.
+    sits above the environment for the keys in `EDITABLE`.
 
     Takes the overrides as an ARGUMENT rather than opening the database: `core`
     may not import a store, it keeps every settings read from being a file read,

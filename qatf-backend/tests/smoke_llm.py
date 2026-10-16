@@ -14,7 +14,12 @@ import json
 
 from _harness import check, raises, report, section
 
-from qatf.core.errors import ModelRefused, ModelResponseError, ProviderNotConfigured
+from qatf.core.errors import (
+    ModelRefused,
+    ModelResponseError,
+    ProviderNotConfigured,
+    ThinkingRequired,
+)
 from qatf.core.types import Word
 from qatf.llm import build_provider, describe, resolve
 from qatf.llm.base import Capabilities
@@ -128,19 +133,100 @@ bind(legacy, FakeOpenAI())
 legacy.complete_json("prompt", select.CLIP_SCHEMA)
 check("GPT-4 family uses max_tokens", "max_tokens" in legacy._client().captured)
 
-section("thinking is switched off where the endpoint allows it")
+section("thinking toggle — off where the endpoint allows it")
 # `qwen/qwen3-8b` through OpenRouter spent its whole answer in the reasoning
 # channel and returned, as content, the bare JSON string "displayed in JSON
 # format as requested, with 8 clips selected...". That is valid JSON, so
 # json_object mode was satisfied and stage 3 failed at the shape check with
 # 832 completion tokens spent and no clips. Verified against the live endpoint:
-# with reasoning disabled the same prompt parsed to 8 clips.
-router = build_provider("openrouter", env=ENV)
+# with reasoning disabled the same prompt parsed to 8 clips. So OFF must keep
+# sending exactly that.
+router = build_provider("openrouter", env=ENV, thinking=False)
 bind(router, FakeOpenAI())
 router.complete_json("prompt", select.CLIP_SCHEMA)
 sent = router._client().captured
-check("openrouter asks for reasoning to be disabled",
+check("thinking off: openrouter asks for reasoning to be disabled",
       sent.get("extra_body") == {"reasoning": {"enabled": False}}, str(sent.get("extra_body")))
+
+# ...and ON must never send `enabled: false`. Measured 2026-10-16: OpenRouter
+# answers it for openai/gpt-5 with "400 Reasoning is mandatory for this
+# endpoint and cannot be disabled" — the job failed at stage 3 after a full
+# transcription. An effort is what both gpt-5 and claude-opus-5 accept.
+router = build_provider("openrouter", env=ENV, effort="high")
+bind(router, FakeOpenAI())
+router.complete_json("prompt", select.CLIP_SCHEMA)
+sent = router._client().captured
+check("thinking on (the default): openrouter sends the configured effort",
+      sent.get("extra_body") == {"reasoning": {"effort": "high"}}, str(sent.get("extra_body")))
+check("thinking on never asks a model to stop reasoning",
+      "enabled" not in sent["extra_body"]["reasoning"])
+router = build_provider("openrouter", env=ENV, effort=None)
+bind(router, FakeOpenAI())
+router.complete_json("prompt", select.CLIP_SCHEMA)
+check("an unset effort still sends one — never an empty reasoning object",
+      router._client().captured["extra_body"] == {"reasoning": {"effort": "medium"}},
+      str(router._client().captured.get("extra_body")))
+
+gpt5 = build_provider("openai", env=ENV, effort="high")
+bind(gpt5, FakeOpenAI())
+gpt5.complete_json("prompt", select.CLIP_SCHEMA)
+check("GPT-5 thinking on: the configured reasoning_effort",
+      gpt5._client().captured.get("reasoning_effort") == "high")
+gpt5 = build_provider("openai", env=ENV, effort="high", thinking=False)
+bind(gpt5, FakeOpenAI())
+gpt5.complete_json("prompt", select.CLIP_SCHEMA)
+check("GPT-5 thinking off: the lowest effort, since it cannot stop",
+      gpt5._client().captured.get("reasoning_effort") == "low",
+      str(gpt5._client().captured.get("reasoning_effort")))
+
+p = bind(ClaudeProvider("claude-opus-5", api_key="x", effort="high"), FakeAnthropic())
+p.complete_json("prompt", select.CLIP_SCHEMA)
+sent = p._client().captured
+check("anthropic thinking on: adaptive, stated explicitly (Opus 4.8 omits = off)",
+      sent.get("thinking") == {"type": "adaptive"}, str(sent.get("thinking")))
+check("anthropic thinking on: the configured effort",
+      sent["output_config"].get("effort") == "high")
+p = bind(ClaudeProvider("claude-opus-5", api_key="x", effort="high", thinking=False),
+         FakeAnthropic())
+p.complete_json("prompt", select.CLIP_SCHEMA)
+sent = p._client().captured
+check("anthropic thinking off: never {type: disabled} — a 400 on Opus 5.5",
+      "thinking" not in sent, str(sent.get("thinking")))
+check("anthropic thinking off: the lowest effort instead",
+      sent["output_config"].get("effort") == "low")
+
+
+class MandatoryReasoning(Exception):
+    """What the openai SDK raises for OpenRouter's refusal, minus the SDK."""
+    status_code = 400
+
+    def __str__(self):
+        return ("Error code: 400 - {'error': {'message': 'Reasoning is mandatory "
+                "for this endpoint and cannot be disabled.', 'code': 400}}")
+
+
+class RaisingOpenAI(FakeOpenAI):
+    def __init__(self, exc):
+        super().__init__()
+        self._exc = exc
+
+    def create(self, **kwargs):
+        self.captured = kwargs
+        raise self._exc
+
+
+router = build_provider("openrouter", env=ENV, model="openai/gpt-5", thinking=False)
+bind(router, RaisingOpenAI(MandatoryReasoning()))
+raises("thinking off on a must-reason model names the setting, not a raw 400",
+       ThinkingRequired, router.complete_json, "prompt", select.CLIP_SCHEMA)
+try:
+    router.complete_json("prompt", select.CLIP_SCHEMA)
+except ThinkingRequired as exc:
+    check("and the message says how to fix it", "llm_thinking" in str(exc), str(exc))
+router = build_provider("openrouter", env=ENV, thinking=False)
+bind(router, RaisingOpenAI(ValueError("unrelated")))
+raises("any other failure passes through untouched", ValueError,
+       router.complete_json, "prompt", select.CLIP_SCHEMA)
 
 # `reasoning` is an OpenRouter extension. Sending it to an endpoint that does
 # not know it is a 400, not a degrade — the same rule as json_schema.

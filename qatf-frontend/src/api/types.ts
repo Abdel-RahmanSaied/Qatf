@@ -125,7 +125,7 @@ export interface ClipModel {
  * credential — presets name an API key and read it from the environment. */
 export interface SettingItem {
   key: string;
-  value: string | number | null;
+  value: string | number | boolean | null;
   source: "saved" | "env" | "default";
   restart_required: boolean;
 }

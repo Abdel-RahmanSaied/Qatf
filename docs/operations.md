@@ -104,7 +104,7 @@ curl -X PUT localhost:8000/settings   -H 'Content-Type: application/json'   -d '
 ```
 
 `.env` still matters: it **seeds** a fresh deployment and it is the fallback
-whenever an override is cleared. What changed is the direction — for the seven
+whenever an override is cleared. What changed is the direction — for the eight
 editable keys a saved value now wins over the variable, because compose always
 sets `QATF_LLM_*` and an environment-wins rule would make the endpoint inert.
 See "Settings precedence inverts" in CLAUDE.md.

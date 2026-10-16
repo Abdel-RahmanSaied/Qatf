@@ -35,6 +35,7 @@ __all__ = [
 def build_provider(key: str, *, model: str | None = None,
                    base_url: str | None = None, api_key: str | None = None,
                    effort: str | None = None,
+                   thinking: bool = True,
                    timeout: float = 600.0,
                    env: dict | None = None) -> LLMProvider:
     """Construct a provider from a preset key plus overrides."""
@@ -54,6 +55,7 @@ def build_provider(key: str, *, model: str | None = None,
         api_key=resolved_key,
         base_url=preset.base_url,
         effort=effort,
+        thinking=thinking,
         timeout=timeout,
     )
     # the preset's declared capabilities win over the class defaults, because
@@ -72,5 +74,6 @@ def provider_from_settings(settings=None) -> LLMProvider:
         model=s.llm_model,
         base_url=s.llm_base_url,
         effort=s.llm_effort,
+        thinking=s.llm_thinking,
         timeout=s.llm_timeout,
     )

@@ -1097,6 +1097,26 @@ client.delete("/settings/llm_base_url")
 check("DELETE of a non-editable key is refused 422",
       client.delete("/settings/media_root").status_code == 422)
 
+# The thinking toggle. On by default: a model that cannot stop reasoning
+# (openai/gpt-5 via OpenRouter) failed every job at stage 3 while it was off.
+check("thinking is on by default", items["llm_thinking"]["value"] is True,
+      str(items["llm_thinking"]))
+r = client.put("/settings", json={"llm_thinking": False})
+check("thinking can be switched off", r.status_code == 200, r.text[:200])
+check("and comes back as a real boolean, not a string",
+      {i["key"]: i for i in r.json()["items"]}["llm_thinking"]["value"] is False)
+check("the next job runs with it off",
+      app.state.store.settings_for_job().llm_thinking is False)
+for bad in ("false", 0, "off", None):
+    r = client.put("/settings", json={"llm_thinking": bad})
+    check(f"llm_thinking={bad!r} is refused 422, not stored truthy",
+          r.status_code == 422, f"{r.status_code} {r.text[:120]}")
+check("a refused write leaves the saved value alone",
+      app.state.store.settings_for_job().llm_thinking is False)
+client.delete("/settings/llm_thinking")
+check("clearing it falls back to on",
+      app.state.store.settings_for_job().llm_thinking is True)
+
 
 section("transcript suggestions are read-only")
 from qatf.pipeline import enhance as _enh  # noqa: E402

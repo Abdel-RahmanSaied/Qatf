@@ -14,7 +14,20 @@ Two shapes vary and both are declared per preset rather than sniffed:
 
 from __future__ import annotations
 
+from ..core.errors import ThinkingRequired
 from .base import Capabilities, Completion, LLMProvider
+
+
+def _reasoning_is_mandatory(exc: Exception) -> bool:
+    """Whether a provider refused because the model cannot stop reasoning.
+
+    The only signal is the message — OpenRouter returns a plain 400 with
+    "Reasoning is mandatory for this endpoint and cannot be disabled", and no
+    code distinguishes it from any other bad request. Matched narrowly and only
+    to REPLACE the error with one that names the fix; nothing is retried, so a
+    capability is still declared, never probed."""
+    return (getattr(exc, "status_code", None) == 400
+            and "reasoning is mandatory" in str(exc).lower())
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -57,17 +70,32 @@ class OpenAICompatProvider(LLMProvider):
         }
         if (fmt := self._response_format(schema)) is not None:
             kwargs["response_format"] = fmt
-        if self.caps.effort and self.effort:
-            kwargs["reasoning_effort"] = self.effort
-        elif self.caps.reasoning_control:
-            # An explicit effort wins if a preset ever declares both; otherwise
-            # this stage turns deliberation off. See `Capabilities`: a thinking
-            # model that reasons its way to the answer and then narrates it in
-            # `content` produces valid JSON that is not a clip list, which fails
-            # at the shape check with nothing to show for the tokens spent.
-            kwargs["extra_body"] = {"reasoning": {"enabled": False}}
+        if self.caps.reasoning_control:
+            # OpenRouter's unified `reasoning` object. Off keeps the request
+            # this preset always sent — deliberation disabled, which is what
+            # fixed the measured qwen3 narration failure (see `Capabilities`).
+            # On sends an effort instead, the only form a model that cannot
+            # stop reasoning (openai/gpt-5) accepts.
+            kwargs["extra_body"] = {"reasoning": (
+                {"effort": self.effort or "medium"} if self.thinking
+                else {"enabled": False})}
+        elif self.caps.effort:
+            # GPT-5 family: reasoning cannot be switched off at all, so off is
+            # the lowest effort every member of the family accepts.
+            effort = self.effort if self.thinking else self.QUIET_EFFORT
+            if effort:
+                kwargs["reasoning_effort"] = effort
 
-        resp = self._client().chat.completions.create(**kwargs)
+        try:
+            resp = self._client().chat.completions.create(**kwargs)
+        except Exception as exc:
+            if not self.thinking and _reasoning_is_mandatory(exc):
+                raise ThinkingRequired(
+                    f"{self.name}:{self.model} always reasons and refused a "
+                    f"request to stop. Turn Thinking on in Settings "
+                    f"(llm_thinking), or pick a model that can answer without "
+                    f"it.") from exc
+            raise
         choice = resp.choices[0]
         usage = getattr(resp, "usage", None)
         return Completion(

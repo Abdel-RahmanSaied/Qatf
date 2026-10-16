@@ -298,8 +298,9 @@ Three endpoints change what stage 3 uses, without editing `.env` or rebuilding.
 ```
 
 **Editable:** `llm_provider`, `llm_model`, `llm_base_url`, `llm_effort`,
-`llm_max_tokens`, `llm_timeout`, `workers`. Anything else is a `422` naming the
-allowed set.
+`llm_thinking`, `llm_max_tokens`, `llm_timeout`, `workers`. Anything else is a
+`422` naming the allowed set. `llm_thinking` must be a JSON boolean — `"false"`
+is a `422`, not a stored string that reads truthy.
 
 **`source` is why "reset to environment" can exist.** Without it a caller cannot
 tell a value they chose from one the container handed them. `saved` overrides

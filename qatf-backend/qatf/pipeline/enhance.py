@@ -244,7 +244,7 @@ def suggest(words: list[Word], terms: list[str],
     provider = build_provider(
         settings.llm_provider, model=settings.llm_model,
         base_url=settings.llm_base_url, effort=settings.llm_effort,
-        timeout=settings.llm_timeout,
+        thinking=settings.llm_thinking, timeout=settings.llm_timeout,
     )
     result = provider.complete_json(build_prompt(words, terms), SUGGEST_SCHEMA,
                                     max_tokens=settings.llm_max_tokens)

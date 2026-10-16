@@ -135,8 +135,12 @@ Two details worth keeping:
   OpenRouter.** Tested: reasoning still ran at 3,611 characters. That parameter
   is for vLLM directly. `reasoning: {"enabled": false}` is the one that works.
 
-An explicit `reasoning_effort` still wins if a preset ever declares both, so a
-provider that genuinely wants thinking is one capability row away.
+That request is now what **thinking off** sends, and off is a choice rather
+than the default: `openai/gpt-5` cannot stop reasoning and answers it with a
+400. With `llm_thinking` on (the default) the preset sends
+`reasoning: {effort: <llm_effort>}` instead. If a small hybrid model starts
+narrating instead of answering, turn thinking off for it. The per-provider
+table and the measurement behind it are in CLAUDE.md, "Thinking is a toggle".
 
 ## Self-hosting
 

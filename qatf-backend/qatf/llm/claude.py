@@ -65,14 +65,28 @@ class ClaudeProvider(LLMProvider):
     def complete_json(self, prompt: str, schema: dict, *,
                       max_tokens: int = 16000) -> Completion:
         output_config: dict = {"format": {"type": "json_schema", "schema": schema}}
-        if self.effort:
-            output_config["effort"] = self.effort
+        extra: dict = {}
+        if self.thinking:
+            # Explicit, not implied: Opus 5 thinks when `thinking` is omitted,
+            # but Opus 4.8 / 4.7 run WITHOUT it — the same request would mean
+            # two different things depending on QATF_LLM_MODEL.
+            extra["thinking"] = {"type": "adaptive"}
+            if self.effort:
+                output_config["effort"] = self.effort
+        else:
+            # Off is the lowest effort, never `{"type": "disabled"}`: that is a
+            # 400 on Opus 5.5 and Sonnet 5.5 at every effort, a 400 on Opus 5
+            # above `high`, and where it IS accepted it makes the model likelier
+            # to write its reasoning into the visible answer — the exact failure
+            # a JSON-only stage cannot absorb.
+            output_config["effort"] = self.QUIET_EFFORT
 
         resp = self._client().messages.create(
             model=self.model,
             max_tokens=max_tokens,
             output_config=output_config,
             messages=[{"role": "user", "content": prompt}],
+            **extra,
         )
 
         # Safety classifiers can decline with HTTP 200 and an empty content list.

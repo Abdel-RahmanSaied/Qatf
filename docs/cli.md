@@ -294,6 +294,7 @@ environment always wins** over a `.env` entry.
 | `QATF_LLM_MODEL` | preset default | overrides the preset's model |
 | `QATF_LLM_BASE_URL` | preset default | point a preset at another host |
 | `QATF_LLM_EFFORT` | `medium` | reasoning-effort hint, where accepted |
+| `QATF_LLM_THINKING` | `on` | `off` = as little deliberation as the model allows; see [providers.md](providers.md) |
 | `QATF_LLM_MAX_TOKENS` | `16000` | |
 | `QATF_LLM_TIMEOUT` | `600` | seconds |
 | `QATF_FFMPEG` / `QATF_FFPROBE` | on `PATH` | explicit binary paths |
