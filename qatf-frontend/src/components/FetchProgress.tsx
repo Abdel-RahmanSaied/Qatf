@@ -25,7 +25,8 @@ interface Props {
 export function FetchProgress({ progress }: Props) {
   const { t } = useI18n();
   if (!progress) return null;
-  const { percent, text } = describeFetch(progress);
+  const { percent, text: bytes, part } = describeFetch(progress);
+  const text = part !== null ? `${bytes} · ${t.job.downloadPart(part)}` : bytes;
   return (
     <div className="fetch-progress">
       {percent !== null && (

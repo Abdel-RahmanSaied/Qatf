@@ -27,19 +27,22 @@ export function formatBytes(n: number): string {
  * — the bytes are measured and the total may not be, so the honest thing is a
  * full bar next to numbers that read past it.
  *
- * `file_index` is surfaced because a merged DASH fetch downloads the video
- * stream and then the audio stream, restarting `downloaded_bytes` at zero. A
- * counter that visibly resets with nothing to explain it reads as a bug. */
+ * `part` is surfaced because a merged DASH fetch downloads the video stream
+ * and then the audio stream, restarting `downloaded_bytes` at zero. A counter
+ * that visibly resets with nothing to explain it reads as a bug. The server's
+ * `file_index` is 1-BASED (the first file is 1), so it is passed through as-is
+ * and only named from the second part on — labelling the only part "part 1"
+ * explains nothing. The word itself is the caller's, via i18n. */
 export function describeFetch(
   p: FetchProgressModel,
-): { percent: number | null; text: string } {
+): { percent: number | null; text: string; part: number | null } {
   const done = formatBytes(p.downloaded_bytes);
-  const part = p.file_index > 0 ? ` · file ${p.file_index + 1}` : "";
+  const part = p.file_index >= 2 ? p.file_index : null;
   if (p.total_bytes === null || p.total_bytes <= 0) {
-    return { percent: null, text: `${done}${part}` };
+    return { percent: null, text: done, part };
   }
   const pct = Math.min(100, Math.round((p.downloaded_bytes / p.total_bytes) * 100));
-  return { percent: pct, text: `${done} / ${formatBytes(p.total_bytes)}${part}` };
+  return { percent: pct, text: `${done} / ${formatBytes(p.total_bytes)}`, part };
 }
 
 /** M:SS.cc for plan boundaries. Round to centiseconds BEFORE decomposing —

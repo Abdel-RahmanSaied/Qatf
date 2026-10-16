@@ -313,6 +313,7 @@ export const ar: Dict = {
     tooShort: "قصير جدًا",
     tooLong: "طويل جدًا",
     downloadAria: "جارٍ تنزيل الفيديو",
+    downloadPart: (n: number) => `الجزء ${n}`,
   },
 
   plan: {

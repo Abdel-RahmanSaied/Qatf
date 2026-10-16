@@ -122,6 +122,13 @@ def progress_hook(
             if status not in ("downloading", "finished"):
                 return
             filename = event.get("filename")
+            # The caption track is written BEFORE the media and runs through
+            # the same hook. Counting it made the video "file 2" and the audio
+            # "file 3", and its few-KB total briefly replaced the video's on
+            # the record. `file_index` numbers the parts of the VIDEO, so a
+            # caption file is not one — `.json3.part` included.
+            if filename and f".{CAPTION_FORMAT}" in Path(filename).suffixes:
+                return
             if filename != seen_filename:
                 seen_filename = filename
                 index += 1

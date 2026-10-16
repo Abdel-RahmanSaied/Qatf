@@ -81,14 +81,14 @@ describe("summariseRange", () => {
 // FetchProgress.tsx depends on, not necessarily the original assertions.
 describe("describeFetch", () => {
   it("has no percent when the total is unknown — a bar needs a denominator", () => {
-    const r = describeFetch({ downloaded_bytes: 1024, total_bytes: null, file_index: 0 });
+    const r = describeFetch({ downloaded_bytes: 1024, total_bytes: null, file_index: 1 });
     expect(r.percent).toBeNull();
     expect(r.text).toBe("1.0 KB");
   });
 
   it("reports downloaded over total when the total is known", () => {
     const r = describeFetch({
-      downloaded_bytes: 512 * 1024 ** 2, total_bytes: 1024 ** 3, file_index: 0,
+      downloaded_bytes: 512 * 1024 ** 2, total_bytes: 1024 ** 3, file_index: 1,
     });
     expect(r.percent).toBe(50);
     expect(r.text).toBe("512.0 MB / 1.0 GB");
@@ -98,7 +98,7 @@ describe("describeFetch", () => {
   // leave the byte counts alone: the bytes are measured, the total may not be.
   it("clamps the bar at 100% without touching the byte counts", () => {
     const r = describeFetch({
-      downloaded_bytes: 1200, total_bytes: 1000, file_index: 0,
+      downloaded_bytes: 1200, total_bytes: 1000, file_index: 1,
     });
     expect(r.percent).toBe(100);
     expect(r.text).toBe("1.2 KB / 1000 B");
@@ -107,8 +107,17 @@ describe("describeFetch", () => {
   // A merged DASH fetch restarts downloaded_bytes at zero for the audio
   // stream. A counter that visibly resets with nothing explaining it is a bug
   // report waiting to happen.
-  it("names the file once a merged fetch moves to the second stream", () => {
+  // file_index is 1-based on the wire. Adding 1 here showed a single-stream
+  // download as "file 2" from its first byte — seen live as "file 3".
+  it("does not name the first (or only) part", () => {
     const r = describeFetch({ downloaded_bytes: 0, total_bytes: 100, file_index: 1 });
-    expect(r.text).toBe("0 B / 100 B · file 2");
+    expect(r.part).toBeNull();
+    expect(r.text).toBe("0 B / 100 B");
+  });
+
+  it("names the second part, unshifted, once a merged fetch moves to audio", () => {
+    const r = describeFetch({ downloaded_bytes: 0, total_bytes: 100, file_index: 2 });
+    expect(r.part).toBe(2);
+    expect(r.text).toBe("0 B / 100 B");
   });
 });

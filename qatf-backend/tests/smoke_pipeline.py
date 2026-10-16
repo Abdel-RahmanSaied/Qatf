@@ -745,6 +745,26 @@ check("the DASH audio file is index 2, so the byte reset is explained",
       (_seen[-1].file_index, _seen[-1].downloaded_bytes) == (2, 512),
       repr(_seen[-1]))
 
+# The order a real captioned fetch produces — seen live on a 3.2 GB job: the
+# caption track lands first and goes through this same hook. Counted, it made
+# the video "file 2" and its few-KB total overwrote the video's on the record.
+_cap: list[fetch.FetchProgress] = []
+_cap_hook = fetch.progress_hook(_cap.append)
+_cap_hook({"status": "downloading", "filename": "src/source.ar-orig.json3.part",
+           "downloaded_bytes": 900, "total_bytes": 173_000})
+_cap_hook({"status": "finished", "filename": "src/source.ar-orig.json3",
+           "downloaded_bytes": 173_000, "total_bytes": 173_000})
+check("a caption file reports no progress — it is not a part of the video",
+      _cap == [], repr(_cap))
+_cap_hook({"status": "downloading", "filename": "src/source.f571.mp4.part",
+           "downloaded_bytes": 1024, "total_bytes": 3_409_306_830})
+check("so the video after it is still file 1",
+      len(_cap) == 1 and _cap[-1].file_index == 1, repr(_cap))
+_cap_hook({"status": "downloading", "filename": "src/source.f140.m4a.part",
+           "downloaded_bytes": 0, "total_bytes": 50_000_000})
+check("and the audio stream file 2",
+      _cap[-1].file_index == 2, repr(_cap[-1]))
+
 _est: list[fetch.FetchProgress] = []
 fetch.progress_hook(_est.append)({
     "status": "downloading", "filename": "a.mp4",

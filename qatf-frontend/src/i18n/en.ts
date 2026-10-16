@@ -308,6 +308,9 @@ export const en = {
     tooShort: "Too short",
     tooLong: "Too long",
     downloadAria: "Downloading the video",
+    // A merged download fetches the picture and the sound separately, and the
+    // byte count restarts for the second — this names which one is running.
+    downloadPart: (n: number) => `part ${n}`,
   },
 
   plan: {
