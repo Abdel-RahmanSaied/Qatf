@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { DEFAULT_OPTIONS, PRESETS, WHISPER_MODELS } from "../api/types";
+import { DEFAULT_OPTIONS, OFFERED_CAPTION_STYLES, PRESETS, WHISPER_MODELS } from "../api/types";
 import type { JobOptions } from "../api/types";
 import { useI18n } from "../i18n/I18nProvider";
 import type { FieldErrors } from "../lib/rules";
@@ -91,8 +91,8 @@ export function OptionsForm({ value, onChange, errors }: Props) {
     set("fixups", Object.keys(record).length ? record : null);
   };
 
-  const captionStyle = value.caption_style ?? DEFAULT_OPTIONS.caption_style;
-  const styleShort = captionStyle === "pop" ? o.stylePopShort : o.styleYoutubeShort;
+  const captionStyle = value.caption_style ?? DEFAULT_OPTIONS.caption_style ?? "box";
+  const styleShort = o.stylesShort[captionStyle] ?? captionStyle;
   const reframeShort =
     value.reframe === "blur" ? o.reframeBlurShort :
     value.reframe === "track" ? o.reframeTrackShort :
@@ -265,8 +265,9 @@ export function OptionsForm({ value, onChange, errors }: Props) {
             <select id="opt-caption-style" value={captionStyle} aria-describedby="opt-style-help"
               onChange={(e) =>
                 set("caption_style", e.target.value as JobOptions["caption_style"])}>
-              <option value="youtube">{o.styleYoutube}</option>
-              <option value="pop">{o.stylePop}</option>
+              {OFFERED_CAPTION_STYLES.map((s) => (
+                <option key={s} value={s}>{o.styles[s]}</option>
+              ))}
             </select>
             <div className="field-help" id="opt-style-help">{o.styleHelp}</div>
           </div>

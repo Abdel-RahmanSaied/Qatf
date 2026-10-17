@@ -32,16 +32,16 @@ from pathlib import Path
 
 from ..core.constants import (
     CAPSULE_KAPPA,
+    CAPTION_LOOKS,
     CAPTION_MAX_CHARS,
     CAPTION_MAX_WORDS,
     CAPTION_STYLES,
     DEFAULT_CAPTION_STYLE,
     DEFAULT_FONT,
     PILL_FONT,
-    PILL_FONT_SIZE,
-    PILL_OUTLINE,
     TARGET_H,
     TARGET_W,
+    CaptionLook,
 )
 from ..core.types import Clip, Word
 from ..core.utils import ts_ass
@@ -70,6 +70,9 @@ HILITE = r"{\c&H00E0FF&}"   # ASS colour is BGR, not RGB -> this is yellow
 RESET = r"{\c&HFFFFFF&}"
 
 MIN_CUE = 0.08
+
+#: ARABIC TATWEEL (kashida). YouTube's ASR ends a cut-off word with it.
+TATWEEL = "\u0640"
 #: how long the last word of a caption line is held after it finishes.
 #:
 #: ALWAYS CLAMPED against the next line's start — see `build_ass`. Unclamped it
@@ -213,16 +216,17 @@ def font_for(style: str, font: str | None) -> str:
     """The font a caption style draws in: the caller's, or the style's own.
 
     `font` unset (None or blank) means "whatever this style uses": PILL_FONT
-    for `youtube`, DEFAULT_FONT for `pop`. Two defaults rather than one shared
-    default because `pop`'s measured numbers (`CAPTION_MAX_CHARS` above all)
-    belong to DEFAULT_FONT, and the pill style's look was chosen in PILL_FONT.
-    A font the caller names explicitly is honoured on both styles.
+    for every word-positioned look, DEFAULT_FONT for `pop`. Two defaults rather
+    than one shared default because `pop`'s measured numbers
+    (`CAPTION_MAX_CHARS` above all) belong to DEFAULT_FONT, and the looks were
+    chosen in PILL_FONT. A font the caller names explicitly is honoured on
+    every style.
 
     Every caller that needs a font for rendering, measuring or warning goes
     through here, so the two defaults cannot drift apart between them."""
     if font and font.strip():
         return font
-    return PILL_FONT if style == "youtube" else DEFAULT_FONT
+    return PILL_FONT if style in CAPTION_LOOKS else DEFAULT_FONT
 
 
 def font_warning(name: str) -> str | None:
@@ -264,9 +268,100 @@ def _clamp(start: float, end: float, next_start: float | None) -> float:
     return end
 
 
-def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
-                      measurer, per_line: int, font: str) -> Path:
-    """Captions with every word positioned absolutely and the spoken one pilled.
+def _caption_words(clip: Clip, words: list[Word]) -> list[Word]:
+    """The words a word-positioned caption shows: in the clip, not blanked,
+    and not a speech-recognition stutter fragment.
+
+    YouTube's caption track writes a cut-off word as its first letters plus a
+    tatweel — `كـ كـ طبيعتنا` for a speaker restarting «كطبيعتنا». A real word
+    never ENDS in a tatweel, so the rule is exact, and only the caption hides
+    it: the word keeps its timings in the transcript and no cut moves. Whole-line
+    cues used to hide these in the crowd; a per-word highlight gave each one its
+    own beat on screen."""
+    return [w for w in words_in(clip, words)
+            if w.text and not w.text.rstrip().endswith(TATWEEL)]
+
+
+def _merge_short_lines(chunks: list[list[int]], words: list[Word], texts: list[str],
+                       measurer, usable: float, gap: float, limit: int,
+                       min_line: float) -> list[list[int]]:
+    """Fold a line shorter than `min_line` seconds into the next one.
+
+    For one-word captions: a function word spoken in 90ms would otherwise flash
+    past as its own line. The merged line may hold one word more than `limit`,
+    and only if it still fits the usable width."""
+    if min_line <= 0:
+        return chunks
+    out: list[list[int]] = []
+    i = 0
+    while i < len(chunks):
+        cur = chunks[i]
+        dur = words[cur[-1]].end - words[cur[0]].start
+        if dur < min_line and i + 1 < len(chunks):
+            merged = cur + chunks[i + 1]
+            width = (sum(measurer.advance(texts[k]) for k in merged)
+                     + gap * (len(merged) - 1))
+            if len(merged) <= limit + 1 and width <= usable:
+                out.append(merged)
+                i += 2
+                continue
+        out.append(cur)
+        i += 1
+    return out
+
+
+def _active_windows(chunk_words: list[Word], clip_start: float, l_end: float,
+                    next_start: float | None,
+                    min_highlight: float) -> list[tuple[int, float, float]]:
+    """(word index, start, end) for each highlight on a line, clip-relative.
+
+    A word spoken for less than `min_highlight` does not get its own
+    highlight: the previous one simply stays on it. About one word in ten in a
+    real Arabic clip is under 0.12s, and a highlight jumping on and off for
+    three frames reads as flicker, not emphasis."""
+    wins: list[tuple[int, float, float]] = []
+    for bi, w in enumerate(chunk_words):
+        a_start = w.start - clip_start
+        if bi + 1 < len(chunk_words):
+            a_end = _clamp(a_start, chunk_words[bi + 1].start - clip_start, next_start)
+        else:
+            a_end = l_end
+        if wins and min_highlight > 0 and a_end - a_start < min_highlight:
+            pi, ps, _ = wins[-1]
+            wins[-1] = (pi, ps, a_end)
+            continue
+        wins.append((bi, a_start, a_end))
+    return wins
+
+
+#: How a line arrives, as override tags on each of its word events.
+_ENTER = {
+    "none": "",
+    "fade": "\\fad(120,0)",
+    "pop": "\\fscx85\\fscy85\\t(0,140,\\fscx100\\fscy100)",
+    "bounce": ("\\fscx60\\fscy60\\t(0,100,\\fscx110\\fscy110)"
+               "\\t(100,180,\\fscx100\\fscy100)"),
+}
+
+
+def _look_header(look: CaptionLook, font: str) -> str:
+    """ASS_HEADER with the Style line rebuilt from the look.
+
+    Style-line colours take no trailing `&` (override tags do), and the split
+    is on the line START: `WrapStyle:` contains `Style:` too."""
+    def colour(hex_rgb: str) -> str:
+        return ass_bgr(hex_rgb).rstrip("&")
+    style = (f"Style: Pop,{safe_font(font)},{look.size},{colour(look.text)},"
+             f"{colour(look.text)},{colour(look.outline_color)},"
+             f"&H{look.shadow_alpha:02X}000000,-1,0,0,0,100,100,0,0,1,"
+             f"{look.outline},{look.shadow},2,90,90,300,1")
+    head, tail = ASS_HEADER.split("\nStyle: ", 1)
+    return head + "\n" + style + "\n" + tail.split("\n", 1)[1]
+
+
+def build_ass_look(clip: Clip, words: list[Word], path: Path, measurer,
+                   per_line: int, font: str, look: CaptionLook) -> Path:
+    """Word-positioned captions in any `CaptionLook`.
 
     THE REASON THIS WORKS ON ARABIC: each `Dialogue` event holds exactly one
     word, so there is no multi-word bidi run for an override tag to split. The
@@ -274,51 +369,59 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
     The price is that libass no longer lays out the line, which is what
     `textlayout` is for.
 
-    Three events per word, on three layers:
+    Events per line and word, on layers (shifted up one when the look has a
+    line box, which takes layer 0):
 
-        0   every word, dimmed, outline kept     spans the WHOLE line window
-        1   the capsule                           only while that word is active
-        2   the word again, bright, no outline    only while that word is active
+        0   every word (dimmed if the look dims)     the whole line window
+        1   the pill / marker box                    only while that word is active
+        2   the word again, highlighted              only while that word is active
 
-    Layer 0 carries identical timings for every word in a line, so only the
-    capsule and the bright word need per-word windows. The ordering is also what
-    lets the active word have no outline: the dimmed copy underneath still has
-    one, and the capsule paints over it — which is why PILL_PAD_X must exceed
-    OUTLINE."""
-    from ..core.constants import (
-        CAPTION_DIM_ALPHA,
-        CAPTION_SIDE_MARGIN,
-        PILL_FILL,
-        PILL_PAD_X,
-        PILL_PAD_Y,
-        PILL_WORD_GAP,
-    )
+    The word layer carries identical timings for every word in a line, so only
+    the highlight needs per-word windows. The ordering is what lets a pilled
+    word drop its outline: the copy underneath still has one, and the pill
+    paints over it — which is why the pill padding must exceed the outline.
+
+    `measurer` must have been built at `look.size`, or every box is scaled for
+    a size libass is not drawing."""
+    from ..core.constants import CAPTION_SIDE_MARGIN
     from . import textlayout as tl
 
-    # The pill style's own size and outline, never `pop`'s FONT_SIZE / OUTLINE.
-    # The measurer must have been built at PILL_FONT_SIZE too, or every box is
-    # scaled for a size libass is not drawing.
-    lines = [ASS_HEADER.replace("{FONT}", safe_font(font))
-                        .replace("{SIZE}", str(PILL_FONT_SIZE))
-                        .replace("{OUTLINE}", str(PILL_OUTLINE))]
-
+    lines = [_look_header(look, font)]
     usable = TARGET_W - 2 * CAPTION_SIDE_MARGIN
-    in_clip = [w for w in words_in(clip, words) if w.text]
+    in_clip = _caption_words(clip, words)
     texts = [escape(w.text) for w in in_clip]
-    # The capsule reaches PILL_PAD_X past each side of the active word, so the
-    # gap to the next word must clear it — with room left, so the pill never
-    # touches its neighbour. One measured space did not: only the font scale
-    # that inflated every width 2.1x had been hiding it. See PILL_WORD_GAP.
-    gap = PILL_WORD_GAP
-    chunks = tl.chunk_by_width(texts, measurer, usable, per_line, min_gap=gap)
+    # The highlight reaches its padding past each side of the active word (or
+    # grows by the pop), so the gap to the next word must clear it — see
+    # CaptionLook.gap. One measured space did not.
+    gap = look.gap
+    limit = max(1, min(per_line, look.max_words))
+    chunks = tl.chunk_by_width(texts, measurer, usable, limit, min_gap=gap)
+    chunks = _merge_short_lines(chunks, in_clip, texts, measurer, usable, gap,
+                                limit, look.min_line)
 
-    # Vertical: reproduce where MarginV 300 puts a bottom-aligned line today, so
-    # a style change does not silently move captions up the frame.
-    baseline_y = TARGET_H - 300 - measurer.line_height / 2
-    pill_fill = ass_bgr(PILL_FILL)
-    # Fill only — see CAPTION_DIM_ALPHA for why the outline stays solid. Off
-    # (0x00, the default) emits no tag at all rather than an opaque one.
-    dim = f"\\1a&H{CAPTION_DIM_ALPHA:02X}&" if CAPTION_DIM_ALPHA else ""
+    if look.y is None:
+        # The original pill placement: where MarginV 300 put a bottom line.
+        baseline_y = TARGET_H - 300 - measurer.line_height / 2
+    else:
+        baseline_y = TARGET_H * look.y
+    base = 1 if look.box else 0            # layer of the word events
+    dim = f"\\1a&H{look.dim_alpha:02X}&" if look.dim_alpha else ""
+    blur = f"\\blur{look.blur:g}" if look.blur else ""
+    enter = _ENTER[look.enter]
+    hi_color = f"\\c{ass_bgr(look.hi_text)}" if look.hi_text != look.text else ""
+    if look.hi_outline is None:
+        hi_border = ""
+    elif look.hi_outline == 0:
+        hi_border = "\\bord0\\shad0"
+    else:
+        hi_border = f"\\bord{look.hi_outline}"
+    if look.hi_outline_color:
+        hi_border += f"\\3c{ass_bgr(look.hi_outline_color)}"
+    # The spoken word's own blur replaces the look's: a glow on that word must
+    # not soften every other word on the line too.
+    hi_blur = f"\\blur{look.hi_blur:g}" if look.hi_blur else blur
+    hi_pop = (f"\\t(0,80,\\fscx{look.hi_scale}\\fscy{look.hi_scale})"
+              if look.hi_scale != 100 else "")
 
     for ci, chunk in enumerate(chunks):
         chunk_words = [in_clip[i] for i in chunk]
@@ -326,20 +429,17 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
         base_rtl = is_rtl(" ".join(chunk_texts))
         line = tl.solve_line(chunk_texts, measurer, usable, base_rtl, min_gap=gap)
 
-        # The capsule is sized from the ink this LINE actually puts on
-        # screen, not the font's line box — see textlayout.Measurer.ink_extents.
-        # Computed once per line, not per word: every capsule on a line must
-        # be the same height, or pills would change size as the highlight
-        # moves across it.
+        # Highlight and box heights come from the ink this LINE actually puts
+        # on screen, not the font's line box — see Measurer.ink_extents. Once
+        # per line, so every highlight on it is the same height.
         line_text = " ".join(box.text for box in line.boxes)
         ink_top, ink_bot = measurer.ink_extents(line_text)
         # `\an5` centres the LINE BOX on baseline_y, so the baseline itself
-        # sits here — the ink is not centred within that box, which is why the
-        # capsule is positioned from the baseline rather than from baseline_y.
+        # sits here — the ink is not centred within that box, which is why
+        # shapes are positioned from the baseline rather than from baseline_y.
         baseline_screen = (baseline_y - measurer.line_height / 2
-                            + measurer.ascender)
-        ph = int(round(ink_top - ink_bot)) + 2 * PILL_PAD_Y
-        pill_cy = baseline_screen - (ink_top + ink_bot) / 2
+                           + measurer.ascender)
+        ink_cy = baseline_screen - (ink_top + ink_bot) / 2
 
         next_start = (in_clip[chunks[ci + 1][0]].start - clip.start
                       if ci + 1 < len(chunks) else None)
@@ -348,45 +448,66 @@ def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
                        chunk_words[-1].end - clip.start + LAST_WORD_HOLD,
                        next_start)
 
-        for bi, box in enumerate(line.boxes):
-            cx = CAPTION_SIDE_MARGIN + box.x + box.width / 2
-            w_active = chunk_words[bi]
-            a_start = w_active.start - clip.start
-            if bi + 1 < len(chunk_words):
-                a_end = _clamp(a_start, chunk_words[bi + 1].start - clip.start,
-                               next_start)
-            else:
-                a_end = l_end
-
-            # 0 — every word (dimmed when CAPTION_DIM_ALPHA is on), whole line window
+        if look.box:
+            bw = int(round(line.width)) + 2 * look.box_pad_x
+            bh = int(round(ink_top - ink_bot)) + 2 * look.box_pad_y
+            box_fade = "\\fad(120,0)" if look.enter != "none" else ""
             lines.append(
                 f"Dialogue: 0,{ts_ass(l_start)},{ts_ass(l_end)},Pop,,0,0,0,,"
-                f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{dim}}}{box.text}")
+                f"{{\\pos({TARGET_W / 2 - bw / 2:.0f},{ink_cy - bh / 2:.0f})"
+                f"\\an7\\p1\\c{ass_bgr(look.box)}\\1a&H{look.box_alpha:02X}&"
+                f"\\bord0\\shad0{box_fade}}}"
+                f"{rounded_rect_path(bw, bh, round(bh * 0.28))}{{\\p0}}")
 
-            # 1 — the capsule
-            # capsule_path floors its own width to 2*radius so the rounded caps
-            # cannot invert on a short word. That floor has to be applied HERE
-            # too, before px is computed — otherwise px centres the un-clamped
-            # pw while capsule_path silently draws a wider shape, and every word
-            # narrower than the line height renders its pill off-centre. Do not
-            # "simplify" this back to the unclamped value.
-            r = max(1, ph // 2)
-            pw = max(int(round(box.width)) + 2 * PILL_PAD_X, 2 * r)
-            px = cx - pw / 2
-            py = pill_cy - ph / 2
+        centres = [CAPTION_SIDE_MARGIN + box.x + box.width / 2 for box in line.boxes]
+        wins = ({} if look.highlight == "none" else
+                {bi: (a, b) for bi, a, b in _active_windows(
+                    chunk_words, clip.start, l_end, next_start, look.min_highlight)})
+        # Each word's events stay together — word, highlight box, highlighted
+        # word — the order the original pill renderer wrote them in.
+        for bi, box in enumerate(line.boxes):
+            cx = centres[bi]
             lines.append(
-                f"Dialogue: 1,{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
-                f"{{\\pos({px:.0f},{py:.0f})\\an7\\p1\\c{pill_fill}"
-                f"\\bord0\\shad0}}{capsule_path(pw, ph)}{{\\p0}}")
-
-            # 2 — the active word, no outline; the pill carries contrast
+                f"Dialogue: {base},{ts_ass(l_start)},{ts_ass(l_end)},Pop,,0,0,0,,"
+                f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{dim}{blur}{enter}}}"
+                f"{box.text}")
+            if bi not in wins:
+                continue
+            a_start, a_end = wins[bi]
+            if look.highlight in ("pill", "marker"):
+                ph = int(round(ink_top - ink_bot)) + 2 * look.hi_pad_y
+                capsule = look.hi_radius >= 0.5
+                r = max(1, ph // 2) if capsule else max(1, round(ph * look.hi_radius))
+                # The drawing floors its own width to 2*radius so short words
+                # cannot invert the rounded ends. That floor has to be applied
+                # HERE too, before px is computed — otherwise px centres the
+                # un-clamped width while the path draws a wider shape, and every
+                # short word's highlight renders off-centre.
+                pw = max(int(round(box.width)) + 2 * look.hi_pad_x, 2 * r)
+                px, py = cx - pw / 2, ink_cy - ph / 2
+                shape = capsule_path(pw, ph) if capsule else rounded_rect_path(pw, ph, r)
+                lines.append(
+                    f"Dialogue: {base + 1},{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
+                    f"{{\\pos({px:.0f},{py:.0f})\\an7\\p1\\c{ass_bgr(look.hi_fill)}"
+                    f"\\bord0\\shad0}}{shape}{{\\p0}}")
+            # The word that opens a line arrives with it, so it takes the
+            # entrance too rather than sitting full-size over a popping copy.
+            arrive = enter if (a_start == l_start and look.enter in ("pop", "bounce")) else ""
             lines.append(
-                f"Dialogue: 2,{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
-                f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5\\bord0\\shad0}}{box.text}")
+                f"Dialogue: {base + 2},{ts_ass(a_start)},{ts_ass(a_end)},Pop,,0,0,0,,"
+                f"{{\\pos({cx:.0f},{baseline_y:.0f})\\an5{hi_color}{hi_border}{hi_blur}"
+                f"{arrive}{hi_pop}}}{box.text}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def build_ass_youtube(clip: Clip, words: list[Word], path: Path,
+                      measurer, per_line: int, font: str) -> Path:
+    """The `youtube` look — kept as a name because callers and checks use it."""
+    return build_ass_look(clip, words, path, measurer, per_line, font,
+                          CAPTION_LOOKS["youtube"])
 
 
 def resolve_style(style: str, font: str | None) -> tuple[str, str | None]:
@@ -408,15 +529,19 @@ def resolve_style(style: str, font: str | None) -> tuple[str, str | None]:
                          f"{', '.join(CAPTION_STYLES)}")
     if style == "pop":
         return "pop", None
-    if textlayout.load_measurer(safe_font(font_for("youtube", font)),
-                                PILL_FONT_SIZE) is not None:
-        return "youtube", None
+    # Measured at the look's own size: that is the measurer `build_ass` will
+    # ask for, so the decision recorded here is the one the render makes.
+    if textlayout.load_measurer(safe_font(font_for(style, font)),
+                                CAPTION_LOOKS[style].size) is not None:
+        return style, None
+    # `style` is safe to name: it was checked against CAPTION_STYLES above,
+    # so this never echoes free caller text.
     return "pop", (
-        "the 'youtube' caption style needs shaped word measurement, which is "
+        f"the '{style}' caption style needs shaped word measurement, which is "
         "unavailable on this host — either uharfbuzz is not installed "
         "(pip install 'qatf[captions]') or fontconfig cannot resolve the "
         "requested font family to a file. Falling back to the 'pop' style, "
-        "which renders one caption line at a time with no pill.")
+        "which renders one caption line at a time with no highlight.")
 
 
 def build_ass(clip: Clip, words: list[Word], path: Path,
@@ -433,19 +558,21 @@ def build_ass(clip: Clip, words: list[Word], path: Path,
     the line will be scrambled, and the only reason to do that is to re-measure
     the bug.
 
-    `style` picks the emitter: `youtube` (the default) positions every word
-    absolutely and pills the active one — see `build_ass_youtube`. `pop` is the
-    original single-line style this docstring otherwise describes, and every
-    measured number in CLAUDE.md and docs/quality.md depends on `pop` being
-    untouched by the addition. `measurer` is normally left to be resolved from
-    `font`; the caller passes one directly only where fontconfig or uharfbuzz is
-    known to be unavailable (i.e. the test suite)."""
-    if style == "youtube":
-        pill_font = font_for("youtube", font)
+    `style` picks the emitter: any key of CAPTION_LOOKS (`box`, the default,
+    and the others) positions every word absolutely and marks the spoken one —
+    see `build_ass_look`. `pop` is the original single-line style this
+    docstring otherwise describes, and every measured number in CLAUDE.md and
+    docs/quality.md depends on `pop` being untouched by the addition.
+    `measurer` is normally left to be resolved from `font`; the caller passes
+    one directly only where fontconfig or uharfbuzz is known to be unavailable
+    (i.e. the test suite)."""
+    if style in CAPTION_LOOKS:
+        look = CAPTION_LOOKS[style]
+        look_font = font_for(style, font)
         m = measurer if measurer is not None else \
-            textlayout.load_measurer(safe_font(pill_font), PILL_FONT_SIZE)
+            textlayout.load_measurer(safe_font(look_font), look.size)
         if m is not None:
-            return build_ass_youtube(clip, words, path, m, per_line, pill_font)
+            return build_ass_look(clip, words, path, m, per_line, look_font, look)
         # No measurement available. Fall THROUGH to `pop` rather than raise —
         # see `resolve_style`. The caller is responsible for warning. An unset
         # font falls through to `pop`'s own default, not the pill's face.
@@ -518,8 +645,17 @@ def capsule_path(w: int, h: int) -> str:
 
     The path carries NO caller-supplied text — it is pure geometry — so it adds
     no trust-boundary surface. `escape()` still guards every actual word."""
-    r = max(1, h // 2)
-    w = max(w, 2 * r)                  # never let the caps overlap and invert
+    return rounded_rect_path(w, h, max(1, h // 2))
+
+
+def rounded_rect_path(w: int, h: int, r: int) -> str:
+    """An ASS `\\p1` rounded rectangle `w` x `h` with corner radius `r`.
+
+    Both sides are floored to `2 * r` so the corners can never overlap and
+    invert. `capsule_path` is the `r = h // 2` case."""
+    r = max(1, r)
+    w = max(w, 2 * r)                  # never let the corners overlap and invert
+    h = max(h, 2 * r)
     k = round(r * CAPSULE_KAPPA)
     return (f"m {r} 0 l {w - r} 0 "
             f"b {w - r + k} 0 {w} {r - k} {w} {r} "

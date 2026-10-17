@@ -109,8 +109,9 @@ transcript — not yet through a real end-to-end job).
 
 ## Captions render as one line at a time even though I asked for the pill
 
-**Symptom.** `caption_style` (or `--caption-style`) was set to `youtube`, but
-the rendered clip shows the original single-line style with no capsule at all.
+**Symptom.** `caption_style` (or `--caption-style`) was set to a word-placed
+style (`box`, `pill`, `marker` or `youtube`), but the rendered clip shows the
+original single-line style with no word highlight at all.
 
 **Cause.** Shaped word measurement was unavailable on the **rendering host** —
 under the API that is the server, not the caller's machine — so

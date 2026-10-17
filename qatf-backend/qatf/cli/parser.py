@@ -119,8 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="max words per caption line")
     ap.add_argument("--caption-style", choices=CAPTION_STYLES,
                     default=DEFAULT_CAPTION_STYLE,
-                    help="youtube = per-word pill (needs qatf[captions]); "
-                         "pop = one line at a time")
+                    help="box (default) = line on a dark box, spoken word in "
+                         "yellow; pill = saffron capsule on the spoken word; "
+                         "marker = yellow highlighter box; youtube = the "
+                         "earlier pill, no stroke. All four need "
+                         "qatf[captions]. pop = one line at a time")
     ap.add_argument("--no-captions", action="store_true")
     ap.add_argument("--plan-only", action="store_true",
                     help="transcribe + select, write plan.json, skip rendering")

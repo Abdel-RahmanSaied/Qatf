@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 
 from ... import __version__
 from ...core.config import Settings
-from ...core.constants import PILL_FONT, PILL_FONT_SIZE
+from ...core.constants import CAPTION_LOOKS, DEFAULT_CAPTION_STYLE, PILL_FONT
 from ...core.errors import QatfError
 from ...core.utils import ffmpeg_available
 from ...llm import describe, provider_from_settings
@@ -76,5 +76,6 @@ def healthz(settings: Settings = Depends(get_settings)) -> Health:
         providers=[ProviderInfo(**p) for p in describe()],
         cuda_devices=cuda_device_count(),
         transcribe_device=resolve_device("auto"),
-        caption_pill_ready=pill_ready(PILL_FONT, PILL_FONT_SIZE),
+        caption_pill_ready=pill_ready(PILL_FONT,
+                                      CAPTION_LOOKS[DEFAULT_CAPTION_STYLE].size),
     )

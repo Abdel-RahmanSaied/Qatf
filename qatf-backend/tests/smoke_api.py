@@ -639,9 +639,20 @@ with TestClient(app) as client:
     check("the reason and location still reach the caller",
           "end" in bad.json()["detail"], bad.json()["detail"][:160])
 
-    check("caption_style defaults to youtube",
-          JobOptions().caption_style == "youtube")
-    check("caption_style accepts pop", JobOptions(caption_style="pop").caption_style == "pop")
+    # Chosen 2026-10-17 from real renders: `box` by default; `pill`, `marker`
+    # and the earlier `youtube` look offered; `pop` stays valid as the fallback.
+    check("caption_style defaults to box", JobOptions().caption_style == "box")
+    for _style in ("box", "pill", "marker", "youtube", "pop"):
+        check(f"caption_style accepts {_style}",
+              JobOptions(caption_style=_style).caption_style == _style)
+    # The schema's Literal is written by hand (pydantic needs literals), so it
+    # is the one copy of the style list that can drift from the constant.
+    from typing import get_args as _get_args
+
+    from qatf.core.constants import CAPTION_STYLES as _STYLES
+    check("the schema offers exactly CAPTION_STYLES",
+          set(_get_args(JobOptions.model_fields["caption_style"].annotation)) == set(_STYLES),
+          str(_get_args(JobOptions.model_fields["caption_style"].annotation)))
     _r = client.post("/jobs", json={"path": "talk.mp4", "caption_style": "sparkly"})
     check("an unknown caption_style is refused at the boundary", _r.status_code == 422)
     check("and the 422 does not echo the rejected value back",

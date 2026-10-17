@@ -198,11 +198,13 @@ VIDEO_SUFFIXES = frozenset({
     ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".mp3", ".wav", ".m4a",
 })
 
-#: Caption styles. `youtube` positions every word absolutely and puts the
-#: spoken one in a filled capsule; `pop` is the original single-line style and
-#: remains the fallback whenever measurement is unavailable.
-CAPTION_STYLES = ("youtube", "pop")
-DEFAULT_CAPTION_STYLE = "youtube"
+#: Caption styles. Every one but `pop` is a word-positioned look in
+#: CAPTION_LOOKS (below) — each word placed absolutely, the spoken one marked.
+#: `pop` is the original single-line style and remains the fallback whenever
+#: measurement is unavailable. Must list exactly CAPTION_LOOKS' keys + `pop`;
+#: a check pins that, and the API schema's Literal repeats it by hand.
+CAPTION_STYLES = ("box", "pill", "marker", "youtube", "pop")
+DEFAULT_CAPTION_STYLE = "box"
 
 #: Pill fill. A deepened saffron, and the depth is measured rather than chosen:
 #: white on the product's existing highlight yellow (#E8A317) is 2.17:1, below
@@ -265,3 +267,121 @@ CAPTION_SIDE_MARGIN = 90
 #: radius. The standard circle-from-beziers constant; ASS has no rounded-rect
 #: primitive, so the capsule is a hand-built path.
 CAPSULE_KAPPA = 0.5523
+
+
+# ---- caption looks --------------------------------------------------------
+# A look is the whole recipe for one word-positioned caption style: size,
+# words per line, where the line sits, stroke, shadow, glow, how the spoken
+# word is marked, and how a line enters. `captions.build_ass_look` renders any
+# of them through the same layout (`textlayout`), so the pill-fit rules — gap
+# clears the highlight, capsule sized from ink, measured at the size drawn —
+# hold for every look rather than being re-learned per style. `pop` is not a
+# look: it is the original one-cue-per-line path and keeps its own constants.
+
+from dataclasses import dataclass  # noqa: E402
+
+
+@dataclass(frozen=True)
+class CaptionLook:
+    #: ASS Fontsize on the 1080x1920 canvas — the face's whole line height,
+    #: not its em (see `textlayout._libass_height`).
+    size: int
+    #: most words on one line; the job's `per_line` can only lower it.
+    max_words: int
+    #: px between words. Must clear the highlight's overhang (pill padding,
+    #: or the growth of a popped word) or the highlight covers a neighbour.
+    gap: int
+    #: line centre as a fraction of frame height. None = the original pill
+    #: placement (MarginV 300), kept so that look renders byte-identically.
+    y: float | None = None
+    text: str = "#FFFFFF"
+    outline: int = 0
+    outline_color: str = "#101010"
+    shadow: int = 3
+    #: ASS alpha of the shadow (0x00 opaque .. 0xFF clear).
+    shadow_alpha: int = 0x00
+    #: \blur on every text event; with an outline it softens it into a glow.
+    blur: float = 0.0
+    #: fill alpha of words not being spoken (0x00 = no dimming).
+    dim_alpha: int = 0x00
+    #: how the spoken word is marked: "pill" (filled capsule), "marker"
+    #: (squarer highlighter box), "color" (the word recoloured) or "none".
+    highlight: str = "pill"
+    hi_text: str = "#FFFFFF"
+    hi_fill: str = "#B4560A"
+    #: box corner radius as a fraction of its height; 0.5 is a capsule.
+    hi_radius: float = 0.5
+    hi_pad_x: int = 40
+    hi_pad_y: int = 18
+    #: outline on the spoken word; None keeps the base outline.
+    hi_outline: int | None = 0
+    #: outline colour of the spoken word (None = the base outline colour).
+    #: With `hi_blur`, a wide coloured outline becomes a glow on that word only.
+    hi_outline_color: str | None = None
+    #: \blur on the spoken word alone (0 = the look's own `blur`).
+    hi_blur: float = 0.0
+    #: the spoken word grows to this % while it is spoken (100 = no pop).
+    hi_scale: int = 100
+    #: how a line arrives: "none", "fade", "pop" (85% -> 100%) or "bounce"
+    #: (60% -> 110% -> 100%, for one-word captions).
+    enter: str = "none"
+    #: a rounded box behind the whole line, or None.
+    box: str | None = None
+    box_alpha: int = 0x40
+    box_pad_x: int = 0
+    box_pad_y: int = 0
+    #: a line shorter than this (s) takes the next word too, so one-word
+    #: captions do not flash past on a short function word.
+    min_line: float = 0.0
+    #: a spoken word shorter than this (s) keeps the previous word's
+    #: highlight instead of flashing its own. 0 = every word highlighted.
+    min_highlight: float = 0.0
+
+
+#: Every word-positioned caption style, by `caption_style` key.
+#:
+#: Chosen 2026-10-17 from real renders of a 4K Arabic job (clip 07, eight
+#: seconds, eight candidate looks side by side): `box` is the default, with
+#: `pill`, `marker` and `youtube` offered. Rejected and NOT shipped, so
+#: nobody rebuilds them blind: a Hormozi-style yellow-and-grow highlight, a
+#: one-word bounce, a glow, and a minimal phrase style.
+#:
+#: Rules every look follows, from published short-form caption guides:
+#: the line sits 62-66% down the frame (`y`), inside the area Shorts, Reels
+#: and TikTok leave clear of their buttons — the original pill sat at ~81%,
+#: under them; a highlight shorter than 0.15s is not shown (`min_highlight`),
+#: since about one word in ten in real Arabic speech is under 0.12s and a
+#: highlight that lasts three frames reads as flicker; and `gap` clears the
+#: highlight, measured on render.
+YELLOW = "#FFD60A"
+CAPTION_LOOKS: dict[str, CaptionLook] = {
+    # The whole line on a dark see-through box, the spoken word in yellow —
+    # TikTok's and CapCut's classic. Readable over any footage, because the
+    # box, not a stroke, carries the contrast; so the letters need no outline.
+    "box": CaptionLook(
+        size=118, max_words=5, gap=26, y=0.66, outline=0, shadow=0,
+        highlight="color", hi_text=YELLOW, hi_outline=None, enter="fade",
+        box="#000000", box_alpha=0x48, box_pad_x=34, box_pad_y=24,
+        min_highlight=0.15),
+    # The saffron pill on the spoken word, with a stroke on the words around
+    # it (the original pill had none and leaned on its drop shadow alone).
+    "pill": CaptionLook(
+        size=150, max_words=3, gap=44, y=0.64, outline=4, outline_color="#111111",
+        shadow=2, shadow_alpha=0x60, highlight="pill", hi_fill=PILL_FILL,
+        hi_pad_x=30, hi_pad_y=12, hi_outline=0, hi_scale=106, enter="pop",
+        min_highlight=0.15),
+    # A yellow highlighter box with black text on the spoken word — the
+    # Submagic "Beasty" family.
+    "marker": CaptionLook(
+        size=150, max_words=3, gap=44, y=0.64, outline=4, outline_color="#111111",
+        shadow=2, shadow_alpha=0x60, highlight="marker", hi_fill=YELLOW,
+        hi_text="#111111", hi_radius=0.16, hi_pad_x=22, hi_pad_y=10, hi_outline=0,
+        hi_scale=104, enter="pop", min_highlight=0.15),
+    # The look chosen on 2026-10-16 (Tajawal 144, no outline, nothing dimmed,
+    # 52px gap), kept as an option exactly as it was — including its low
+    # placement — because it was asked for by name.
+    "youtube": CaptionLook(
+        size=PILL_FONT_SIZE, max_words=99, gap=PILL_WORD_GAP,
+        outline=PILL_OUTLINE, dim_alpha=CAPTION_DIM_ALPHA,
+        hi_pad_x=PILL_PAD_X, hi_pad_y=PILL_PAD_Y),
+}

@@ -2707,12 +2707,12 @@ check("the Style line carries the pill size and outline, not pop's",
 # only: dimming the outline too (`\alpha`, or `\3a`) dissolved the word into a
 # grey ghost on a light background — seen on a real 4K render over a white
 # shirt. Rebuilt with dimming on, so this rule keeps a check that can fail.
-_saved_dim = K.CAPTION_DIM_ALPHA
-K.CAPTION_DIM_ALPHA = 0x8C
-_dim_path = captions.build_ass(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_dim.ass"),
-                               style="youtube", measurer=_M)
+import dataclasses as _dc  # noqa: E402
+
+_dim_look = _dc.replace(K.CAPTION_LOOKS["youtube"], dim_alpha=0x8C)
+_dim_path = captions.build_ass_look(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_dim.ass"),
+                                    _M, 5, "Tajawal", _dim_look)
 _dim_dl = dialogue_lines(_dim_path.read_text(encoding="utf-8"))
-K.CAPTION_DIM_ALPHA = _saved_dim
 _dim_path.unlink(missing_ok=True)
 check("with dimming on, inactive words are dimmed",
       any("\\1a&H8C&" in d[9] for d in _dim_dl))
@@ -2794,5 +2794,115 @@ check("the warning does not echo the caller's font name back",
       _warn and "NoSuchFamily" not in _warn, str(_warn))
 raises("an unknown style is refused rather than silently defaulted",
        ValueError, captions.resolve_style, "sparkly", DEFAULT_FONT)
+
+section("captions: looks — box (default), pill, marker, youtube")
+# Chosen 2026-10-17 from real renders of a 4K Arabic job; see CAPTION_LOOKS.
+from qatf.core.constants import (  # noqa: E402
+    CAPTION_LOOKS as _LOOKS,
+)
+from qatf.core.constants import (  # noqa: E402
+    CAPTION_STYLES as _STYLES,
+)
+from qatf.core.constants import (  # noqa: E402
+    DEFAULT_CAPTION_STYLE as _DEFAULT_STYLE,
+)
+
+check("caption styles are exactly the looks plus pop",
+      tuple(_LOOKS) + ("pop",) == _STYLES, str(_STYLES))
+check("the default style is box", _DEFAULT_STYLE == "box")
+check("every look draws in the pill face when font is unset",
+      all(captions.font_for(k, None) == "Tajawal" for k in _LOOKS))
+for _key, _look in _LOOKS.items():
+    if _look.highlight in ("pill", "marker"):
+        # The highlight reaches hi_pad_x past each side of its word; a gap at
+        # or under that puts the box over the neighbour — the overlap a real
+        # render showed when words sat 8px apart under an 18px overhang.
+        check(f"{_key}: the word gap clears the highlight box",
+              _look.gap > _look.hi_pad_x, f"gap {_look.gap} vs pad {_look.hi_pad_x}")
+        check(f"{_key}: the highlight padding clears the outline it paints over",
+              _look.hi_pad_x > _look.outline, f"{_look.hi_pad_x} vs {_look.outline}")
+    if _look.y is not None:
+        # Shorts covers ~the bottom 20%, TikTok 25%, Reels 35%: the line must
+        # sit where all three leave it visible.
+        check(f"{_key}: sits inside the platforms' safe band",
+              0.55 <= _look.y <= 0.70, str(_look.y))
+
+# A line of words on the default look, with one word spoken in 50ms and one
+# YouTube stutter fragment (a cut-off word ending in a tatweel).
+_lw = [Word("hello", 0.0, 0.4), Word("w", 0.4, 0.45), Word("world", 0.45, 0.9),
+       Word("كـ", 0.9, 1.0), Word("again", 1.0, 1.5)]
+_box_path = captions.build_ass(Clip(0.0, 5.0, "t"), _lw, Path("_tmp_box.ass"),
+                               style="box", measurer=_M)
+_box_body = _box_path.read_text(encoding="utf-8")
+_box_path.unlink(missing_ok=True)
+_box_dl = dialogue_lines(_box_body)
+
+
+def _layer(d):
+    return int(d[0].split()[1])
+
+
+check("box: the Style line carries the look's size and no outline",
+      ",Tajawal,118," in _box_body and ",1,0,0,2," in _box_body,
+      next((ln for ln in _box_body.splitlines() if ln.startswith("Style:")), ""))
+check("box: one see-through box drawing per line, on layer 0",
+      sum(1 for d in _box_dl if _layer(d) == 0 and "\\p1" in d[9]
+          and "\\1a&H48&" in d[9]) == 1, str([d[9][:60] for d in _box_dl if _layer(d) == 0]))
+check("box: the words sit above it on layer 1",
+      {_layer(d) for d in _box_dl if "\\p1" not in d[9]} >= {1})
+check("box: the spoken word turns yellow (#FFD60A is &H000AD6FF& in BGR)",
+      any("\\c&H000AD6FF&" in d[9] for d in _box_dl if _layer(d) == 3))
+check("box: no pill or marker shape is drawn on top",
+      not any(_layer(d) == 2 for d in _box_dl))
+check("box: the line sits 66% down the frame, not under the app buttons",
+      all(f",{round(TARGET_H * 0.66)})" in d[9] for d in _box_dl if _layer(d) == 1),
+      next((d[9][:40] for d in _box_dl if _layer(d) == 1), ""))
+check("a stutter fragment ending in a tatweel is not captioned",
+      "كـ" not in _box_body)
+check("...while a real word is",
+      sum(1 for d in _box_dl if _layer(d) == 1) == 4,
+      str([d[9].split("}")[-1] for d in _box_dl if _layer(d) == 1]))
+# hello, w (50ms), world, again: the 50ms word keeps hello's highlight rather
+# than flashing its own for a frame and a half.
+check("a word under 0.15s does not flash its own highlight",
+      sum(1 for d in _box_dl if _layer(d) == 3) == 3,
+      str([d[9].split("}")[-1] for d in _box_dl if _layer(d) == 3]))
+_hl = sorted((d[1], d[2]) for d in _box_dl if _layer(d) == 3)
+check("...and the highlights still tile the line with no gap",
+      all(a[1] == b[0] for a, b in zip(_hl, _hl[1:], strict=False)), str(_hl))
+check("the line fades in",
+      all("\\fad(120,0)" in d[9] for d in _box_dl if _layer(d) in (0, 1)))
+
+_mk_path = captions.build_ass(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_mk.ass"),
+                              style="marker", measurer=_M)
+_mk_dl = dialogue_lines(_mk_path.read_text(encoding="utf-8"))
+_mk_path.unlink(missing_ok=True)
+_mk_shape = next(d[9] for d in _mk_dl if "\\p1" in d[9])
+_mk_r = int(_mk_shape.split("}")[1].split()[1])           # "m {r} 0 ..."
+_mk_ys = [int(t) for t in _mk_shape.split("}")[1].split("{")[0].split()[2::2]
+          if t.lstrip("-").isdigit()]
+check("marker: a squarer highlighter box, not a capsule",
+      _mk_r * 2 < max(_mk_ys), f"radius {_mk_r}, height {max(_mk_ys)}")
+check("marker: black text on the yellow box",
+      any("\\c&H00111111&" in d[9] for d in _mk_dl if "\\p1" not in d[9]
+          and _layer(d) == 2))
+
+_pl_path = captions.build_ass(Clip(0.0, 5.0, "t"), _ltr, Path("_tmp_pl.ass"),
+                              style="pill", measurer=_M)
+_pl_dl = dialogue_lines(_pl_path.read_text(encoding="utf-8"))
+_pl_path.unlink(missing_ok=True)
+check("pill: the line pops in from 85%",
+      all("\\fscx85" in d[9] for d in _pl_dl if _layer(d) == 0))
+check("pill: the spoken word grows slightly while spoken",
+      any("\\t(0,80,\\fscx106\\fscy106)" in d[9] for d in _pl_dl if _layer(d) == 2))
+
+# The vertical half of the metric rule: the ascender comes from the SAME table
+# as the height. Tajawal's win (1065/411) and hhea (643/-357) disagree, and
+# mixing them drew every pill 18px too high, text hanging out of its bottom.
+check("libass metrics take the ascender from the table they take the height from",
+      tl._libass_metrics(_FakeFace(1000, win=(1065, 411), hhea=(643, -357)))
+      == (1065.0, 1476.0))
+check("...falling back together, never mixed",
+      tl._libass_metrics(_FakeFace(1000, hhea=(643, -357))) == (643.0, 1000.0))
 
 raise SystemExit(report())

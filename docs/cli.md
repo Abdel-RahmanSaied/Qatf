@@ -129,7 +129,7 @@ See [quality.md](quality.md) for what each of these was actually worth.
 | --- | --- | --- |
 | `--font NAME` | the style's own | `youtube`: Tajawal (bundled in the image); `pop`: Noto Sans Arabic. A named face must be installed on the rendering host |
 | `--per-line N` | `4` | max words per caption line |
-| `--caption-style youtube\|pop` | `youtube` | `youtube` = per-word pill, needs `qatf[captions]`; `pop` = one line at a time |
+| `--caption-style box\|pill\|marker\|youtube\|pop` | `box` | `box` = line on a dark box, spoken word in yellow; `pill` = saffron capsule; `marker` = yellow highlighter; `youtube` = the earlier pill, no stroke. All four need `qatf[captions]`; `pop` = one line at a time |
 | `--no-captions` | off | render without burned-in text |
 
 Leave `--font` unset unless you want a different face: each caption style has
@@ -138,19 +138,19 @@ libass falls back silently, so a missing face ships as 50 broken clips rather
 than an error. Pick an Arabic-capable face; the preflight warns when it is not
 installed.
 
-**The `youtube` look** is Tajawal Bold at size 144, white letters with no outline
-(the drop shadow carries them), nothing dimmed, and a 52px word gap, all chosen
-from real frames of a 4K Arabic job. Those are pill-only constants
-(`PILL_FONT`, `PILL_FONT_SIZE`, `PILL_OUTLINE`, `PILL_WORD_GAP`,
-`CAPTION_DIM_ALPHA`); `pop` keeps size 64 and its 4px outline.
+**The word-placed styles** (`box`, `pill`, `marker`, `youtube`) all draw in
+Tajawal Bold, each with its own size, stroke, position and highlight, chosen
+from real renders of a 4K Arabic job — the recipes are `CAPTION_LOOKS` in
+`core/constants.py`. All but `youtube` sit 62-66% down the frame, clear of the
+platforms' buttons. `pop` keeps size 64, its 4px outline and Noto Sans Arabic.
 
 Lines are budgeted by **both** word count and character count
 (`CAPTION_MAX_CHARS` 22): four 12-character words at 82 px is wider than the
-1080 px frame. That budget governs `pop`; `youtube` chunks by measured text
-width instead — see [quality.md](quality.md#the-youtube-pill-style--contrast-font-metrics-and-what-it-costs).
+1080 px frame. That budget governs `pop`; the word-placed styles chunk by
+measured text width instead — see [quality.md](quality.md#the-youtube-pill-style--contrast-font-metrics-and-what-it-costs).
 
-**`youtube` (the default) puts every word in its own filled capsule when it is
-spoken, on Arabic as well as Latin.** It needs `uharfbuzz` (`pip install
+**`box` (the default) and the other word-placed styles mark each word as it is
+spoken, on Arabic as well as Latin.** They need `uharfbuzz` (`pip install
 'qatf[captions]'`, already in the `[all]` extra) and a font file fontconfig can
 resolve for `--font`; where either is missing the job logs why, renders `pop`
 instead, and reports the style it actually used — check `caption_pill_ready` on

@@ -205,13 +205,17 @@ class JobOptions(BaseModel):
     captions: bool = Field(True, description="burn captions into the video")
     per_line: int = Field(CAPTION_MAX_WORDS, ge=1, le=8,
                           description="max words per caption line")
-    caption_style: Literal["youtube", "pop"] = Field(
+    caption_style: Literal["box", "pill", "marker", "youtube", "pop"] = Field(
         DEFAULT_CAPTION_STYLE,
-        description="how captions are drawn. `youtube` positions every word "
-                    "absolutely and puts the word currently being spoken in a "
-                    "filled capsule, on Arabic as well as Latin. `pop` is the "
-                    "original style: one caption line at a time, with per-word "
-                    "colouring on Latin only. `youtube` needs shaped word "
+        description="how captions are drawn. Every style but `pop` places each "
+                    "word itself and marks the one being spoken, on Arabic as "
+                    "well as Latin: `box` (the default) puts the line on a dark "
+                    "see-through box with the spoken word in yellow; `pill` "
+                    "puts the spoken word in a saffron capsule; `marker` in a "
+                    "yellow highlighter box; `youtube` is the earlier pill look "
+                    "with no stroke, placed low. `pop` is the original style: "
+                    "one caption line at a time, with per-word colouring on "
+                    "Latin only. The word-placed styles need shaped word "
                     "measurement on the RENDERING host; where that is "
                     "unavailable the job falls back to `pop`, logs why, and "
                     "reports the style it actually used — check "
@@ -658,10 +662,11 @@ class JobResponse(BaseModel):
     caption_style_used: str = Field(
         "",
         description="the caption style ACTUALLY used. May differ from "
-                    "options.caption_style: `youtube` falls back to `pop` when "
+                    "options.caption_style: a word-placed style falls back to "
+                    "`pop` when "
                     "shaped word measurement is unavailable on the rendering "
                     "host — check `caption_pill_ready` on /healthz before "
-                    "trusting a request for `youtube`. Empty when captions were "
+                    "trusting a request for one. Empty when captions were "
                     "not burned in at all (options.captions: false) or on a "
                     "record written before this field existed.",
     )
@@ -767,6 +772,6 @@ class Health(BaseModel):
     #: cannot resolve the default font, and every job that asks for the pill
     #: style will silently degrade to `pop` until that changes.
     caption_pill_ready: bool = Field(
-        True, description="whether the 'youtube' pill caption style can render "
-                          "on this host, or every job asking for it will fall "
-                          "back to 'pop'")
+        True, description="whether the word-placed caption styles (every "
+                          "style but 'pop') can render on this host, or every "
+                          "job asking for one will fall back to 'pop'")

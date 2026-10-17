@@ -367,22 +367,23 @@ recalculated — edit a clip to 20s and it comes back marked `short`.
 
 ---
 
-## Caption style: `youtube` pill or `pop`
+## Caption style: word-placed looks or `pop`
 
-`caption_style` (`JobOptions`, default `"youtube"`) picks between two burned-in
-styles. `youtube` puts every word in its own filled capsule when it is being
-spoken, dims the rest of the line, and works on Arabic as well as Latin. `pop`
-is the original style: one caption line at a time, with per-word colour
-highlighting on Latin only.
+`caption_style` (`JobOptions`, default `"box"`) picks the burned-in style. Four
+are word-placed looks that mark each word as it is spoken, on Arabic as well as
+Latin: `box` (the line on a dark see-through box, spoken word in yellow),
+`pill` (a saffron capsule), `marker` (a yellow highlighter) and `youtube` (the
+earlier pill with no stroke, placed low). `pop` is the original style: one
+caption line at a time, with per-word colour highlighting on Latin only.
 
-`youtube` needs shaped word measurement **on the rendering host** — under the
+The word-placed looks need shaped word measurement **on the rendering host** — under the
 API that is the server, not the caller. Where it is unavailable (the
 `captions` extra not installed, or the requested font unresolvable by
 fontconfig) the job logs why, renders `pop` instead, and never fails for it.
 The style actually used is on the job record:
 
 ```json
-{ "options": { "caption_style": "youtube" }, "caption_style_used": "pop" }
+{ "options": { "caption_style": "box" }, "caption_style_used": "pop" }
 ```
 
 `caption_style_used` differs from `options.caption_style` exactly when that
@@ -476,7 +477,7 @@ request. Same names and defaults as the CLI flags.
 | `font` | `null` | `null` = the style's own face: Tajawal for `youtube`, Noto Sans Arabic for `pop`. A named face must be installed **on the server** |
 | `captions` | `true` | |
 | `per_line` | `4` | 1–8 words |
-| `caption_style` | `youtube` | `youtube` · `pop` — see [below](#caption-style-youtube-pill-or-pop) |
+| `caption_style` | `box` | `box` · `pill` · `marker` · `youtube` · `pop` — see [below](#caption-style-word-placed-looks-or-pop) |
 | `auto_render` | `true` | `false` stops at `planned` |
 
 `min_len > max_len` is rejected at the boundary, as is an unparseable
@@ -568,12 +569,11 @@ a second under load — see
   `nvidia-smi` reports. A card the installed CTranslate2 cannot use (compute
   capability, driver mismatch) is not a usable device, and only the engine knows.
 - **`transcribe_device`** is what stage 2 will pick under `device: auto`.
-- **`caption_pill_ready`** — whether the `youtube` pill caption style can
+- **`caption_pill_ready`** — whether the word-placed caption styles can
   actually render on this host. `false` means `uharfbuzz` is not installed or
-  fontconfig cannot resolve Tajawal (the pill style's face) at size 144, and
-  every job that asks for it
-  will silently fall back to `pop` — see
-  [Caption style](#caption-style-youtube-pill-or-pop).
+  fontconfig cannot resolve Tajawal (their face), and every job that asks for
+  one will silently fall back to `pop` — see
+  [Caption style](#caption-style-word-placed-looks-or-pop).
 - **`providers`** carries the whole stage-3 roster with each entry's
   structured-output tier, so a client can offer a provider picker without
   hardcoding one.

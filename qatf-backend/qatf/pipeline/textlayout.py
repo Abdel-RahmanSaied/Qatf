@@ -196,7 +196,25 @@ def font_file(family: str, bold: bool = False) -> Path | None:
 
 
 def _libass_height(face) -> float:
-    """The font-unit height libass maps an ASS `Fontsize` onto.
+    """The font-unit height libass maps an ASS `Fontsize` onto — see
+    `_libass_metrics`, which this is the second half of."""
+    return _libass_metrics(face)[1]
+
+
+def _libass_metrics(face) -> tuple[float, float]:
+    """(ascender, line height) in font units, as libass lays a line out.
+
+    **The ascender must come from the same table as the height.** libass
+    places the baseline with the very metrics it sizes with. Taking the height
+    from OS/2 win and the ascender from hhea agrees only on a face whose tables
+    agree — Noto Sans Arabic's are identical (1374/738 in all three), which is
+    how the mismatch shipped. Tajawal's are not: win 1065/411 against hhea
+    643/-357, so every pill sat 18px too high at size 144 and the text hung out
+    of its bottom edge, seen on a real 4K render.
+
+    The height half:
+
+    **ASS `Fontsize` is NOT the em.** libass (like VSFilter before it) sizes a
 
     **ASS `Fontsize` is NOT the em.** libass (like VSFilter before it) sizes a
     face so its full line height — OS/2 `usWinAscent + usWinDescent`, falling
@@ -224,16 +242,18 @@ def _libass_height(face) -> float:
     if len(os2) >= 78:
         win_a, win_d = struct.unpack(">hh", os2[74:78])
         if win_a + win_d > 0:
-            return float(win_a + win_d)
+            return float(win_a), float(win_a + win_d)
         typo_a, typo_d = struct.unpack(">hh", os2[68:72])
         if typo_a - typo_d > 0:
-            return float(typo_a - typo_d)
+            return float(typo_a), float(typo_a - typo_d)
     hhea = table("hhea")
     if len(hhea) >= 8:
         hh_a, hh_d = struct.unpack(">hh", hhea[4:8])
         if hh_a - hh_d > 0:
-            return float(hh_a - hh_d)
-    return float(face.upem)
+            return float(hh_a), float(hh_a - hh_d)
+    # Last resort: the em box, ascender split evenly across it since nothing
+    # tells us the real split.
+    return float(face.upem) / 2.0, float(face.upem)
 
 
 class _HarfBuzzMeasurer:
@@ -254,30 +274,10 @@ class _HarfBuzzMeasurer:
         self._font = hb.Font(face)
         self._upem = face.upem
         self._font.scale = (self._upem, self._upem)
-        self._px = size / _libass_height(face)
-        line_height, ascender = self._measure_line_extents()
+        ascender, line_height = _libass_metrics(face)
+        self._px = size / line_height
         self.line_height = line_height * self._px
         self.ascender = ascender * self._px
-
-    def _measure_line_extents(self) -> tuple[float, float]:
-        """(line height, ascender), in FONT UNITS — the caller scales to px."""
-        for name in ("get_font_h_extents", "get_font_extents"):
-            fn = getattr(self._font, name, None)
-            if fn is None:
-                continue
-            try:
-                ext = fn() if name == "get_font_h_extents" else fn("ltr")
-            except Exception:                              # noqa: BLE001
-                continue
-            asc = getattr(ext, "ascender", None)
-            desc = getattr(ext, "descender", None)
-            if asc is not None and desc is not None:
-                return float(asc) - float(desc), float(asc)
-        # Last resort: the em box, ascender split evenly across it since
-        # nothing tells us the real split. Slightly tight for faces with tall
-        # ascenders, and only reached on a uharfbuzz that exposes neither
-        # extents call — which the probe in this task's Step 2 checks for.
-        return float(self._upem), float(self._upem) / 2.0
 
     def advance(self, text: str) -> float:
         buf = self._hb.Buffer()

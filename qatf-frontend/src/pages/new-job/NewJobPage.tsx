@@ -147,7 +147,7 @@ export default function NewJobPage() {
   };
 
   const o = t.options;
-  const captionStyle = options.caption_style ?? DEFAULT_OPTIONS.caption_style;
+  const captionStyle = options.caption_style ?? DEFAULT_OPTIONS.caption_style ?? "box";
   const reframe =
     options.reframe === "blur" ? o.reframeBlurShort :
     options.reframe === "track" ? o.reframeTrackShort :
@@ -301,7 +301,7 @@ export default function NewJobPage() {
                 <span className="summary-k">{tn.sumCaptions}</span>
                 <span className="summary-v">
                   {options.captions
-                    ? (captionStyle === "pop" ? o.stylePop : o.styleYoutube)
+                    ? (o.styles[captionStyle] ?? captionStyle)
                     : tn.sumNoCaptions}
                 </span>
               </li>

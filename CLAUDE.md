@@ -473,12 +473,32 @@ about it.
 
 ### YouTube-style pill captions (stage 5a)
 
-`caption_style: "youtube" | "pop"` (CLI: `--caption-style`), default `youtube`.
-Every word positioned absolutely, the unspoken ones dimmed to 45%, the spoken
-one sitting in a filled capsule — the YouTube Shorts idiom, and the first
-word-level caption style this project has that works **on Arabic**, which is
-the differentiator against every English-first competitor (Opus Clip, Klap,
-Vizard, Submagic, Choppity, quso, 2short).
+`caption_style: "box" | "pill" | "marker" | "youtube" | "pop"` (CLI:
+`--caption-style`), default **`box`**. Every style but `pop` is a *look*
+(`core/constants.py::CAPTION_LOOKS`, a `CaptionLook` recipe each) rendered by
+one engine, `captions.build_ass_look`: every word positioned absolutely, the
+spoken one marked — a dark line box with the word in yellow (`box`), a saffron
+capsule (`pill`), a yellow highlighter (`marker`), or the original
+no-outline pill (`youtube`). This is the first word-level caption system this
+project has that works **on Arabic**, which is the differentiator against every
+English-first competitor (Opus Clip, Klap, Vizard, Submagic, Choppity, quso,
+2short).
+
+**The looks were chosen by eye on 2026-10-17**, from eight real renders of the
+same eight seconds of a 4K Arabic job, each modelled on a published short-form
+pattern (Hormozi highlight, CapCut box and glow, Submagic box styles, one-word
+hooks, a minimal phrase style). Four rejected looks are named in the
+`CAPTION_LOOKS` comment so nobody rebuilds them blind. Rules every look keeps,
+each one a bug a real render showed: the line sits **62-66% down** the frame,
+where Shorts, Reels and TikTok leave it visible (the first pill sat at ~81%,
+under their buttons); `gap` clears the highlight's overhang (one build spaced
+words 8px apart under an 18px pill, and every pill covered its neighbour); a
+highlight shorter than **0.15s** is not shown (about one Arabic word in ten is
+under 0.12s, and a three-frame highlight reads as flicker); and a word ending
+in a tatweel — YouTube's mark for a cut-off stutter, `كـ كـ طبيعتنا` — is not
+captioned, though it keeps its timings. Adding a look is a row in
+`CAPTION_LOOKS`, a key in `CAPTION_STYLES`, the schema's `Literal` and the UI's
+`OFFERED_CAPTION_STYLES`; checks pin the first three together.
 
 **Why absolute positioning, not a fix to the old style.** "The RTL caption
 bug" below is a hard limit of the old approach, not a bug with headroom left in
@@ -1219,9 +1239,16 @@ Be honest about this in any session. It is the difference between a demo and a t
      (فشلت 79px regular vs 89px bold). `font_file` asks for `family:bold`.
   3. **Fixing 1 exposed a third:** at true size one space (~15px) is less than
      the capsule's `PILL_PAD_X` overhang, so the pill covered its neighbour.
-     The word gap is now floored at `2 * PILL_PAD_X`, in the chunker too.
+     The word gap is now each look's `gap`, used by the chunker too.
+  4. **The baseline came from a different table than the size** (found
+     2026-10-17, on Tajawal): the height was OS/2 win but the ascender was
+     hhea. Noto's tables are identical, so it never showed; Tajawal's are not
+     (win 1065/411, hhea 643/-357), and every pill sat 18px too high with the
+     text hanging out of its bottom. `textlayout._libass_metrics` now returns
+     both from one table. Measured on render: 18px of pill above and below the
+     ink, on Tajawal and Noto alike.
 
-  And the dim now applies to the fill only (`a`): a 45%-alpha outline on a
+  And the dim now applies to the fill only (`\1a`): a 45%-alpha outline on a
   light background is the same grey as the fill, which leaves no edge at all.
 
   Why nothing caught it: `FakeMeasurer` has no font, so its scale cannot be
