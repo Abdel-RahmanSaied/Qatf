@@ -10,6 +10,11 @@ everything about *where* the cuts land is deterministic.
 
 قطف — *to pick, to harvest*.
 
+> **بالعربي:** أداة مفتوحة المصدر بتحوّل الفيديو الطويل لمقاطع قصيرة طولية
+> للـ Reels والـ Shorts والـ TikTok. بتفرّغ الكلام، وتختار أحسن اللحظات
+> بالذكاء الاصطناعي، وتكتب ترجمة عربي كلمة بكلمة. لسه prototype،
+> و[المساهمة مرحّب بيها جدًا](#contributing).
+
 ![The qatf jobs dashboard](docs/images/ui-dashboard.png)
 
 ```bash
@@ -38,13 +43,14 @@ docker compose up      # web UI on :3000, API on :8000
 
 ## What it does
 
-Five stages. Only two involve a model.
+Five stages. Two of them run a model — Whisper hears the words, an LLM picks
+the moments — and everything about where a cut lands is deterministic.
 
 ```text
 0. fetch       a URL → a local file            yt-dlp, on an exact-host allowlist
 1. audio       demux (optionally denoise)      ffmpeg
-2. transcribe  words with start/end times      faster-whisper — or a caption track
-3. select      which passages are worth it     the configured LLM        ← model
+2. transcribe  words with start/end times      faster-whisper — or a caption track  ← model
+3. select      which passages are worth it     the configured LLM                   ← model
 4. snap        cuts onto real word boundaries  deterministic
 5. render      reframe 9:16, burn captions     ffmpeg
 ```
@@ -73,13 +79,27 @@ RTL caption rendering here is *measured*, not assumed — including a libass bid
 bug that scrambles Arabic word order and which every obvious test reports as
 passing. See [the RTL caption bug](docs/troubleshooting.md#the-rtl-caption-bug).
 
-**Word-level captions, on Arabic too.** The default `box` caption style puts
-each line on a dark see-through box and lights the spoken word in yellow, one
-word at a time; `pill` and `marker` mark it with a capsule or a highlighter
-instead. That works on RTL too, where each word gets its own cue instead of
-sharing one that a highlight tag would scramble. `pop` (one caption line at a time) is still
-available, and is what a job renders automatically wherever shaped word
-measurement isn't. See [captions](docs/cli.md#captions--stage-5a).
+**Word-level captions, on Arabic too.** The spoken word lights up as it is
+said, on right-to-left text as well as left-to-right — each word gets its own
+cue, so there is no shared line for a highlight to scramble.
+
+![Caption box style on a real Arabic clip: the spoken word in yellow on a dark box](docs/images/captions-box.jpg)
+
+Four styles, picked from real renders of an Arabic talking-head video:
+
+| Style | Looks like |
+| --- | --- |
+| `box` (default) | the line on a dark see-through box, spoken word in yellow |
+| `pill` | the spoken word in a saffron capsule |
+| `marker` | the spoken word in a yellow highlighter box, black text |
+| `youtube` | the original pill, no outline, sitting lower |
+
+Every style but the original sits about 70% down the frame, above where TikTok
+and Shorts put their buttons, and none flashes a highlight on a word shorter
+than 0.15s. Cut-off stutters that YouTube's speech recognition writes with a
+tatweel (`كـ كـ`) are left out of the captions. `pop`, one caption line at a
+time, is the fallback wherever word measurement is unavailable. See
+[captions](docs/cli.md#captions--stage-5a).
 
 **The model never emits timing.** It reads the transcript at ~12-second
 resolution and returns `MM:SS`. Stage 4 then snaps those onto real word
@@ -119,6 +139,11 @@ cp .env.example .env      # from the repo root, then add one key
 whether its credential is present, and whether transcription will get a GPU —
 all before you submit an hour of audio.
 
+**No NVIDIA GPU?** `docker-compose.yaml` reserves one for the backend, and
+Compose refuses to start a service whose reservation it cannot meet. Delete the
+`deploy:` block under `qatf` and it runs on CPU — slowly for `large-v3`; see
+[Handing a container a GPU](#handing-a-container-a-gpu).
+
 Developing? The live-reload overlay bind-mounts your source into both
 containers, so an edit lands without an image rebuild:
 
@@ -134,13 +159,20 @@ only rebuild when a dependency changes. Details in
 
 ## The web UI
 
-Four screens over the same HTTP API — jobs, new job, job detail, transcript
-editor. The UI is purely additive: no feature in it required a backend change.
+Every screen sits on the public HTTP API, so anything the UI does a script can
+do too. In English and Arabic, with the whole layout mirrored for right-to-left.
 
 | | |
 | --- | --- |
-| ![Job page with clips and the plan editor](docs/images/ui-job.png) | ![Transcript editor](docs/images/ui-transcript.png) |
-| **Job page.** Rendered clips first, then where the picks came from, then the plan you can edit. | **Transcript editor.** Click a word to correct it. There is no timing input, by construction. |
+| ![Job page: eight rendered clips and a Download all button](docs/images/ui-job.jpg) | ![Transcript editor with Arabic text](docs/images/ui-transcript.png) |
+| **Job page.** Rendered clips first, each with its own download and one **Download all**. Then where the picks came from, then the plan you can edit. | **Transcript editor.** Click a word to correct it, or ask the model to suggest fixes. There is no timing input, by construction. |
+
+- **Live progress.** A YouTube download and the clip render each show a real
+  progress bar — ffmpeg's own reading of how much video is encoded, against the
+  plan's clip lengths. It reports video left to make, never a guessed countdown.
+- **Settings.** Change the AI provider, model and whether it thinks before
+  answering, without a restart; a change applies to the next video.
+- **Caption style** is picked per video, on the Add video page.
 
 Two things it refuses to let you do, on purpose:
 
@@ -180,8 +212,7 @@ qatf talk.mov -o out/ --plan out/plan.json
 
 # the full real-world invocation
 qatf talk.mov -o reels/ --language ar --clips 8 --min-len 28 --max-len 52 \
-  --denoise --vocab-file prompts/ar-tech.txt --fixups prompts/ar-fixups.txt \
-  --font "Traditional Arabic"
+  --denoise --vocab-file prompts/ar-tech.txt --fixups prompts/ar-fixups.txt
 
 # let the crop follow the subject instead of holding a static centre slice
 qatf talk.mov -o reels/ --reframe track
@@ -229,13 +260,20 @@ POST   /jobs/url              fetch a YouTube URL. 403 off the allowlist
 GET    /jobs, /jobs/{id}      list and poll
 GET    /jobs/{id}/transcript  words, as they will be captioned
 PUT    /jobs/{id}/transcript  correct misheard words — text only, never timings
+POST   /jobs/{id}/transcript/suggest  ask the model which words look misheard
 GET/PUT /jobs/{id}/plan       the hand-edit round trip; re-snaps unless you opt out
 POST   /jobs/{id}/render      encode the current plan
 POST   /jobs/{id}/cancel      cooperative — checked between stages and between clips
 DELETE /jobs/{id}             refuses while running
 GET    /jobs/{id}/clips       + /{name} to download
 GET    /healthz               ffmpeg, provider, credential, transcription device
+GET/PUT /settings             provider, model, effort, thinking, … for the next job
+DELETE /settings/{key}        back to the environment's value
 ```
+
+While a job runs, `GET /jobs/{id}` carries `fetch_progress` (the download) and
+`render_progress` (seconds of video encoded, against the plan's own clip
+lengths).
 
 States: `queued → fetching → extracting → transcribing → selecting → planned →
 rendering → done`, plus `failed` and `cancelled`. Set `auto_render: false` to
@@ -252,6 +290,8 @@ QATF_LLM_PROVIDER=anthropic     # openai | openai-legacy | kimi | glm
                                 # ollama | vllm | openrouter
 QATF_LLM_MODEL=...              # override the preset's default model
 QATF_LLM_BASE_URL=...           # point a preset at another host
+QATF_LLM_EFFORT=medium          # how hard a thinking model works
+QATF_LLM_THINKING=on            # off = as little deliberation as the model allows
 
 QATF_DATA_DIR=/data             # job records, sources, rendered clips
 QATF_MEDIA_ROOT=/media          # the sandbox POST /jobs paths must resolve inside
@@ -262,6 +302,11 @@ QATF_FFMPEG=... QATF_FFPROBE=...
 
 `media_root` is a security boundary, not a convenience: without it a `POST /jobs`
 body naming `../../etc/passwd` would transcribe any file the process can read.
+
+Eight of these — provider, model, base URL, effort, thinking, max tokens,
+timeout and workers — can also be changed from the Settings page (or
+`PUT /settings`). A saved value beats the environment and applies to the next
+job, no restart; `media_root` and `data_dir` are deliberately not editable.
 
 ---
 
@@ -279,15 +324,19 @@ touching code. Two environment variables do it:
 preset, key env var, and which of the three output tiers each honours. What
 follows is the runnable half.
 
-Settings are read **once at startup**, so every change below needs a restart:
+Environment variables are read **once at startup**, so a change in `.env` needs
+a restart:
 
 ```bash
 docker compose up -d qatf              # Docker
 # or restart qatf-serve / uvicorn
 ```
 
-Confirm it took with `GET /healthz`, which reports `llm_provider`, the resolved
-`model` and `llm_ready`.
+Confirm an `.env` change with `GET /healthz`, which reports `llm_provider`, the
+resolved `model` and `llm_ready`. Or skip the restart and set the provider and
+model on the Settings page instead — but check those on the Settings page
+itself, because `/healthz` reports the environment's values and does not yet
+reflect a saved override.
 
 ### Hosted
 
@@ -313,6 +362,10 @@ QATF_LLM_PROVIDER=glm     ZHIPU_API_KEY=...
 Reach for `anthropic` rather than `openrouter` when the model is Claude: routing
 Claude through an OpenAI-compatible shim costs schema-constrained output,
 adaptive thinking, and prompt caching of the transcript prefix.
+
+**Some models cannot stop thinking.** GPT-5 through OpenRouter refuses a request
+to turn reasoning off. Thinking is on by default; if you switch it off and the
+model refuses, the job says so and names the setting to change.
 
 ### Local — no key, no per-run cost
 
@@ -340,11 +393,16 @@ QATF_LLM_BASE_URL=http://vllm:8000/v1
 
 ### Handing a container a GPU
 
-Every `deploy:` block in `docker-compose.yaml` ships commented out. Uncomment
-the one under `ollama` or `vllm` for stage 3, or the one under `qatf` for
-faster-whisper. `GET /healthz` reports `cuda_devices` and `transcribe_device`,
-so you can tell whether a job will run on a GPU *before* submitting an hour of
-audio.
+The backend's `deploy:` block is **on**: the `qatf` service reserves one NVIDIA
+GPU for faster-whisper. Delete it on a machine without one. The blocks under
+`ollama` and `vllm` ship commented out; uncomment one for a local stage-3 model.
+`GET /healthz` reports `cuda_devices` and `transcribe_device`, so you can tell
+whether a job will run on a GPU *before* submitting an hour of audio.
+
+Newer cards (RTX 50-series) have no ready-made kernels in the CTranslate2 build,
+so the NVIDIA driver compiles them the first time Whisper runs — about 20
+seconds once. `CUDA_CACHE_PATH` keeps that compiled cache on the data volume, so
+it is paid once, not on every container rebuild.
 
 ### Four things that bite
 
@@ -416,34 +474,38 @@ and absent from `sys.modules` until something happened to call it.
 ## Testing
 
 All of it runs on [CI](.github/workflows/ci.yml) for every push and pull
-request. **626 of the checks need no ffmpeg, GPU, API key or network**, so you
-can run them locally in seconds:
+request. **Nearly a thousand checks need no ffmpeg, GPU, API key or network**,
+so you can run them locally in seconds:
 
 ```bash
 cd qatf-backend
-python tests/smoke_db.py          #  23   the SQLite layer, in isolation
-python tests/smoke_pipeline.py    # 359   stages 1-5, escaping, caches, trust boundaries
-python tests/smoke_llm.py         #  38   provider request shapes, with the SDK faked
-python tests/smoke_api.py         # 155   state machine, round trips, the OpenAPI document
-python tests/load_api.py          #  23   every endpoint under 24 threads, ~20s
+python tests/smoke_db.py          # the SQLite layer, in isolation
+python tests/smoke_pipeline.py    # stages 1-5, caption looks, escaping, caches, trust boundaries
+python tests/smoke_llm.py         # provider request shapes, with the SDK faked
+python tests/smoke_api.py         # state machine, round trips, progress, the OpenAPI document
+python tests/load_api.py          # every endpoint under 24 threads, ~20s
 ruff check .
 
 cd ../qatf-frontend
-npm test                          #  28   the API client and the server-rule mirrors
-npm run build                     #        tsc --noEmit is the type gate
+npm test                          # the API client, progress arithmetic, server-rule mirrors
+npm run build                     # tsc --noEmit is the type gate
 ```
+
+Each suite prints its own `N passed, 0 failed`; the counts are left out of this
+page on purpose, because a number copied here is a number that goes stale.
 
 One suite needs ffmpeg, because the only honest way to verify a filtergraph is to
 render through it and measure the result:
 
 ```bash
 cd qatf-backend
-python tests/verify_render.py     #  19 with OpenCV, 11 without
+python tests/verify_render.py     # ~40s
 ```
 
-The count depends on your install: the `track` extra (included in `[all]`) pulls
-in OpenCV, which unlocks a fixture that runs the real face detector. Without it
-that fixture skips rather than fails.
+What it runs depends on your install: OpenCV (the `track` extra, in `[all]`)
+unlocks a fixture that runs the real face detector, and fontconfig plus
+uharfbuzz unlock one that renders the word captions and checks the highlight
+moves right to left on Arabic. Without them those fixtures skip rather than fail.
 
 Two of these are worth understanding before you trust any of them:
 
@@ -464,22 +526,23 @@ Not production. Honest about what has and has not run:
 **Verified end to end.** A 12-minute 4K ProRes Arabic video recorded in a moving
 car — all five stages, real provider, 8 vertical clips with burned-in Arabic
 captions. Through the **CLI on a real GPU**, and separately through the **HTTP
-API, which ran on CPU** (`cuda_devices: 0` throughout — see below). Caption
-rendering confirmed by extracting frames and looking at them, in English *and*
-Arabic.
+API**. Caption rendering confirmed by extracting frames and looking at them, in
+English *and* Arabic; the caption styles were chosen from real renders of a 4K
+Arabic job, and their sizes measured against what libass actually draws, to the
+pixel. Render progress checked against real ffmpeg.
 
 **Not verified.** Every provider except OpenRouter against its real endpoint —
 `smoke_llm.py` pins what we *send*, but those endpoints have never replied.
 Arabic *selection* quality on any non-Claude provider. Whisper's **word
 timestamp accuracy** on Arabic: spelling quality is measured, but nobody has
 checked whether the boundaries `snap` depends on land where words actually
-start. The API on a GPU host.
+start. A full job's speed through the API on a GPU: passthrough works
+(`cuda_devices: 1` on an RTX 5070) but nobody has timed one.
 
 **Known gaps.** No loudness normalisation, no silence trimming, no
 scene-change detection. Jobs do not survive a restart. Cancellation is
 cooperative — it cannot interrupt an ffmpeg or Whisper call already in flight.
-Caption cues overlap by ~3 frames on continuous speech
-([measured and unfixed](docs/troubleshooting.md#two-captions-are-on-screen-at-once)).
+`--reframe track` frames the largest face, not the person speaking.
 
 **The API has no authentication.** Anything you put in front of it is the only
 gate. Read [security.md](docs/security.md) before exposing a port.
@@ -494,7 +557,21 @@ gate. Read [security.md](docs/security.md) before exposing a port.
 value per effort, and loudness normalisation at the top is close to a one-line
 filter add.
 
-The short version: this codebase cares more about *why* a number is what it is
+Where help is most useful right now:
+
+- **Measure Whisper's word timing on Arabic.** Cuts and the caption highlight
+  both depend on it, and nobody has checked it against the audio.
+- **Find the person speaking.** Tracking follows the largest face, so a
+  two-person shot can frame the listener.
+- **Loudness normalisation** — close to a one-line ffmpeg filter.
+- **Try open models for Arabic clip selection** (GLM, Kimi, Qwen via Ollama) and
+  report how many clips land in range and whether they are any good.
+- **Vocabulary lists for dialects** — Egyptian, Gulf, Levantine — like
+  `prompts/ar-tech.txt`. They are the biggest lever on transcription quality.
+- **Try it on your own video and open an issue with what broke.** That is a
+  real contribution.
+
+The short version of the rules: this codebase cares more about *why* a number is what it is
 than about the number. So a change to a default needs a measurement, and a
 change to a filtergraph or to caption generation needs a rendered frame somebody
 actually looked at — ffprobe reporting correct dimensions is not sufficient, and
@@ -526,9 +603,10 @@ governorate one vowel away in Latin transliteration.
 commercially. It also carries an explicit patent grant from every contributor,
 which MIT does not.
 
-One bundled third party: the YuNet face-detection weights used by
-`--reframe track` are MIT (Copyright 2020 Shiqi Yu), and `LICENSE.yunet` travels
-beside them. [NOTICE](NOTICE) covers attribution;
+Two bundled third parties: the YuNet face-detection weights used by
+`--reframe track` are MIT (Copyright 2020 Shiqi Yu), with `LICENSE.yunet` beside
+them; and the Tajawal Bold font the captions draw in is SIL OFL 1.1 (Copyright
+2018 Boutros International), with `Tajawal-OFL.txt` beside it. [NOTICE](NOTICE) covers attribution;
 [docs/licensing.md](docs/licensing.md) is the full dependency audit.
 
 **ffmpeg is a system dependency, invoked as a subprocess and never linked**, so

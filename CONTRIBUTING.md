@@ -23,7 +23,7 @@ git clone <your fork> && cd qatf
 # backend
 cd qatf-backend
 pip install -e ".[all,dev]"        # dev adds httpx + ruff for the suites
-python tests/smoke_pipeline.py     # should print "354 passed, 0 failed"
+python tests/smoke_pipeline.py     # should end with "0 failed"
 
 # frontend
 cd ../qatf-frontend
