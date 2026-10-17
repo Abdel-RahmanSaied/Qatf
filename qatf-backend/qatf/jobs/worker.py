@@ -133,6 +133,46 @@ def fetch_reporter(
     return report
 
 
+def render_reading(clips: list[Clip], index: int, seconds: float) -> dict:
+    """The `render_progress` record for clip `index` (1-based) at `seconds`."""
+    durations = [c.duration for c in clips]
+    duration = durations[index - 1] if 0 < index <= len(durations) else 0.0
+    return {
+        "clip_index": index,
+        "clip_count": len(clips),
+        "clip_seconds": round(seconds, 2),
+        "clip_duration": round(duration, 2),
+        "done_seconds": round(sum(durations[:index - 1]) + seconds, 2),
+        "total_seconds": round(sum(durations), 2),
+    }
+
+
+def render_reporter(
+    store: JobStore, job_id: str, clips: list[Clip],
+) -> Callable[[int, int, float], None]:
+    """A throttled `on_progress` callback for stage 5, the twin of
+    `fetch_reporter`.
+
+    ffmpeg's `-progress` writes a reading roughly every half second per clip,
+    and every `store.update` is a transaction, so readings are coalesced to one
+    a second. A clip's CLOSING reading is not written here at all: `on_clip`
+    already writes once when a clip finishes (its output and size), and carries
+    that clip's final reading in the same transaction — one write instead of
+    two, and the throttle can never be what leaves a finished clip reading as
+    partway through."""
+    last = 0.0
+
+    def report(index: int, total: int, seconds: float) -> None:
+        nonlocal last
+        moment = time.monotonic()
+        if moment - last < FETCH_PROGRESS_SECONDS:
+            return
+        last = moment
+        store.update(job_id, render_progress=render_reading(clips, index, seconds))
+
+    return report
+
+
 def fetch_source(store: JobStore, job_id: str, job) -> object | None:
     """Stage 0. Returns what was fetched, or None for a job that needs no fetch.
 
@@ -370,7 +410,10 @@ def render_plan(store: JobStore, job_id: str,
 
     store.update(job_id, state=JobState.rendering.value, outputs=[],
                  output_sizes={},
-                 message=f"[5/5] rendering {len(clips)} clips")
+                 message=f"[5/5] rendering {len(clips)} clips",
+                 # A real zero, not None: this job IS rendering, and has
+                 # encoded nothing yet. A previous render's reading is reset.
+                 render_progress=render_reading(clips, 1, 0.0))
 
     done: list[str] = []
     sizes: dict[str, int] = {}
@@ -386,7 +429,10 @@ def render_plan(store: JobStore, job_id: str,
         except OSError:
             pass
         store.update(job_id, outputs=list(done), output_sizes=dict(sizes),
-                     message=f"[5/5] rendered {index}/{total}: {path.name}")
+                     message=f"[5/5] rendered {index}/{total}: {path.name}",
+                     # The clip's closing progress reading rides on this
+                     # write — see render_reporter.
+                     render_progress=render_reading(clips, index, clip.duration))
 
     mode = opts["reframe"]
     size = pipeline.encode.parse_resolution(opts.get("resolution", "1080p"))
@@ -432,6 +478,7 @@ def render_plan(store: JobStore, job_id: str,
         tracks=tracks, src=src_dims,
         on_clip=on_clip,
         should_stop=lambda: store.cancel_requested(job_id),
+        on_progress=render_reporter(store, job_id, clips),
     )
 
     store.checkpoint(job_id)

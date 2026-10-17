@@ -25,7 +25,7 @@ from ..core.constants import (
 )
 from ..core.errors import ReframeNotConfigured
 from ..core.types import Clip, Track, Word
-from ..core.utils import run, slugify
+from ..core.utils import log, run, slugify
 from .captions import build_ass
 
 #: `track` is `crop` with a moving x. It is deliberately a third mode rather
@@ -242,13 +242,27 @@ def filtergraph(mode: str, ass_path: Path | None,
     return base + f";[v0]ass='{_escape_path(ass_path)}'[v]"
 
 
+def progress_seconds(line: str) -> float | None:
+    """Seconds encoded so far, from one line of ffmpeg's `-progress` output.
+
+    ffmpeg writes `key=value` blocks; `out_time_us` is the position reached in
+    the OUTPUT, in microseconds (`out_time_ms` is the same number under an older,
+    misleading name). Early lines carry `N/A` before the first frame lands.
+    Anything else is not a reading."""
+    key, _, value = line.strip().partition("=")
+    if key not in ("out_time_us", "out_time_ms") or not value.strip().lstrip("-").isdigit():
+        return None
+    return max(0.0, int(value) / 1_000_000)
+
+
 def render(video: Path, clip: Clip, ass_path: Path | None,
            out_path: Path, mode: str, crf: int = 20,
            fps: float | None = None,
            width: int = TARGET_W, height: int = TARGET_H,
            codec: str = DEFAULT_CODEC, ten_bit: bool = False,
            preset: str = DEFAULT_PRESET,
-           cmd_path: Path | None = None, x0: int | None = None) -> Path:
+           cmd_path: Path | None = None, x0: int | None = None,
+           on_progress: Callable[[float], None] | None = None) -> Path:
     """Encode one clip.
 
     `preset` is the encoder speed/quality trade and the only knob that
@@ -289,9 +303,27 @@ def render(video: Path, clip: Clip, ass_path: Path | None,
     cmd += [
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-movflags", "+faststart",
-        str(out_path),
     ]
-    run(cmd)
+    if on_progress is None:
+        run(cmd + [str(out_path)])
+        return out_path
+
+    def on_output(line: str) -> None:
+        seconds = progress_seconds(line)
+        if seconds is None:
+            return
+        # Nothing raised by the reporter may escape: a failure to REPORT how
+        # far the encode got must never cost the clip. Same rule as stage 0's
+        # download hook.
+        try:
+            on_progress(min(seconds, clip.duration))
+        except Exception as exc:                      # noqa: BLE001
+            log(f"render progress report failed, encode continues: "
+                f"{type(exc).__name__}: {exc}")
+
+    # The output path stays LAST: it is what callers (and the test fakes) read
+    # the destination from.
+    run(cmd + ["-progress", "pipe:1", "-nostats", str(out_path)], on_output=on_output)
     return out_path
 
 
@@ -326,8 +358,14 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
                tracks: list[Track] | None = None,
                src: tuple[int, int] | None = None,
                on_clip: Callable[[int, int, Clip, Path], None] | None = None,
-               should_stop: Callable[[], bool] | None = None) -> list[Path]:
+               should_stop: Callable[[], bool] | None = None,
+               on_progress: Callable[[int, int, float], None] | None = None,
+               ) -> list[Path]:
     """Render a whole plan.
+
+    `on_progress(index, total, seconds)` reports how many seconds of clip
+    `index` (1-based) have been encoded, while ffmpeg runs — `on_clip` only
+    fires once a clip is finished, which on a 4K source is minutes of nothing.
 
     Sequential on purpose. Rendering clips concurrently measured 1.21x on 16
     cores — the encoder already saturates them — which does not pay for a pool
@@ -362,10 +400,12 @@ def render_all(video: Path, clips: list[Clip], words: list[Word], out_dir: Path,
         cmd_path, x0 = (_track_args(tracks[i - 1] if tracks and i <= len(tracks) else None,
                                     work / f"{stem}.cmd", src)
                         if mode == "track" else (None, None))
+        clip_progress = ((lambda s, _i=i: on_progress(_i, total, s))
+                         if on_progress else None)
         out = render(video, clip, ass, out_dir / f"{stem}.mp4", mode,
                      crf=crf, fps=fps, width=width, height=height,
                      codec=codec, ten_bit=ten_bit, preset=preset,
-                     cmd_path=cmd_path, x0=x0)
+                     cmd_path=cmd_path, x0=x0, on_progress=clip_progress)
         outputs.append(out)
         if on_clip:
             on_clip(i, total, clip, out)

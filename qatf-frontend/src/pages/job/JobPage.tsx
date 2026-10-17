@@ -11,6 +11,7 @@ import { HarvestStrip } from "../../components/HarvestStrip";
 import { Icon } from "../../components/Icon";
 import { PageHeader } from "../../components/PageHeader";
 import { PlanEditor } from "../../components/PlanEditor";
+import { RenderProgress } from "../../components/RenderProgress";
 import { RangeNotice } from "../../components/RangeNotice";
 import { StageTimeline } from "../../components/StageTimeline";
 import { StateBadge } from "../../components/StateBadge";
@@ -161,6 +162,10 @@ export default function JobPage() {
             download reported as live progress is the timeline lying, and the
             state machine has already moved on. */}
         {job.state === "fetching" && <FetchProgress progress={job.fetch_progress} />}
+        {/* Same rule: only while the clips are being made. The record keeps
+            the closing reading afterwards, and a finished render reported as
+            live progress is the timeline lying. */}
+        {job.state === "rendering" && <RenderProgress progress={job.render_progress} />}
       </section>
 
       {/* The hand-off. The job is waiting on the reader, so this says so and

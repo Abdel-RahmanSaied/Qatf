@@ -20,6 +20,7 @@ from .schemas import (
     FetchProgressModel,
     JobOptions,
     JobResponse,
+    RenderProgressModel,
 )
 
 
@@ -131,4 +132,6 @@ def to_response(store: JobStore, job: Job) -> JobResponse:
         outputs=outputs,
         fetch_progress=(FetchProgressModel(**job.fetch_progress)
                         if job.fetch_progress else None),
+        render_progress=(RenderProgressModel(**job.render_progress)
+                         if job.render_progress else None),
     )

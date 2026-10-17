@@ -53,12 +53,20 @@ SETTINGS = Settings(
 RENDERED: list[list[str]] = []
 
 
-def fake_run(cmd, quiet=True):
+def fake_run(cmd, quiet=True, on_output=None):
     out = Path(cmd[-1])
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(b"\0" * 1024)
     if out.suffix == ".mp4":
         RENDERED.append(cmd)
+    # CALL the progress callback, as ffmpeg's -progress would — accepting the
+    # kwarg alone is how this wiring rots unseen (the same rule fake_download
+    # follows). An N/A before the first frame, a mid reading, and one past the
+    # clip's end that the render must clamp.
+    if on_output is not None:
+        for line in ("out_time_us=N/A", "out_time_us=1000000", "progress=continue",
+                     "out_time_us=999000000", "progress=end"):
+            on_output(line)
 
 
 def fake_transcribe(wav, model_size, device, language,
@@ -313,6 +321,23 @@ with TestClient(app) as client:
     # empty progress bar on every upload.
     check("a job that never fetched reports null progress, not zero",
           job["fetch_progress"] is None, json.dumps(job.get("fetch_progress")))
+    # Stage 5 progress, end to end through the worker, the store and the wire.
+    # fake_run feeds -progress lines into the real parser, including one past
+    # the clip's end, so the clamp and the closing reading are exercised.
+    _rp = job.get("render_progress")
+    check("a rendered job reports render progress on the wire",
+          isinstance(_rp, dict), json.dumps(_rp))
+    if isinstance(_rp, dict):
+        check("the closing reading is the last clip, not one dropped by the throttle",
+              _rp["clip_index"] == _rp["clip_count"] == len(job["outputs"]),
+              json.dumps(_rp))
+        check("a reading past the clip's end is clamped to its length",
+              _rp["clip_seconds"] == _rp["clip_duration"], json.dumps(_rp))
+        check("done equals total once every clip is encoded",
+              abs(_rp["done_seconds"] - _rp["total_seconds"]) < 0.05, json.dumps(_rp))
+        _plan_seconds = sum(c["end"] - c["start"] for c in job["clips"])
+        check("the denominator is the plan's own clip lengths",
+              abs(_rp["total_seconds"] - _plan_seconds) < 0.05, json.dumps(_rp))
     check("non-ascii title slug falls back",
           any(o["name"].endswith("-clip.mp4") for o in job["outputs"]),
           str([o["name"] for o in job["outputs"]]))

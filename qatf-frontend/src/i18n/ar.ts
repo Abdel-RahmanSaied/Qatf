@@ -335,6 +335,9 @@ export const ar: Dict = {
     tooShort: "قصير جدًا",
     tooLong: "طويل جدًا",
     downloadAria: "جارٍ تنزيل الفيديو",
+    renderAria: "جارٍ إنشاء المقاطع",
+    renderClip: (i: number, n: number) => `المقطع ${i} من ${n}`,
+    renderLeft: (time: string) => `يتبقى نحو ${time} من الفيديو`,
     downloadPart: (n: number) => `الجزء ${n}`,
   },
 

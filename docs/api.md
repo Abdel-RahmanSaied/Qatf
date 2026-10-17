@@ -152,6 +152,30 @@ Three fields are worth reading on the way past:
 - **`outputs`** — grows during `rendering` rather than appearing all at once, so
   progress is visible clip by clip.
 
+### Stage 5 progress while clips are made
+
+`render_progress` reports how much video stage 5 has encoded, from ffmpeg's own
+`-progress` reading, updated about once a second while `state=rendering`.
+Everything is in **seconds of output**, so the denominator is the plan's own clip
+lengths — a real total, never an estimate:
+
+```json
+{
+  "state": "rendering",
+  "render_progress": {
+    "clip_index": 2, "clip_count": 5,
+    "clip_seconds": 21.4, "clip_duration": 37.31,
+    "done_seconds": 72.0, "total_seconds": 185.99
+  }
+}
+```
+
+`done_seconds` counts every finished clip in full plus the current one's
+progress. The record keeps the closing reading after the render ends, so show it
+only while the job is `rendering`. It is null on a job that never rendered. There
+is deliberately no time estimate: encode speed depends on codec, preset and
+resolution, so report video left to make, not minutes left.
+
 ### Stage 0 progress on a URL job
 
 `fetch_progress` reports how far the download has got, updated about once a

@@ -75,10 +75,15 @@ UPLOAD_STALL_BUDGET_MS = 750.0
 _render_lock = threading.Lock()
 
 
-def fake_run(cmd, quiet=True):
+def fake_run(cmd, quiet=True, on_output=None):
     out = Path(cmd[-1])
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(b"\0" * 2048)
+    # Feed stage 5's -progress reader too, so render-progress writes to the
+    # store happen under the same concurrent load as everything else here.
+    if on_output is not None:
+        for line in ("out_time_us=1000000", "out_time_us=999000000"):
+            on_output(line)
 
 
 def fake_transcribe(wav, model_size, device, language,

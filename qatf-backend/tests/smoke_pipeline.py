@@ -1351,6 +1351,58 @@ raises("unknown preset rejected", ValueError, enc.render,
 raises("unknown codec rejected", ValueError, enc.render,
        Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop", 20, None,
        1080, 1920, "av1")
+
+section("render progress — stage 5's -progress readings")
+check("out_time_us is read as seconds",
+      enc.progress_seconds("out_time_us=1500000") == 1.5)
+check("the older out_time_ms name carries the same microseconds",
+      enc.progress_seconds("out_time_ms=2000000") == 2.0)
+check("N/A before the first frame is not a reading",
+      enc.progress_seconds("out_time_us=N/A") is None)
+check("other keys are not readings",
+      enc.progress_seconds("progress=continue") is None
+      and enc.progress_seconds("frame=12") is None)
+check("a negative start offset reads as zero, not a backwards bar",
+      enc.progress_seconds("out_time_us=-20000") == 0.0)
+
+_prog_cmds, _seen = [], []
+
+
+def _progress_run(cmd, quiet=True, on_output=None):
+    _prog_cmds.append(cmd)
+    for line in ("out_time_us=N/A", "out_time_us=2000000", "out_time_us=99000000"):
+        on_output(line)
+
+
+pipeline.encode.run = _progress_run
+enc.render(Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop",
+           on_progress=_seen.append)
+check("with a listener, ffmpeg is asked for -progress on stdout",
+      "-progress" in _prog_cmds[0]
+      and _prog_cmds[0][_prog_cmds[0].index("-progress") + 1] == "pipe:1",
+      str(_prog_cmds[0][-6:]))
+check("the output path stays last, where callers read it",
+      _prog_cmds[0][-1] == "o.mp4")
+check("readings reach the listener, clamped to the clip's length",
+      _seen == [2.0, 5.0], str(_seen))
+
+
+def _boom(_s):
+    raise RuntimeError("store is gone")
+
+
+enc.render(Path("in.mov"), Clip(0, 5, "t"), None, Path("o.mp4"), "crop",
+           on_progress=_boom)
+check("a listener that raises cannot fail the encode", len(_prog_cmds) == 2)
+
+_batch = []
+enc.render_all(Path("in.mov"), [Clip(0, 5, "a"), Clip(10, 13, "b")], [], Path("_tmp_out"),
+               Path("_tmp_work"), captions=False,
+               on_progress=lambda i, n, s: _batch.append((i, n, s)))
+check("render_all numbers each clip 1-based against the total",
+      [(i, n) for i, n, _ in _batch] == [(1, 2), (1, 2), (2, 2), (2, 2)], str(_batch))
+check("...and each clip clamps to its OWN length",
+      [s for _, _, s in _batch] == [2.0, 5.0, 2.0, 3.0], str(_batch))
 pipeline.encode.run = _real_run
 
 section("snap — stage 4")

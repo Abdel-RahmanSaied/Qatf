@@ -1039,10 +1039,18 @@ run longer. Do not "improve" it by assuming a total. Same discipline in
 green, because drawing a stage that never ran as completed is the timeline
 lying about the one thing it exists to report.
 
-### Progress bars — three of them, one rule
+### Progress bars — four of them, one rule
 
-Upload, clip download and stage 0's fetch each show a bar, and all three obey
-the harvest strip's rule: **no bar without a real denominator.** Where the size
+Upload, clip download, stage 0's fetch and stage 5's render each show a bar, and
+all four obey the harvest strip's rule: **no bar without a real denominator.**
+The render bar's denominator is the plan's own clip lengths and its numerator is
+ffmpeg's `-progress` reading (`render_progress`, written by
+`worker.render_reporter` on the same one-a-second throttle as the fetch; a
+clip's closing reading rides on `on_clip`'s write rather than adding one). It
+says how much **video** is left, never a time estimate — encode speed varies
+too much with codec, preset and resolution for a countdown to be anything but a
+guess. The API fakes CALL the progress callback, for the same reason
+`fake_download` does. Where the size
 is unknown they render a byte count and no bar at all, rather than an empty
 track that implies a total nobody has. A bar with an invented denominator is the
 UI lying about the one thing it exists to report.

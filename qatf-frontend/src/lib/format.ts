@@ -108,3 +108,24 @@ export function describeBatch(
   const percent = total ? Math.min(100, Math.round((done / total) * 100)) : null;
   return { percent, done, total };
 }
+
+/** How far stage 5 has got, from the job record's `render_progress`.
+ *
+ * The denominator is real — the plan's own clip lengths — so the bar can always
+ * be drawn when there is anything to make. `left` is VIDEO still to encode,
+ * not wall-clock time: encode speed varies with codec, preset and resolution,
+ * and a time estimate built on a guess is the UI lying about the one thing it
+ * exists to report. */
+export function describeRender(
+  p: { clip_index: number; clip_count: number; done_seconds: number; total_seconds: number },
+): { percent: number | null; clip: number; count: number; left: number } {
+  const total = p.total_seconds;
+  const done = Math.max(0, Math.min(p.done_seconds, total));
+  const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : null;
+  return {
+    percent,
+    clip: Math.min(p.clip_index, p.clip_count),
+    count: p.clip_count,
+    left: Math.max(0, total - done),
+  };
+}

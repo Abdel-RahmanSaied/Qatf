@@ -200,6 +200,18 @@ export interface FetchProgressModel {
   file_index: number;
 }
 
+/** Stage 5 encode progress, in seconds of OUTPUT encoded (ffmpeg's own
+ * reading). Mirrors `RenderProgressModel` in qatf/api/schemas.py. Kept after the
+ * render ends, so show it only while the job is `rendering`. */
+export interface RenderProgressModel {
+  clip_index: number;
+  clip_count: number;
+  clip_seconds: number;
+  clip_duration: number;
+  done_seconds: number;
+  total_seconds: number;
+}
+
 export interface JobResponse {
   id: string;
   state: JobState;
@@ -227,6 +239,8 @@ export interface JobResponse {
   /** null on a job that never fetched — which is NOT the same as zero
    * bytes, so never render a bar for it. */
   fetch_progress: FetchProgressModel | null;
+  /** Optional: absent on a server older than this field. */
+  render_progress?: RenderProgressModel | null;
 }
 
 export interface ProviderInfo {

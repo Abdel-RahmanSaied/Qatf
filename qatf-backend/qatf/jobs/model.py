@@ -105,6 +105,13 @@ class Job:
     #: through `asdict`/`json.dumps`, and a nested dataclass buys nothing there.
     #: Absent on records written before this field existed, which read as None.
     fetch_progress: dict | None = None
+    #: stage 5 encode progress, as `{"clip_index", "clip_count", "clip_seconds",
+    #: "clip_duration", "done_seconds", "total_seconds"}` — or None on a job that
+    #: never rendered. Seconds of OUTPUT encoded, as ffmpeg reports them, so a
+    #: client can draw a real bar: the denominator is the plan's own durations.
+    #: Kept after the render ends, like `fetch_progress`; a client shows it only
+    #: while the job is `rendering`.
+    render_progress: dict | None = None
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
 

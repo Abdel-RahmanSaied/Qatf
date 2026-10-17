@@ -9,6 +9,8 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
+from collections.abc import Callable
 
 from .errors import CommandFailed, FFmpegNotFound
 
@@ -24,21 +26,44 @@ def binary(name: str) -> str:
     return os.environ.get(var) or name if var else name
 
 
-def run(cmd: list[str], quiet: bool = True) -> None:
-    """Run a subprocess, raising with useful context on failure."""
+def run(cmd: list[str], quiet: bool = True,
+        on_output: Callable[[str], None] | None = None) -> None:
+    """Run a subprocess, raising with useful context on failure.
+
+    `on_output`, when given, receives each stdout line as it is written — how
+    ffmpeg's `-progress pipe:1` reaches a caller while the encode runs. stderr
+    is then drained on a side thread: ffmpeg writes to both, and a full stderr
+    pipe that nobody reads stalls the process while stdout is being read."""
     cmd = [binary(cmd[0]), *cmd[1:]]
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL if quiet else None,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise FFmpegNotFound(f"{cmd[0]} not found on PATH") from exc
-    if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or "").strip().splitlines()[-15:])
-        raise CommandFailed(f"command failed: {shlex.join(cmd)}\n{tail}")
+    if on_output is None:
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL if quiet else None,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise FFmpegNotFound(f"{cmd[0]} not found on PATH") from exc
+        stderr, returncode = proc.stderr, proc.returncode
+    else:
+        try:
+            popen = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True,
+                                     encoding="utf-8", errors="replace")
+        except FileNotFoundError as exc:
+            raise FFmpegNotFound(f"{cmd[0]} not found on PATH") from exc
+        tail: deque[str] = deque(maxlen=15)
+        drain = threading.Thread(target=lambda: tail.extend(popen.stderr), daemon=True)
+        drain.start()
+        for line in popen.stdout:
+            on_output(line.rstrip("\n"))
+        returncode = popen.wait()
+        drain.join()
+        stderr = "".join(tail)
+    if returncode != 0:
+        tail_text = "\n".join((stderr or "").strip().splitlines()[-15:])
+        raise CommandFailed(f"command failed: {shlex.join(cmd)}\n{tail_text}")
 
 
 def check_ffmpeg() -> None:

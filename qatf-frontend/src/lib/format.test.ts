@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  describeBatch, describeFetch, formatAge, formatBytes, formatSeconds, summariseRange,
+  describeBatch, describeFetch, describeRender, formatAge, formatBytes, formatSeconds, summariseRange,
   STAGES, stageIndex,
 } from "./format";
 
@@ -144,5 +144,35 @@ describe("describeBatch", () => {
 
   it("has nothing to report for no clips", () => {
     expect(describeBatch([], 0, 0)).toEqual({ percent: null, done: 0, total: null });
+  });
+});
+
+describe("describeRender", () => {
+  const reading = (done: number, total: number, clip = 3, count = 8) => ({
+    clip_index: clip, clip_count: count, done_seconds: done, total_seconds: total,
+  });
+
+  it("is the share of video encoded across every clip", () => {
+    const r = describeRender(reading(70, 280));
+    expect(r.percent).toBe(25);
+    expect(r.clip).toBe(3);
+    expect(r.count).toBe(8);
+    expect(r.left).toBe(210);
+  });
+
+  // Rounding up would show 100% while the last frames are still encoding.
+  it("rounds down, so it never says 100% before the end", () => {
+    expect(describeRender(reading(279.9, 280)).percent).toBe(99);
+    expect(describeRender(reading(280, 280)).percent).toBe(100);
+  });
+
+  it("clamps a reading past the end", () => {
+    const r = describeRender(reading(300, 280));
+    expect(r.percent).toBe(100);
+    expect(r.left).toBe(0);
+  });
+
+  it("has no percent for an empty plan", () => {
+    expect(describeRender(reading(0, 0, 1, 0)).percent).toBeNull();
   });
 });

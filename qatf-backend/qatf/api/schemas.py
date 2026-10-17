@@ -584,6 +584,28 @@ class ClipOutput(BaseModel):
     url: str = Field(..., description="GET this path to download the clip")
 
 
+class RenderProgressModel(BaseModel):
+    """How far stage 5 has got. Seconds of OUTPUT encoded, as ffmpeg reports
+    them — so the denominator is the plan's own clip durations, not a guess."""
+
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "clip_index": 3, "clip_count": 8,
+            "clip_seconds": 21.4, "clip_duration": 37.31,
+            "done_seconds": 128.6, "total_seconds": 281.25,
+        }],
+    })
+
+    clip_index: int = Field(..., description="1-based clip being encoded now")
+    clip_count: int = Field(..., description="clips in this render")
+    clip_seconds: float = Field(..., description="seconds of the current clip encoded")
+    clip_duration: float = Field(..., description="length of the current clip, seconds")
+    done_seconds: float = Field(
+        ..., description="seconds encoded across the whole render: every "
+                         "finished clip plus the current one's progress")
+    total_seconds: float = Field(..., description="total length of every clip, seconds")
+
+
 class FetchProgressModel(BaseModel):
     """How far stage 0's download has got. Present only while, or after, a
     `source="youtube"` job fetches — null on an upload or a server path."""
@@ -683,6 +705,12 @@ class JobResponse(BaseModel):
                     "during state=fetching. Null on a job that never fetched — "
                     "which is not the same as zero bytes, so do not render a "
                     "bar for it.")
+    render_progress: RenderProgressModel | None = Field(
+        None,
+        description="stage 5 encode progress, updated about once a second "
+                    "during state=rendering. Kept after the render ends, so "
+                    "show it only while the job is rendering. Null on a job "
+                    "that never rendered.")
 
 
 class JobList(BaseModel):
