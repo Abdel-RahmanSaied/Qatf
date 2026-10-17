@@ -2822,10 +2822,11 @@ for _key, _look in _LOOKS.items():
         check(f"{_key}: the highlight padding clears the outline it paints over",
               _look.hi_pad_x > _look.outline, f"{_look.hi_pad_x} vs {_look.outline}")
     if _look.y is not None:
-        # Shorts covers ~the bottom 20%, TikTok 25%, Reels 35%: the line must
-        # sit where all three leave it visible.
-        check(f"{_key}: sits inside the platforms' safe band",
-              0.55 <= _look.y <= 0.70, str(_look.y))
+        # TikTok covers ~the bottom 25% and Shorts 20%: the line's centre must
+        # stay above 72% so the whole line clears TikTok's 75% (74% was tried
+        # on a real frame and touched it). Below 55% sits on the speaker's face.
+        check(f"{_key}: sits above TikTok's and Shorts' buttons",
+              0.55 <= _look.y <= 0.72, str(_look.y))
 
 # A line of words on the default look, with one word spoken in 50ms and one
 # YouTube stutter fragment (a cut-off word ending in a tatweel).
@@ -2854,8 +2855,8 @@ check("box: the spoken word turns yellow (#FFD60A is &H000AD6FF& in BGR)",
       any("\\c&H000AD6FF&" in d[9] for d in _box_dl if _layer(d) == 3))
 check("box: no pill or marker shape is drawn on top",
       not any(_layer(d) == 2 for d in _box_dl))
-check("box: the line sits 66% down the frame, not under the app buttons",
-      all(f",{round(TARGET_H * 0.66)})" in d[9] for d in _box_dl if _layer(d) == 1),
+check("box: the line sits 70% down the frame, not under the app buttons",
+      all(f",{round(TARGET_H * 0.70)})" in d[9] for d in _box_dl if _layer(d) == 1),
       next((d[9][:40] for d in _box_dl if _layer(d) == 1), ""))
 check("a stutter fragment ending in a tatweel is not captioned",
       "كـ" not in _box_body)

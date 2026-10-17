@@ -347,9 +347,13 @@ class CaptionLook:
 #: one-word bounce, a glow, and a minimal phrase style.
 #:
 #: Rules every look follows, from published short-form caption guides:
-#: the line sits 62-66% down the frame (`y`), inside the area Shorts, Reels
-#: and TikTok leave clear of their buttons — the original pill sat at ~81%,
-#: under them; a highlight shorter than 0.15s is not shown (`min_highlight`),
+#: the line is centred 70% down the frame (`y`), above where TikTok (bottom
+#: 25%) and Shorts (bottom 20%) put their buttons — the original pill sat at
+#: ~81%, under them. 70% and not higher by request: 66% put the line
+#: mid-chest on a seated talking head (2026-10-17). Reels covers its bottom
+#: 35%, so on Reels the line overlaps that band at 70% as it already did at
+#: 66%; 74% was tried and touches TikTok's line, so it is the floor. A
+#: highlight shorter than 0.15s is not shown (`min_highlight`),
 #: since about one word in ten in real Arabic speech is under 0.12s and a
 #: highlight that lasts three frames reads as flicker; and `gap` clears the
 #: highlight, measured on render.
@@ -359,21 +363,21 @@ CAPTION_LOOKS: dict[str, CaptionLook] = {
     # TikTok's and CapCut's classic. Readable over any footage, because the
     # box, not a stroke, carries the contrast; so the letters need no outline.
     "box": CaptionLook(
-        size=118, max_words=5, gap=26, y=0.66, outline=0, shadow=0,
+        size=118, max_words=5, gap=26, y=0.70, outline=0, shadow=0,
         highlight="color", hi_text=YELLOW, hi_outline=None, enter="fade",
         box="#000000", box_alpha=0x48, box_pad_x=34, box_pad_y=24,
         min_highlight=0.15),
     # The saffron pill on the spoken word, with a stroke on the words around
     # it (the original pill had none and leaned on its drop shadow alone).
     "pill": CaptionLook(
-        size=150, max_words=3, gap=44, y=0.64, outline=4, outline_color="#111111",
+        size=150, max_words=3, gap=44, y=0.70, outline=4, outline_color="#111111",
         shadow=2, shadow_alpha=0x60, highlight="pill", hi_fill=PILL_FILL,
         hi_pad_x=30, hi_pad_y=12, hi_outline=0, hi_scale=106, enter="pop",
         min_highlight=0.15),
     # A yellow highlighter box with black text on the spoken word — the
     # Submagic "Beasty" family.
     "marker": CaptionLook(
-        size=150, max_words=3, gap=44, y=0.64, outline=4, outline_color="#111111",
+        size=150, max_words=3, gap=44, y=0.70, outline=4, outline_color="#111111",
         shadow=2, shadow_alpha=0x60, highlight="marker", hi_fill=YELLOW,
         hi_text="#111111", hi_radius=0.16, hi_pad_x=22, hi_pad_y=10, hi_outline=0,
         hi_scale=104, enter="pop", min_highlight=0.15),

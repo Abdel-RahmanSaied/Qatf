@@ -489,9 +489,11 @@ same eight seconds of a 4K Arabic job, each modelled on a published short-form
 pattern (Hormozi highlight, CapCut box and glow, Submagic box styles, one-word
 hooks, a minimal phrase style). Four rejected looks are named in the
 `CAPTION_LOOKS` comment so nobody rebuilds them blind. Rules every look keeps,
-each one a bug a real render showed: the line sits **62-66% down** the frame,
-where Shorts, Reels and TikTok leave it visible (the first pill sat at ~81%,
-under their buttons); `gap` clears the highlight's overhang (one build spaced
+each one a bug a real render showed: the line is centred **70% down** the
+frame, above TikTok's and Shorts' buttons (the first pill sat at ~81%, under
+them; 66% sat mid-chest and was moved down on request; 74% touched TikTok's
+line — Reels covers its bottom 35%, so there the line overlaps at any of
+these); `gap` clears the highlight's overhang (one build spaced
 words 8px apart under an 18px pill, and every pill covered its neighbour); a
 highlight shorter than **0.15s** is not shown (about one Arabic word in ten is
 under 0.12s, and a three-frame highlight reads as flicker); and a word ending

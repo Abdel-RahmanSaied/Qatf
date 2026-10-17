@@ -141,8 +141,9 @@ installed.
 **The word-placed styles** (`box`, `pill`, `marker`, `youtube`) all draw in
 Tajawal Bold, each with its own size, stroke, position and highlight, chosen
 from real renders of a 4K Arabic job — the recipes are `CAPTION_LOOKS` in
-`core/constants.py`. All but `youtube` sit 62-66% down the frame, clear of the
-platforms' buttons. `pop` keeps size 64, its 4px outline and Noto Sans Arabic.
+`core/constants.py`. All but `youtube` are centred 70% down the frame, above
+TikTok's and Shorts' buttons (Reels covers its bottom 35%, so there the line
+overlaps that band). `pop` keeps size 64, its 4px outline and Noto Sans Arabic.
 
 Lines are budgeted by **both** word count and character count
 (`CAPTION_MAX_CHARS` 22): four 12-character words at 82 px is wider than the
