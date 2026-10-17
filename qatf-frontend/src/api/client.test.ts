@@ -130,7 +130,25 @@ describe("downloadClip", () => {
     const fetchMock = vi.fn().mockResolvedValue(streamResponse([new Uint8Array(1)]));
     vi.stubGlobal("fetch", fetchMock);
     await downloadClip(CLIP, () => {});
-    expect(fetchMock).toHaveBeenCalledWith("/api/jobs/j1/clips/01-clip.mp4");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/jobs/j1/clips/01-clip.mp4");
+  });
+
+  // "Download all" stops a transfer by aborting it. That must reach the caller
+  // as an abort, not be reported as the server being unreachable.
+  it("lets an abort through instead of calling it a network failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("aborted", "AbortError")));
+    const err = await downloadClip(CLIP, () => {}, new AbortController().signal)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DOMException);
+    expect((err as DOMException).name).toBe("AbortError");
+  });
+
+  it("passes the abort signal to fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse([new Uint8Array(1)]));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+    await downloadClip(CLIP, () => {}, controller.signal);
+    expect(fetchMock.mock.calls[0][1]).toEqual({ signal: controller.signal });
   });
 
   it("throws ApiError with the server's detail on a non-2xx", async () => {

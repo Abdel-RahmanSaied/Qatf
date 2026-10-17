@@ -15,7 +15,7 @@ interface Props {
  * `.click()` — the click only schedules the save, so revoking in the same tick
  * races it and yields a zero-byte or failed download in Chromium.
  */
-function save(blob: Blob, name: string): void {
+export function saveBlob(blob: Blob, name: string): void {
   const href = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = href;
@@ -66,7 +66,7 @@ export function ClipDownload({ output }: Props) {
         setLoaded(bytes);
         setTotal(size);
       });
-      save(blob, output.name);
+      saveBlob(blob, output.name);
     } catch (exc) {
       setError(exc instanceof ApiError ? exc.message : String(exc));
     } finally {

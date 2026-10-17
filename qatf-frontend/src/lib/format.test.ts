@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  describeFetch, formatAge, formatBytes, formatSeconds, summariseRange,
+  describeBatch, describeFetch, formatAge, formatBytes, formatSeconds, summariseRange,
   STAGES, stageIndex,
 } from "./format";
 
@@ -119,5 +119,30 @@ describe("describeFetch", () => {
     const r = describeFetch({ downloaded_bytes: 0, total_bytes: 100, file_index: 2 });
     expect(r.part).toBe(2);
     expect(r.text).toBe("0 B / 100 B");
+  });
+});
+
+describe("describeBatch", () => {
+  it("adds finished clips to the one in flight", () => {
+    const r = describeBatch([100, 200, 300], 1, 50);
+    expect(r.done).toBe(150);
+    expect(r.total).toBe(600);
+    expect(r.percent).toBe(25);
+  });
+
+  // One clip without a recorded size makes the whole denominator a guess.
+  it("has no percent when any size is unknown", () => {
+    const r = describeBatch([100, 0, 300], 2, 10);
+    expect(r.percent).toBeNull();
+    expect(r.total).toBeNull();
+    expect(r.done).toBe(110);
+  });
+
+  it("clamps at 100 when the server sends more than was recorded", () => {
+    expect(describeBatch([100, 100], 1, 150).percent).toBe(100);
+  });
+
+  it("has nothing to report for no clips", () => {
+    expect(describeBatch([], 0, 0)).toEqual({ percent: null, done: 0, total: null });
   });
 });

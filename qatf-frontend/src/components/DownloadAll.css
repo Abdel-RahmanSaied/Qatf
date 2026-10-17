@@ -1,0 +1,19 @@
+/* DownloadAll — the "download every clip" control in the clips heading. */
+
+.download-all {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem .75rem;
+  margin-inline-start: auto;
+}
+.download-all .field-help { margin: 0; font-size: .75rem; }
+.download-all-progress .field-help { white-space: nowrap; }
+.download-all-progress {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  min-width: min(100%, 16rem);
+}
+.download-all-progress .progress { flex: 1 1 8rem; }
+.download-all-error { font-size: .75rem; color: var(--clay); }

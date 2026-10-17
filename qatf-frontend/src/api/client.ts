@@ -177,11 +177,15 @@ export function clipUrl(output: ClipOutput): string {
 export async function downloadClip(
   output: ClipOutput,
   onProgress: (loaded: number, total: number | null) => void,
+  signal?: AbortSignal,
 ): Promise<Blob> {
   let res: Response;
   try {
-    res = await fetch(clipUrl(output));
-  } catch {
+    res = await fetch(clipUrl(output), { signal });
+  } catch (exc) {
+    // A deliberate stop is not "cannot reach the server": let the caller see
+    // the AbortError for what it is.
+    if (exc instanceof DOMException && exc.name === "AbortError") throw exc;
     throw new ApiError(0, "cannot reach the server");
   }
   if (!res.ok) {

@@ -5,6 +5,7 @@ import { usePolling } from "../../api/poll";
 import { RUNNING_STATES, TERMINAL_STATES } from "../../api/types";
 import type { JobResponse } from "../../api/types";
 import { ClipGrid } from "../../components/ClipGrid";
+import { DownloadAll } from "../../components/DownloadAll";
 import { FetchProgress } from "../../components/FetchProgress";
 import { HarvestStrip } from "../../components/HarvestStrip";
 import { Icon } from "../../components/Icon";
@@ -195,6 +196,7 @@ export default function JobPage() {
               {job.state === "rendering" && <em className="section-note"> {tj.stillMaking}</em>}
             </h2>
             {canRender && <p className="section-sub">{tj.remakeNote}</p>}
+            <DownloadAll outputs={job.outputs} />
           </div>
           <ClipGrid outputs={job.outputs} clips={job.clips} />
         </section>

@@ -90,3 +90,21 @@ export function summariseRange(
   }
   return { short, long };
 }
+
+/** Overall progress of downloading several clips one after another.
+ *
+ * `sizes` are the clips' recorded byte sizes, `index` the clip now
+ * transferring (0-based) and `loaded` its bytes so far. A percentage exists
+ * only when EVERY size is known: one unknown size makes the whole denominator
+ * a guess, and a bar with an invented denominator is the UI lying about the
+ * one thing it exists to report. Clamped to 100, like a single download, since
+ * a recorded size can be stale against the bytes the server actually sends. */
+export function describeBatch(
+  sizes: number[], index: number, loaded: number,
+): { percent: number | null; done: number; total: number | null } {
+  const done = sizes.slice(0, index).reduce((a, b) => a + b, 0) + loaded;
+  const known = sizes.length > 0 && sizes.every((s) => s > 0);
+  const total = known ? sizes.reduce((a, b) => a + b, 0) : null;
+  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : null;
+  return { percent, done, total };
+}

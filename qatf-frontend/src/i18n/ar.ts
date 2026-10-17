@@ -299,6 +299,17 @@ export const ar: Dict = {
     reviewCheck: "مراجعة القائمة",
     clipsTitle: (n: number) => count(n, CLIP),
     stillMaking: "— ما زال الإنشاء جاريًا",
+    // The size is Latin ("414.2 MB") inside an Arabic label: isolated left-to-
+    // right (LRI … PDI) or the bidi algorithm reorders it with the brackets
+    // into "(MB 414.2 ،8)" — seen on screen.
+    downloadAll: (n: number, size: string | null) =>
+      size ? `تنزيل الكل ${n} · ⁦${size}⁩` : `تنزيل الكل ${n}`,
+    downloadAllAria: "جارٍ تنزيل كل المقاطع",
+    downloadAllClip: (i: number, n: number) => `المقطع ${i} من ${n}`,
+    downloadAllHint: "قد يطلب المتصفح مرة واحدة السماح بتنزيل عدة ملفات.",
+    downloadAllDone: (n: number) => `حُفظ ${n} من المقاطع.`,
+    downloadAllStopped: (n: number) => `توقّف التنزيل. حُفظ ${n} من المقاطع.`,
+    downloadAllFailed: (names: string) => `تعذّر تنزيل: ${names}`,
     remakeNote: "إعادة الإنشاء تستبدل كل هذه المقاطع.",
     mapTitle: "من أين جاءت المقاطع",
     mapSub: "كل شريط هو مقطع واحد، في مكانه من الفيديو الأصلي.",
