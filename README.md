@@ -27,6 +27,7 @@ docker compose up      # web UI on :3000, API on :8000
 
 - [What it does](#what-it-does)
 - [What makes it different](#what-makes-it-different)
+- [Everything it can do](#everything-it-can-do)
 - [Quickstart](#quickstart)
 - [The web UI](#the-web-ui)
 - [The CLI](#the-cli)
@@ -117,6 +118,80 @@ See [providers.md](docs/providers.md).
 including the negative results.
 [quality.md](docs/quality.md) is the whole playbook, and it lists the things that
 were tried and *rejected* so nobody repeats them.
+
+## Everything it can do
+
+The web UI, the CLI and the API share these options; the few that need a
+running server — AI word suggestions, live progress, cancel — are in the web UI
+and the API. Defaults in **bold**; each line links to the page with the details
+and the measurement behind the default.
+
+**Bring a video**
+
+- Upload a file (up to **2 GB** by default, `QATF_MAX_UPLOAD_MB`), name a file
+  already on the server, or paste a **YouTube link** — `youtube.com`,
+  `m.youtube.com`, `music.youtube.com` or `youtu.be`, nothing else.
+  [api.md](docs/api.md#start-a-job)
+
+**Turn speech into words**
+
+- Whisper model from `tiny` to `large-v3` (**`large-v3`**), on **`auto`** device
+  — the GPU when one is usable, else the CPU — or forced `cuda` / `cpu`.
+  [cli.md](docs/cli.md#transcription--stage-2)
+- Language forced (`ar`, `en`, …) or **detected**.
+- For a YouTube link, use the video's own caption track instead of Whisper —
+  seconds instead of minutes — when it has per-word timings: **`auto`**,
+  `captions` or `whisper`.
+- Better Arabic: a **vocabulary list** of terms to spell your way, **denoise**
+  for noisy field audio, and **fix-ups** that respell a word everywhere. Each
+  one's effect on real Arabic is measured in
+  [quality.md](docs/quality.md#transcription--23-errors-to-3).
+- Correct any single word afterwards, by hand or with AI suggestions you accept
+  one by one. Only the caption text changes, never where a clip is cut.
+  [api.md](docs/api.md#correcting-misheard-words)
+
+**Pick the moments**
+
+- How many clips (**5**) and how long each may be (**30–75 s**; use 52 s as the
+  maximum for YouTube Shorts).
+- A clip that comes back shorter or longer than asked is **kept and flagged**,
+  never silently dropped.
+  [api.md](docs/api.md#clips-outside-the-length-you-asked-for)
+- Any AI provider, and whether it thinks before answering (**on**).
+  [Running with a different model](#running-with-a-different-model)
+- Stop before rendering to review the picks (`auto_render: false`, or
+  `--plan-only` then `--plan` on the CLI), then edit
+  starts, ends, titles and order; every edited boundary is moved back onto a
+  word. [api.md](docs/api.md#the-hand-edit-round-trip)
+
+**Captions**
+
+- Four word-by-word styles — **`box`**, `pill`, `marker`, `youtube` — or `pop`,
+  one line at a time; or no captions at all.
+  [What makes it different](#what-makes-it-different)
+- Font (**the style's own: Tajawal**) and words per line.
+
+**The video**
+
+- Framing: **`crop`** a 9:16 slice, `blur` the full frame over a blurred
+  background, or `track` to follow the largest face (`fast` /
+  **`balanced`** / `best`). [cli.md](docs/cli.md#--reframe)
+- Size: **`1080p`**, `1440p`, `4k`, any `WxH`, or `source` to keep every pixel.
+- Codec **H.265** (smaller, tagged so Apple devices play it) or H.264, encode
+  speed **`medium`** (the one setting that really moves render time), quality
+  `crf` **20**, and 10-bit for a 10-bit source.
+  [cli.md](docs/cli.md#encode--stage-5b)
+
+**While it runs, and after**
+
+- Live progress for the download and for making the clips, a cancel button,
+  and a clear record of what actually ran — which device, which style, which
+  model.
+- Download clips one by one or all at once; re-render with new output options
+  without transcribing again.
+- Things to know before relying on it: a job does not survive a server restart,
+  and cancel takes effect between steps.
+  [api.md](docs/api.md#limits-to-know-before-deploying)
 
 ---
 
